@@ -1,0 +1,12 @@
+[Unit]
+Description=Capsule8 Socket for the API
+PartOf=capsule8.service
+
+[Socket]
+ListenStream=/var/run/capsule8/sensor.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=capsule8
+
+[Install]
+WantedBy=sockets.target
