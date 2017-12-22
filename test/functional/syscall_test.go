@@ -19,17 +19,29 @@ import (
 	"testing"
 
 	api "github.com/capsule8/capsule8/api/v0"
+	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/golang/glog"
 	"github.com/golang/protobuf/ptypes/wrappers"
 )
 
-const ALARM_SECS = 37
+//
+// The process inside the container sets alarms for 87, 88, and 89
+// seconds. This test applies appropriate filters and ensures that we
+// only see events for 88 and 89, not 87.
+//
+const (
+	alarmSeconds1 = 88
+	alarmSeconds2 = 89
+)
 
 type syscallTest struct {
 	testContainer *Container
 	pid           string
-	seenEnter     bool
-	seenExit      bool
+
+	sawAlarm1Enter bool
+	sawAlarm1Exit  bool
+	sawAlarm2Enter bool
+	sawAlarm2Exit  bool
 }
 
 func (st *syscallTest) BuildContainer(t *testing.T) string {
@@ -42,6 +54,7 @@ func (st *syscallTest) BuildContainer(t *testing.T) string {
 
 	glog.V(2).Infof("Built container %s\n", c.ImageID[0:12])
 	st.testContainer = c
+
 	return st.testContainer.ImageID
 }
 
@@ -54,17 +67,38 @@ func (st *syscallTest) RunContainer(t *testing.T) {
 }
 
 func (st *syscallTest) CreateSubscription(t *testing.T) *api.Subscription {
-	// TODO Add a filter expression for "Arg0 == ALARM_SECS"
+	idExpr := expression.Equal(
+		expression.Identifier("id"),
+		expression.Value(uint64(syscall.SYS_ALARM)))
+
+	enterExpr := expression.LogicalAnd(idExpr,
+		expression.Equal(
+			expression.Identifier("arg0"),
+			expression.Value(uint64(alarmSeconds2))))
+
+	exitExpr := expression.LogicalAnd(idExpr,
+		expression.Equal(
+			expression.Identifier("ret"),
+			expression.Value(uint64(alarmSeconds2))))
+
 	syscallEvents := []*api.SyscallEventFilter{
 		&api.SyscallEventFilter{
 			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
 			Id:   &wrappers.Int64Value{Value: syscall.SYS_ALARM},
-			// Arg0: &wrappers.UInt64Value{Value: ALARM_SECS},
+			Arg0: &wrappers.UInt64Value{Value: alarmSeconds1},
 		},
 		&api.SyscallEventFilter{
 			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT,
 			Id:   &wrappers.Int64Value{Value: syscall.SYS_ALARM},
-			Ret:  &wrappers.Int64Value{Value: ALARM_SECS},
+			Ret:  &wrappers.Int64Value{Value: alarmSeconds1},
+		},
+		&api.SyscallEventFilter{
+			Type:             api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
+			FilterExpression: enterExpr,
+		},
+		&api.SyscallEventFilter{
+			Type:             api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT,
+			FilterExpression: exitExpr,
 		},
 	}
 
@@ -92,39 +126,43 @@ func (st *syscallTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent
 
 	case *api.Event_Syscall:
 		if event.Syscall.Id != syscall.SYS_ALARM {
-			t.Errorf("Expected syscall number %d, got %d\n", syscall.SYS_ALARM, event.Syscall.Id)
+			t.Errorf("Expected syscall number %d, got %d\n",
+				syscall.SYS_ALARM, event.Syscall.Id)
 		}
-		if te.Event.ImageId == st.testContainer.ImageID {
-			switch event.Syscall.Type {
-			case api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER:
-				if te.Event.ImageId == st.testContainer.ImageID {
-					if event.Syscall.Arg0 == ALARM_SECS {
-						if st.pid != "" {
-							t.Error("Already saw container created")
-							return false
-						}
-						st.pid = te.Event.ProcessId
 
-						st.seenEnter = true
-					}
-				}
-			case api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT:
-				if te.Event.ImageId == st.testContainer.ImageID && te.Event.ProcessId == st.pid {
-					if event.Syscall.Ret != ALARM_SECS {
-						t.Errorf("Expected syscall return %d, got %d\n", ALARM_SECS, event.Syscall.Ret)
-						return false
-					}
-					st.seenExit = true
-				}
+		switch event.Syscall.Type {
+		case api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER:
+			if event.Syscall.Arg0 == alarmSeconds1 {
+				st.sawAlarm1Enter = true
+			} else if event.Syscall.Arg0 == alarmSeconds2 {
+				st.sawAlarm2Enter = true
+			} else {
+				t.Errorf("Unexpected alarm arg0 %d\n",
+					event.Syscall.Arg0)
+
+				return false
 			}
-		}
 
-		return !st.seenEnter || !st.seenExit
+		case api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT:
+			if event.Syscall.Ret == alarmSeconds1 {
+				st.sawAlarm1Exit = true
+			} else if event.Syscall.Ret == alarmSeconds2 {
+				st.sawAlarm2Exit = true
+			} else {
+				t.Errorf("Unexpected syscall return %d\n",
+					event.Syscall.Ret)
+
+				return false
+			}
+
+		}
 
 	default:
 		t.Errorf("Unexpected event type %T\n", event)
 		return false
 	}
+
+	return !(st.sawAlarm1Enter && st.sawAlarm1Exit && st.sawAlarm2Enter && st.sawAlarm2Exit)
 }
 
 //

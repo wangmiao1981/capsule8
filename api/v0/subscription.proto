@@ -134,13 +134,13 @@ message SyscallEventFilter {
         // arch/x86/entry/syscalls/syscall_64.tbl
         google.protobuf.Int64Value id = 2;
 
-        // These don't work yet
-        // google.protobuf.UInt64Value arg0 = 10;
-        // google.protobuf.UInt64Value arg1 = 11;
-        // google.protobuf.UInt64Value arg2 = 12;
-        // google.protobuf.UInt64Value arg3 = 13;
-        // google.protobuf.UInt64Value arg4 = 14;
-        // google.protobuf.UInt64Value arg5 = 15;
+        // Optional; precise value of a particular system call argument
+        google.protobuf.UInt64Value arg0 = 10;
+        google.protobuf.UInt64Value arg1 = 11;
+        google.protobuf.UInt64Value arg2 = 12;
+        google.protobuf.UInt64Value arg3 = 13;
+        google.protobuf.UInt64Value arg4 = 14;
+        google.protobuf.UInt64Value arg5 = 15;
 
         // Optional; return value of the system call (if type indicates exit).
         google.protobuf.Int64Value ret = 20;

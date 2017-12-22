@@ -102,7 +102,62 @@ func rewriteSyscallEventFilter(sef *api.SyscallEventFilter) {
 			newExpr, sef.FilterExpression)
 		sef.Id = nil
 	}
-	if sef.Type == api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT {
+
+	if sef.Type == api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER {
+		if sef.Arg0 != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("arg0"),
+				expression.Value(sef.Arg0.Value))
+			sef.FilterExpression = expression.LogicalAnd(
+				newExpr, sef.FilterExpression)
+			sef.Arg0 = nil
+		}
+
+		if sef.Arg1 != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("arg1"),
+				expression.Value(sef.Arg1.Value))
+			sef.FilterExpression = expression.LogicalAnd(
+				newExpr, sef.FilterExpression)
+			sef.Arg1 = nil
+		}
+
+		if sef.Arg2 != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("arg2"),
+				expression.Value(sef.Arg2.Value))
+			sef.FilterExpression = expression.LogicalAnd(
+				newExpr, sef.FilterExpression)
+			sef.Arg2 = nil
+		}
+
+		if sef.Arg3 != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("arg3"),
+				expression.Value(sef.Arg3.Value))
+			sef.FilterExpression = expression.LogicalAnd(
+				newExpr, sef.FilterExpression)
+			sef.Arg3 = nil
+		}
+
+		if sef.Arg4 != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("arg4"),
+				expression.Value(sef.Arg4.Value))
+			sef.FilterExpression = expression.LogicalAnd(
+				newExpr, sef.FilterExpression)
+			sef.Arg4 = nil
+		}
+
+		if sef.Arg5 != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("arg5"),
+				expression.Value(sef.Arg5.Value))
+			sef.FilterExpression = expression.LogicalAnd(
+				newExpr, sef.FilterExpression)
+			sef.Arg5 = nil
+		}
+	} else if sef.Type == api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT {
 		if sef.Ret != nil {
 			newExpr := expression.Equal(
 				expression.Identifier("ret"),
