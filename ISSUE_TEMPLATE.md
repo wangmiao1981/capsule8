@@ -11,7 +11,9 @@ If the current behavior is a bug please provide the steps to reproduce the bug.
 
 ### What version of Capsule8 are you using?
 
-Version information can be found at the start of all logs as well as from the `/version` endpoint and docker tags and labels in containerized environments. Please include the git sha if possible.
+Version information can be found at the start of all logs as well as from the
+docker label in containerized environments. Please include the git sha if
+possible.
 
 ### What kind of environment is this in?
 
@@ -19,7 +21,7 @@ What linux distribution are you running?
 
 If containerized:
 What version of docker is being used?
-What version of kuberenetes is being used?
+What version of kubernetes is being used?
 
 ### For bugs: can you share logs?
 
