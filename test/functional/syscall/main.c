@@ -14,12 +14,12 @@
 
 #include <unistd.h>
 
-#ifndef ALARM_SECS
-#define ALARM_SECS 37
-#endif
-
 int main(int argc, char *argv[]) {
-	alarm(ALARM_SECS);
+	alarm(87);
+	alarm(88);
+	alarm(89);
+	
 	alarm(0);
+	
 	return 0;
 }
