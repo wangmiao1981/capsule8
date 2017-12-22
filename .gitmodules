@@ -1,3 +1,6 @@
 [submodule "vendor"]
 	path = vendor
 	url = https://github.com/capsule8/capsule8_vendor.git
+[submodule "third_party/googleapis"]
+	path = third_party/googleapis
+	url = https://github.com/googleapis/googleapis

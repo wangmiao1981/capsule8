@@ -35,7 +35,7 @@ CLANG=clang
 
 # Needed to regenerate code from protos
 PROTOC_GEN_GO=${GOPATH}/bin/protoc-gen-go
-PROTO_INC=-I../:vendor/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis 
+PROTO_INC=-I../:third_party/googleapis 
 
 # All command-line executables in cmd/
 CMDS=$(notdir $(wildcard ./cmd/*))
@@ -94,7 +94,7 @@ all: $(BINS)
 api: ../capsule8/api/v0/*.proto
         # Compile grpc and gateway stubs
 	protoc --plugin=protoc-gen-go=$(PROTOC_GEN_GO) \
-		--go_out=plugins=grpc:.. \
+		--go_out=plugins=grpc:../../.. \
 		$(PROTO_INC) \
 		$?
 
