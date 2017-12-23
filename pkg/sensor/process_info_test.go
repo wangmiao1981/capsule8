@@ -34,6 +34,8 @@ BenchmarkContainerCacheMissParallel-8   	  300000	      5789 ns/op
 
 */
 
+const arrayTaskCacheSize = 32768
+
 var values []task = []task{
 	{1, 2, 3, 0x120011, "foo", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2"},
 	{1, 2, 3, 0x120011, "bar", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2"},
@@ -43,7 +45,7 @@ var values []task = []task{
 
 func TestCaches(t *testing.T) {
 
-	arrayCache := newArrayTaskCache()
+	arrayCache := newArrayTaskCache(arrayTaskCacheSize)
 	mapCache := newMapTaskCache()
 
 	for i := 0; i < arrayTaskCacheSize; i++ {
@@ -76,7 +78,7 @@ func TestCaches(t *testing.T) {
 }
 
 func BenchmarkArrayCache(b *testing.B) {
-	cache := newArrayTaskCache()
+	cache := newArrayTaskCache(arrayTaskCacheSize)
 	var tk task
 
 	for i := 0; i < b.N; i++ {
@@ -102,7 +104,7 @@ func BenchmarkMapCache(b *testing.B) {
 }
 
 func BenchmarkArrayCacheParallel(b *testing.B) {
-	cache := newArrayTaskCache()
+	cache := newArrayTaskCache(arrayTaskCacheSize)
 
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0

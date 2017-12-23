@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 	"github.com/capsule8/capsule8/pkg/sys/proc"
@@ -37,8 +38,6 @@ import (
 )
 
 const (
-	arrayTaskCacheSize = 32768
-
 	commitCredsAddress = "commit_creds"
 	commitCredsArgs    = "usage=+0(%di):u64 uid=+8(%di):u32 gid=+12(%di):u32"
 
@@ -65,11 +64,13 @@ type taskCache interface {
 }
 
 type arrayTaskCache struct {
-	entries [arrayTaskCacheSize]task
+	entries []task
 }
 
-func newArrayTaskCache() *arrayTaskCache {
-	return &arrayTaskCache{}
+func newArrayTaskCache(size uint) *arrayTaskCache {
+	return &arrayTaskCache{
+		entries: make([]task, size),
+	}
 }
 
 func (c *arrayTaskCache) LookupTask(pid int, t *task) bool {
@@ -195,10 +196,10 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	}
 
 	maxPid := proc.MaxPid()
-	if maxPid > arrayTaskCacheSize {
+	if maxPid > config.Sensor.ProcessInfoCacheSize {
 		cache.cache = newMapTaskCache()
 	} else {
-		cache.cache = newArrayTaskCache()
+		cache.cache = newArrayTaskCache(maxPid)
 	}
 
 	// Register with the sensor's global event monitor...
