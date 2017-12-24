@@ -27,6 +27,9 @@ import (
 	"google.golang.org/grpc"
 )
 
+// TelemetryService is a service that can be used with the ServiceManager to
+// process telemetry subscription requests and stream the resulting telemetry
+// events.
 type TelemetryService struct {
 	server *grpc.Server
 	sensor *Sensor
@@ -34,6 +37,8 @@ type TelemetryService struct {
 	address string
 }
 
+// NewTelemetryService creates a new TelemetryService instance that can be used
+// with a ServiceManager instance.
 func NewTelemetryService(sensor *Sensor, address string) *TelemetryService {
 	return &TelemetryService{
 		address: address,
@@ -41,10 +46,14 @@ func NewTelemetryService(sensor *Sensor, address string) *TelemetryService {
 	}
 }
 
+// Name returns the human-readable name of the TelemetryService.
 func (ts *TelemetryService) Name() string {
 	return "gRPC Telemetry Server"
 }
 
+// Serve is the main entrypoint for the TelemetryService. It is normally called
+// by the ServiceManager. It will service requests indefinitely from the calling
+// Goroutine.
 func (ts *TelemetryService) Serve() error {
 	var (
 		err error
@@ -103,6 +112,7 @@ func (ts *TelemetryService) Serve() error {
 	return ts.server.Serve(lis)
 }
 
+// Stop will stop a running TelemetryService.
 func (ts *TelemetryService) Stop() {
 	ts.server.GracefulStop()
 }

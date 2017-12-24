@@ -40,50 +40,68 @@ type eventMonitorOptions struct {
 	pids               []int
 }
 
+// EventMonitorOption is used to implement optional arguments for
+// NewEventMonitor. It must be exported, but it is not typically
+// used directly.
 type EventMonitorOption func(*eventMonitorOptions)
 
+// WithFlags is used to set optional flags when creating a new EventMonitor.
+// The flags are passed to the low-level perf_event_open() system call.
 func WithFlags(flags uintptr) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.flags = flags
 	}
 }
 
+// WithDefaultEventAttr is used to set an optional EventAttr struct to be used
+// by default when registering events and no EventAttr is specified as part of
+// the registration.
 func WithDefaultEventAttr(defaultEventAttr *EventAttr) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.defaultEventAttr = defaultEventAttr
 	}
 }
 
+// WithPerfEventDir is used to set an optional directory to use for monitoring
+// cgroups. This should only be necessary if the perf_event cgroup fs is not
+// mounted in the usual location.
 func WithPerfEventDir(dir string) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.perfEventDir = dir
 	}
 }
 
+// WithRingBufferNumPages is used to set the size of the ringbuffers used to
+// retrieve samples from the kernel.
 func WithRingBufferNumPages(numPages int) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.ringBufferNumPages = numPages
 	}
 }
 
+// WithCgroup is used to add a cgroup to the set of sources to monitor.
 func WithCgroup(cgroup string) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.cgroups = append(o.cgroups, cgroup)
 	}
 }
 
+// WithCgroups is used to add a list of cgroups to the set of sources to
+// monitor.
 func WithCgroups(cgroups []string) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.cgroups = append(o.cgroups, cgroups...)
 	}
 }
 
+// WithPid is used to add a pid to the set of sources to monitor.
 func WithPid(pid int) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.pids = append(o.pids, pid)
 	}
 }
 
+// WithPids is used to add a list of pids to the set of sources to monitor.
 func WithPids(pids []int) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.pids = append(o.pids, pids...)
@@ -96,26 +114,34 @@ type registerEventOptions struct {
 	filter    string
 }
 
+// RegisterEventOption is used to implement optional arguments for event
+// registration methods. It must be exported, but it is not typically used
+// directly.
 type RegisterEventOption func(*registerEventOptions)
 
-func WithEventsDisabled() RegisterEventOption {
+// WithEventDisabled is used to register the event in a disabled state.
+func WithEventDisabled() RegisterEventOption {
 	return func(o *registerEventOptions) {
 		o.disabled = true
 	}
 }
 
-func WithEventsEnabled() RegisterEventOption {
+// WithEventEnabled is used to register the event in an enabled state.
+func WithEventEnabled() RegisterEventOption {
 	return func(o *registerEventOptions) {
 		o.disabled = false
 	}
 }
 
+// WithEventAttr is used to register the event with an EventAttr struct
+// instead of using the EventMonitor's default.
 func WithEventAttr(eventAttr *EventAttr) RegisterEventOption {
 	return func(o *registerEventOptions) {
 		o.eventAttr = eventAttr
 	}
 }
 
+// WithFilter is used to set a filter for the event.
 func WithFilter(filter string) RegisterEventOption {
 	return func(o *registerEventOptions) {
 		o.filter = filter
@@ -153,8 +179,14 @@ func (group *perfEventGroup) cleanup() {
 	}
 }
 
+// SampleDispatchFn is the signature of a function called to dispatch a
+// sample. The first argument is the event ID, the second is the returned
+// value from the decoder, and the third is the error that may have been
+// returned from the decoder.
 type SampleDispatchFn func(uint64, interface{}, error)
 
+// EventMonitor is a high-level interface to the Linux kernel's perf_event
+// infrastructure.
 type EventMonitor struct {
 	// Ordering of fields is intentional to keep the most frequently used
 	// fields together at the head of the struct in an effort to increase
@@ -173,7 +205,7 @@ type EventMonitor struct {
 	// otherwise, .lock protects in-place writes.
 	eventAttrMap *safeEventAttrMap // stream id : event attr
 	eventIDMap   *safeUInt64Map    // stream id : event id
-	decoders     *TraceEventDecoderMap
+	decoders     *traceEventDecoderMap
 
 	// Mutable only by the monitor goroutine while running. No protection
 	// required.
@@ -318,6 +350,11 @@ func (monitor *EventMonitor) newRegisteredEvent(name string, fn TraceEventDecode
 	return eventid, nil
 }
 
+// RegisterTracepoint is used to register a tracepoint with an EventMonitor.
+// The tracepoint is selected by name and it must exist in the running Linux
+// kernel. An event ID is returned that is unique to the EventMonitor and is
+// to be used to unregister the event. The event ID will also be passed to
+// the EventMonitor's dispatch function.
 func (monitor *EventMonitor) RegisterTracepoint(name string,
 	fn TraceEventDecoderFn, options ...RegisterEventOption) (uint64, error) {
 
@@ -338,6 +375,11 @@ func (monitor *EventMonitor) RegisterTracepoint(name string,
 	return eventid, nil
 }
 
+// RegisterKprobe is used to register a kprobe with an EventMonitor. The kprobe
+// will first be registered with the kernel, and then registered with the
+// EventMonitor. An event ID is returned that is unqiue to the EventMonitor and
+// is to be used to unregister the event. The event ID will also be passed to
+// the EventMonitor's dispatch function.
 func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, output string,
 	fn TraceEventDecoderFn, options ...RegisterEventOption) (uint64, error) {
 
@@ -359,14 +401,14 @@ func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, outpu
 	unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts)
 	name := fmt.Sprintf("capsule8/sensor_%d_%d", unix.Getpid(), ts.Nano())
 
-	name, err := AddKprobe(name, address, onReturn, output)
+	name, err := addKprobe(name, address, onReturn, output)
 	if err != nil {
 		return 0, err
 	}
 
 	eventid, err := monitor.newRegisteredEvent(name, fn, opts, eventTypeKprobe)
 	if err != nil {
-		RemoveKprobe(name)
+		removeKprobe(name)
 		return 0, err
 	}
 
@@ -398,12 +440,16 @@ func (monitor *EventMonitor) removeRegisteredEvent(event registeredEvent) {
 	case eventTypeTracepoint:
 		break
 	case eventTypeKprobe:
-		RemoveKprobe(event.name)
+		removeKprobe(event.name)
 	}
 
 	monitor.decoders.RemoveDecoder(event.name)
 }
 
+// UnregisterEvent is used to remove a previously registered event from an
+// EventMonitor. The event can be of any type and is specified by the event
+// ID that was returned when the event was initially registered with the
+// EventMonitor.
 func (monitor *EventMonitor) UnregisterEvent(eventid uint64) error {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -418,6 +464,9 @@ func (monitor *EventMonitor) UnregisterEvent(eventid uint64) error {
 	return nil
 }
 
+// Close gracefully cleans up an EventMonitor instance. If the EventMonitor
+// is still running when Close is called, it will first be stopped. After
+// Close completes, the EventMonitor instance cannot be reused.
 func (monitor *EventMonitor) Close(wait bool) error {
 	// if the monitor is running, stop it and wait for it to stop
 	monitor.Stop(wait)
@@ -462,6 +511,9 @@ func (monitor *EventMonitor) Close(wait bool) error {
 	return nil
 }
 
+// Disable is used to disable a registered event. The event to disable is
+// specified by its event ID as returned when the event was initially
+// registered with the EventMonitor.
 func (monitor *EventMonitor) Disable(eventid uint64) {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -474,6 +526,7 @@ func (monitor *EventMonitor) Disable(eventid uint64) {
 	}
 }
 
+// DisableAll disables all events that are registered with the EventMonitor.
 func (monitor *EventMonitor) DisableAll() {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -484,6 +537,9 @@ func (monitor *EventMonitor) DisableAll() {
 	}
 }
 
+// Enable is used to enable a registered event. The event to enable is
+// specified by its event ID as returned when the event was initially
+// registered with the EventMonitor.
 func (monitor *EventMonitor) Enable(eventid uint64) {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -496,6 +552,7 @@ func (monitor *EventMonitor) Enable(eventid uint64) {
 	}
 }
 
+// EnableAll enables all events that are registered with the EventMonitor.
 func (monitor *EventMonitor) EnableAll() {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -506,6 +563,7 @@ func (monitor *EventMonitor) EnableAll() {
 	}
 }
 
+// SetFilter is used to set or remove a filter from a registered event.
 func (monitor *EventMonitor) SetFilter(eventid uint64, filter string) error {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -680,6 +738,9 @@ func addPollFd(pollfds []unix.PollFd, fd int) []unix.PollFd {
 	return append(pollfds, pollfd)
 }
 
+// Run puts an EventMonitor into the running state. While an EventMonitor is
+// running, samples will be pulled from event sources, decoded, and dispatched
+// to a function that is specified here.
 func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 	monitor.lock.Lock()
 	if monitor.isRunning {
@@ -780,6 +841,11 @@ runloop:
 	return err
 }
 
+// Stop stops a running EventMonitor. If the EventMonitor is not running, this
+// function does nothing. Once an EventMonitor has been stopped, it may be
+// restarted again. Whether Stop waits for the EventMonitor to fully stop is
+// optional, but if the caller does not wait there is no other mechanism by
+// which the caller may learn whether the EventMonitor is stopped.
 func (monitor *EventMonitor) Stop(wait bool) {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -931,6 +997,10 @@ func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ring
 	return nil
 }
 
+// NewEventMonitor creates a new EventMonitor instance in the stopped state.
+// Once an EventMonitor instance is returned from this function, its Close
+// method must be called to clean it up gracefully, even if no events are
+// registered or it is never put into the running state.
 func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 	// Process options
 	opts := eventMonitorOptions{}
@@ -974,7 +1044,7 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 		groups:       make(map[int]perfEventGroup),
 		eventAttrMap: newSafeEventAttrMap(),
 		eventIDMap:   newSafeUInt64Map(),
-		decoders:     NewTraceEventDecoderMap(),
+		decoders:     newTraceEventDecoderMap(),
 		nextEventID:  1,
 		events:       make(map[uint64]registeredEvent),
 		eventfds:     make(map[int]int),

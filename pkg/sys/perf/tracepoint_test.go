@@ -57,28 +57,12 @@ func extractFiles(filename string, fn extractFileFn) error {
 	return nil
 }
 
-func testReadTraceEventID(name string, reader io.Reader) error {
-	if filepath.Base(name) != "id" {
-		return nil
-	}
-
-	_, err := ReadTraceEventID(filepath.Dir(name), reader)
-	return err
-}
-
-func TestReadTraceEventID(t *testing.T) {
-	err := extractFiles("testdata/events.tar.gz", testReadTraceEventID)
-	if err != nil {
-		t.Error(err)
-	}
-}
-
 func testReadTraceEventFormat(name string, reader io.Reader) error {
 	if filepath.Base(name) != "format" {
 		return nil
 	}
 
-	_, _, err := ReadTraceEventFormat(filepath.Dir(name), reader)
+	_, _, err := readTraceEventFormat(filepath.Dir(name), reader)
 	return err
 }
 

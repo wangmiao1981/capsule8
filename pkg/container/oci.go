@@ -61,7 +61,7 @@ func getOciContainerDir() string {
 	return config.Sensor.OciContainerDir
 }
 
-type ociConfigJson struct {
+type ociConfigJSON struct {
 	OciVersion string `json:"ociVersion"`
 	Root       struct {
 		Path string `json:"path"`
@@ -86,15 +86,15 @@ func onOciConfigUpdate(configPath string) (*ociEvent, error) {
 		return nil, err
 	}
 
-	configJson := ociConfigJson{}
-	json.Unmarshal(data, &configJson)
+	configJSON := ociConfigJSON{}
+	json.Unmarshal(data, &configJSON)
 
 	containerID := filepath.Base(filepath.Dir(configPath))
 
 	ev := &ociEvent{
 		ID:          containerID,
 		State:       ociRunning,
-		CgroupsPath: configJson.Linux.CgroupsPath,
+		CgroupsPath: configJSON.Linux.CgroupsPath,
 		ConfigJSON:  string(data),
 	}
 

@@ -489,7 +489,7 @@ func TestContainerInspectWithMount(t *testing.T) {
 		t.Fatalf("Unexpected number of mounts %d", len(containerInfo.Mounts))
 	}
 	mount := containerInfo.Mounts[0]
-	if mount.Type != MOUNT_TYPE_BIND {
+	if mount.Type != mountTypeBind {
 		t.Fatalf("Unexpected mount type %s", mount.Type)
 	}
 
@@ -535,11 +535,11 @@ func TestContainerDiffV1_12_2(t *testing.T) {
 		Kind uint8
 		Path string
 	}{
-		{DIFF_MODIFIED, "/bin"},      // 0 stands for change in directory / file
-		{DIFF_DELETED, "/bin/touch"}, // 2 stands for removed / deleted file or directory
-		{DIFF_ADDED, "/foo"},         // 1 stands for directory / file added
-		{DIFF_MODIFIED, "/root"},
-		{DIFF_ADDED, "/root/.ash_history"},
+		{diffModified, "/bin"},      // 0 stands for change in directory / file
+		{diffDeleted, "/bin/touch"}, // 2 stands for removed / deleted file or directory
+		{diffAdded, "/foo"},         // 1 stands for directory / file added
+		{diffModified, "/root"},
+		{diffAdded, "/root/.ash_history"},
 	}
 	for i := 0; i < 5; i++ {
 		if containerDiff[i].Kind != expectedValues[i].Kind {

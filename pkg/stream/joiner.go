@@ -21,6 +21,8 @@ import (
 	"github.com/golang/glog"
 )
 
+// Joiner is a construct that combines multiple input streams into a single
+// output stream.
 type Joiner struct {
 	ctrl chan<- interface{}
 }
@@ -181,6 +183,7 @@ func NewJoiner() (*Stream, *Joiner) {
 	}
 }
 
+// Add adds a new input stream to an existing Joiner.
 func (J *Joiner) Add(s *Stream) bool {
 	reply := make(chan bool)
 
@@ -194,6 +197,7 @@ func (J *Joiner) Add(s *Stream) bool {
 	return ok
 }
 
+// Remove removes an input stream from an existing Joiner.
 func (J *Joiner) Remove(s *Stream) bool {
 	reply := make(chan bool)
 
@@ -207,14 +211,17 @@ func (J *Joiner) Remove(s *Stream) bool {
 	return ok
 }
 
+// On enables the output from a Joiner.
 func (J *Joiner) On() {
 	J.ctrl <- true
 }
 
+// Off disables the output from a Joiner.
 func (J *Joiner) Off() {
 	J.ctrl <- false
 }
 
+// Close closes a Joiner.
 func (J *Joiner) Close() {
 	// Closing the control channel signals the loop to shutdown.
 	close(J.ctrl)

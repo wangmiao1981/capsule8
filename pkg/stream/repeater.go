@@ -16,6 +16,8 @@ package stream
 
 import "reflect"
 
+// Repeater is a stream that repeats elements from one input to multiple output
+// streams.
 type Repeater struct {
 	ctrl chan<- interface{}
 }
@@ -213,6 +215,7 @@ func NewRepeater(in *Stream) *Repeater {
 	}
 }
 
+// NewStream creates a new output stream from a Repeater stream.
 func (r *Repeater) NewStream() *Stream {
 	reply := make(chan *Stream)
 
@@ -225,6 +228,7 @@ func (r *Repeater) NewStream() *Stream {
 	return rep
 }
 
+// Close closes the input stream of a Repeater.
 func (r *Repeater) Close() {
 	// Closing the control channel signals to the looper to shutdown.
 	close(r.ctrl)

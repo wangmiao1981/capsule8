@@ -32,8 +32,10 @@ import (
 	"github.com/golang/glog"
 )
 
-//DockerSocketPath is the filesytem path to the docker socket
-const ApiPrefix = "/v1.24"
+// APIPrefix is the prefix used to make Docker requests
+const APIPrefix = "/v1.24"
+
+// DockerSocketPath is the filesytem path to the docker socket
 const DockerSocketPath = "/var/run/docker.sock"
 
 //ClientError encapsulates all errors
@@ -106,7 +108,7 @@ func (client *Client) Request(path, method string, values *url.Values) (resp *ht
 func (client *Client) DockerInfo() (*DockerInfo, error) {
 	var info DockerInfo
 
-	response, err := client.Request(ApiPrefix+"/info", "GET", nil)
+	response, err := client.Request(APIPrefix+"/info", "GET", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +130,7 @@ func (client *Client) DockerInfo() (*DockerInfo, error) {
 //EventChannel connects to the Docker socket and executes the docker events
 //command, this returns a channel for receiving those events, and an error
 func (client *Client) EventChannel() (chan DockerEventMessage, chan interface{}, error) {
-	response, err := client.Request(ApiPrefix+"/events", "GET", nil)
+	response, err := client.Request(APIPrefix+"/events", "GET", nil)
 
 	if err != nil {
 		return nil, nil, err
@@ -164,7 +166,7 @@ func (client *Client) EventChannel() (chan DockerEventMessage, chan interface{},
 //via it's /inspect URI
 func (client *Client) InspectContainer(containerID string) (*DockerContainerInfo, error) {
 	var info DockerContainerInfo
-	urlPath := ApiPrefix + "/containers/" + containerID + "/json"
+	urlPath := APIPrefix + "/containers/" + containerID + "/json"
 	response, err := client.Request(urlPath, "GET", nil)
 
 	if err != nil {
@@ -188,7 +190,7 @@ func (client *Client) InspectContainer(containerID string) (*DockerContainerInfo
 //ListContainers lists all of the running containers.
 func (client *Client) ListContainers() ([]DockerContainerListInfo, error) {
 	var info []DockerContainerListInfo
-	response, err := client.Request(ApiPrefix+"/containers/json", "GET", nil)
+	response, err := client.Request(APIPrefix+"/containers/json", "GET", nil)
 
 	if err != nil {
 		return nil, err
@@ -213,7 +215,7 @@ func (client *Client) ListContainers() ([]DockerContainerListInfo, error) {
 func (client *Client) InspectImage(imageID string) (*DockerImageInfo, error) {
 	var info DockerImageInfo
 
-	urlPath := ApiPrefix + "/images/" + imageID + "/json"
+	urlPath := APIPrefix + "/images/" + imageID + "/json"
 	response, err := client.Request(urlPath, "GET", nil)
 
 	if err != nil {
@@ -238,7 +240,7 @@ func (client *Client) InspectImage(imageID string) (*DockerImageInfo, error) {
 func (client *Client) InspectNetwork(networkID string) (*DockerNetworkInfo, error) {
 	var info DockerNetworkInfo
 
-	urlPath := ApiPrefix + "/networks/" + networkID
+	urlPath := APIPrefix + "/networks/" + networkID
 	response, err := client.Request(urlPath, "GET", nil)
 	if err != nil {
 		return nil, err
@@ -295,7 +297,7 @@ func (client *Client) ContainerTop(containerID string) ([]*ProcessEntry, error) 
 	var processes []*ProcessEntry
 	var processList DockerContainerProcessList
 
-	urlPath := ApiPrefix + "/containers/" + containerID + "/top"
+	urlPath := APIPrefix + "/containers/" + containerID + "/top"
 	response, err := client.Request(urlPath, "GET", nil)
 	if err != nil {
 		return nil, err
@@ -330,7 +332,7 @@ func (client *Client) ContainerTop(containerID string) ([]*ProcessEntry, error) 
 func (client *Client) ContainerDiff(containerID string) (fileList []DockerFileChange,
 	err error) {
 
-	urlPath := ApiPrefix + "/containers/" + containerID + "/changes"
+	urlPath := APIPrefix + "/containers/" + containerID + "/changes"
 	response, err := client.Request(urlPath, "GET", nil)
 	if err != nil {
 		return nil, err
@@ -351,7 +353,7 @@ func (client *Client) ContainerDiff(containerID string) (fileList []DockerFileCh
 
 //RestartContainer restarts the container with the given containerID.
 func (client *Client) RestartContainer(containerID string) (err error) {
-	urlPath := ApiPrefix + "/containers/" + containerID + "/restart"
+	urlPath := APIPrefix + "/containers/" + containerID + "/restart"
 	response, err := client.Request(urlPath, "POST", nil)
 	if err != nil {
 		return err
@@ -367,7 +369,7 @@ func (client *Client) KillContainer(containerID, signal string) (err error) {
 	query := url.Values{}
 	query.Set("signal", signal)
 
-	url := ApiPrefix + "/containers/" + containerID + "/kill"
+	url := APIPrefix + "/containers/" + containerID + "/kill"
 	resp, err := client.Request(url, "POST", &query)
 
 	if err != nil {

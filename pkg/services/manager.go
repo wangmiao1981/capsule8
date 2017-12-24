@@ -30,6 +30,7 @@ type Service interface {
 	Stop()
 }
 
+// ServiceManager controls an arbitrary number of running services.
 type ServiceManager struct {
 	sync.Mutex
 
@@ -40,16 +41,20 @@ type ServiceManager struct {
 	stopChan chan struct{}
 }
 
+// NewServiceManager creates a new ServiceManager instance.
 func NewServiceManager() *ServiceManager {
 	return &ServiceManager{}
 }
 
+// RegisterService registers a Service for management with a ServiceManager.
 func (sm *ServiceManager) RegisterService(service Service) {
 	sm.Lock()
 	sm.services = append(sm.services, service)
 	sm.Unlock()
 }
 
+// Run starts and runs all services registered with a ServiceManager. This
+// function does not return until the ServiceManager is stopped via Stop.
 func (sm *ServiceManager) Run() {
 	sigChan := make(chan os.Signal)
 	signal.Notify(sigChan, os.Interrupt)
@@ -96,6 +101,8 @@ func (sm *ServiceManager) Run() {
 	wg.Wait()
 }
 
+// Stop stops a running ServiceManager. If the ServiceManager is not running,
+// this function does nothing.
 func (sm *ServiceManager) Stop() {
 	sm.Lock()
 	defer sm.Unlock()

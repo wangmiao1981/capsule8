@@ -48,8 +48,8 @@ func (f *networkFilter) newNetworkEvent(eventType api.NetworkEventType, sample *
 	// If this even contains a network address, throw away any family that
 	// we do not support without doing the extra work of creating an event
 	// just to throw it away
-	family, have_family := data["sa_family"].(uint16)
-	if have_family {
+	family, haveFamily := data["sa_family"].(uint16)
+	if haveFamily {
 		switch family {
 		case 1: // AF_LOCAL
 			break
@@ -70,7 +70,7 @@ func (f *networkFilter) newNetworkEvent(eventType api.NetworkEventType, sample *
 	}
 	network := event.Event.(*api.Event_Network).Network
 
-	if have_family {
+	if haveFamily {
 		switch family {
 		case 1: // AF_LOCAL
 			network.Address = &api.NetworkAddress{

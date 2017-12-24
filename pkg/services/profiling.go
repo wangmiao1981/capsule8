@@ -25,22 +25,29 @@ import (
 	"github.com/golang/glog"
 )
 
+// ProfilingService is a service that returns profiling information via a
+// HTTP server.
 type ProfilingService struct {
 	server *http.Server
 
 	address string
 }
 
+// NewProfilingService creates a new ProfilingService instance bound to
+// a specified address.
 func NewProfilingService(address string) *ProfilingService {
 	return &ProfilingService{
 		address: address,
 	}
 }
 
+// Name returns a human-readable name for a ProfilingService.
 func (ps *ProfilingService) Name() string {
 	return "Profiling HTTP endpoint"
 }
 
+// Serve runs a ProfilingService. It sets up the HTTP endpoint and services
+// requests until the service is stopped. It runs on the calling Goroutine.
 func (ps *ProfilingService) Serve() error {
 	glog.V(1).Infof("Serving profiling HTTP endpoints on %s",
 		ps.address)
@@ -57,6 +64,7 @@ func (ps *ProfilingService) Serve() error {
 	return err
 }
 
+// Stop stops a running ProfilingService.
 func (ps *ProfilingService) Stop() {
 	ps.server.Shutdown(context.Background())
 }

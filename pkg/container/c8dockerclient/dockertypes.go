@@ -26,11 +26,9 @@ import (
 	"time"
 )
 
-const (
-	MOUNT_TYPE_BIND = "bind"
-)
+const mountTypeBind = "bind"
 
-//DockerInfo represents the information extracted from a docker info command.
+// DockerInfo represents the information extracted from a docker info command.
 type DockerInfo struct {
 	DockerID          string `json:"ID"`
 	DockerVersion     string `json:"ServerVersion"`
@@ -53,7 +51,7 @@ func (info *DockerInfo) String() string {
 	return output
 }
 
-//DockerEventActor represents the container or image that a Docker Event affects
+// DockerEventActor represents the container or image that a Docker Event affects
 type DockerEventActor struct {
 	ID         string            `json:"ID"`
 	Attributes map[string]string `json:"Attributes"`
@@ -68,7 +66,7 @@ func (actor *DockerEventActor) String() string {
 	return output
 }
 
-//DockerEventMessage encapsulates all information about a Docker event.
+// DockerEventMessage encapsulates all information about a Docker event.
 type DockerEventMessage struct {
 	Status   string `json:"status,omitempty"`
 	ID       string `json:"id,omitempty"`
@@ -93,8 +91,8 @@ func (event *DockerEventMessage) String() string {
 	return output
 }
 
-//DockerPortForward contains the container's host's forwarded IP and ports
-//e.g. port 2222 on an external IP of a host is actually passed to that container
+// DockerPortForward contains the container's host's forwarded IP and ports
+// e.g. port 2222 on an external IP of a host is actually passed to that container
 type DockerPortForward struct {
 	HostIP   string `json:"HostIp"`
 	HostPort string `json:"HostPort"`
@@ -134,8 +132,8 @@ func (settings *DockerContainerNetworkSettings) String() string {
 	return output
 }
 
-//DockerContainerState represents when the container was started and its ProcessID.
-//This is a sub-structure of DockerContainerInfo
+// DockerContainerState represents when the container was started and its ProcessID.
+// This is a sub-structure of DockerContainerInfo
 type DockerContainerState struct {
 	StartTime time.Time `json:"StartedAt"`
 	//PIDs in linux are limited to 4,000,000
@@ -143,7 +141,7 @@ type DockerContainerState struct {
 	ProcessID uint64 `json:"Pid"`
 }
 
-//DockerVolumeMounts represents the metadata associated.
+// DockerVolumeMounts represents the metadata associated.
 type DockerVolumeMounts struct {
 	Type        string `json:"Type"`        // this is the type of volume (bind)
 	Source      string `json:"Source"`      // this is the file path in the container host
@@ -154,7 +152,7 @@ type DockerVolumeMounts struct {
 	// propagated see https://lwn.net/Articles/689856/
 }
 
-//DockerContainerInfo represents the result of inspecting a docker container.
+// DockerContainerInfo represents the result of inspecting a docker container.
 type DockerContainerInfo struct {
 	Name            string                         `json:"Name"`
 	Path            string                         `json:"Path"`
@@ -183,9 +181,9 @@ func (info *DockerContainerInfo) String() string {
 	return output
 }
 
-//DockerContainerListInfo lists the ContainerID.
-//The information returned by ContainerList (/containers/json)
-//This type is used in container-enumeration at daemon start-up
+// DockerContainerListInfo lists the ContainerID.
+// The information returned by ContainerList (/containers/json)
+// This type is used in container-enumeration at daemon start-up
 type DockerContainerListInfo struct {
 	//The only field we need is ContainerID, we then Inspect it to
 	//get DockerContainerInfo
@@ -196,17 +194,17 @@ func (container *DockerContainerListInfo) String() string {
 	return "ContainerId: " + container.ContainerID + "\n"
 }
 
-//RootFSLayers represents the RootFS json object found when inspecting an image.
-//This represents all of the Image SHA1s that comprise the layers of this image.
+// RootFSLayers represents the RootFS json object found when inspecting an image.
+// This represents all of the Image SHA1s that comprise the layers of this image.
 type RootFSLayers struct {
 	Type   string   `json:"Type"`
 	Layers []string `json:"Layers"`
 }
 
-//DockerImageInfo represents the JSON object returned by ImageInspect
+// DockerImageInfo represents the JSON object returned by ImageInspect
 // (/images/<imageID>/json). The only field currently of interest at
 // time of writing is RepoTags
-//TODO: add layer information here
+// TODO: add layer information here
 type DockerImageInfo struct {
 	ImageID  string       `json:"ID"`
 	ParentID string       `json:"Parent"`
@@ -238,7 +236,7 @@ func (network *DockerNetworkInfo) String() string {
 	return output
 }
 
-//ProcessEntry represents a node in a process tree as found from docker top
+// ProcessEntry represents a node in a process tree as found from docker top
 type ProcessEntry struct {
 	User            string `json:"user"`
 	Command         string `json:"command"`
@@ -256,8 +254,8 @@ func (process *ProcessEntry) String() string {
 	return output
 }
 
-//DockerContainerProcessList is a helper struct for parsing the json
-//from Docker's Top command
+// DockerContainerProcessList is a helper struct for parsing the json
+// from Docker's Top command
 type DockerContainerProcessList struct {
 	Processes [][]string `json:"Processes"`
 	Titles    []string   `json:"Titles"`
@@ -281,12 +279,12 @@ func (processList *DockerContainerProcessList) String() string {
 }
 
 const (
-	DIFF_MODIFIED uint8 = 0
-	DIFF_ADDED    uint8 = 1
-	DIFF_DELETED  uint8 = 2
+	diffModified uint8 = 0
+	diffAdded    uint8 = 1
+	diffDeleted  uint8 = 2
 )
 
-//DockerFileChange is the json object returned by docker diff
+// DockerFileChange is the json object returned by docker diff
 type DockerFileChange struct {
 	Kind uint8  `json:"kind"`
 	Path string `json:"path"`

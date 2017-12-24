@@ -248,6 +248,9 @@ func PerfEventDir() string {
 	return ""
 }
 
+// MountTempFS mounts a filesystem. It is primarily a wrapper around unix.Mount,
+// but it also ensures that the mountpoint exists before attempting to mount to
+// it.
 func MountTempFS(source string, target string, fstype string, flags uintptr, data string) error {
 	// Make sure that `target` exists.
 	err := os.MkdirAll(target, 0500)
@@ -265,6 +268,9 @@ func MountTempFS(source string, target string, fstype string, flags uintptr, dat
 	return nil
 }
 
+// UnmountTempFS unmounts a filesystem. It is primarily a wrapper around
+// unix.Unmount, but it also removes the mountpoint after the filesystem
+// is unmounted.
 func UnmountTempFS(dir string, fstype string) error {
 	err := unix.Unmount(dir, 0)
 	if err != nil {
