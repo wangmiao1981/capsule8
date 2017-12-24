@@ -41,7 +41,7 @@ const (
 	dtU64
 )
 
-type TraceEventField struct {
+type traceEventField struct {
 	FieldName string
 	TypeName  string
 	Offset    int
@@ -66,7 +66,7 @@ func writeTraceCommand(name string, cmd string) error {
 	return err
 }
 
-func AddKprobe(name string, address string, onReturn bool, output string) (string, error) {
+func addKprobe(name string, address string, onReturn bool, output string) (string, error) {
 	var (
 		cmd        string
 		definition string
@@ -167,69 +167,11 @@ func AddKprobe(name string, address string, onReturn bool, output string) (strin
 	return name, nil
 }
 
-func RemoveKprobe(name string) error {
+func removeKprobe(name string) error {
 	return writeTraceCommand("kprobe_events", fmt.Sprintf("-:%s", name))
 }
 
-func GetAvailableTraceEvents() ([]string, error) {
-	var events []string
-
-	filename := filepath.Join(sys.TracingDir(), "available_events")
-	file, err := os.OpenFile(filename, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		events = append(events, scanner.Text())
-	}
-	err = scanner.Err()
-	if err != nil {
-		return nil, err
-	}
-
-	return events, nil
-}
-
-func GetTraceEventID(name string) (uint16, error) {
-	filename := filepath.Join(sys.TracingDir(), "events", name, "id")
-	file, err := os.OpenFile(filename, os.O_RDONLY, 0)
-	if err != nil {
-		glog.Infof("Couldn't open trace event %s: %v",
-			filename, err)
-		return 0, err
-	}
-	defer file.Close()
-
-	return ReadTraceEventID(name, file)
-}
-
-func ReadTraceEventID(name string, reader io.Reader) (uint16, error) {
-	//
-	// The tracepoint id is a uint16, so we can assume it'll be
-	// no longer than 5 characters plus a newline.
-	//
-	var buf [6]byte
-	_, err := reader.Read(buf[:])
-	if err != nil {
-		glog.Infof("Couldn't read trace event id: %v", err)
-		return 0, err
-	}
-
-	idStr := strings.TrimRight(string(buf[:]), "\n\x00")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		glog.Infof("Couldn't parse trace event id %s: %v",
-			string(buf[:]), err)
-		return 0, err
-	}
-
-	return uint16(id), nil
-}
-
-func (field *TraceEventField) setTypeFromSizeAndSign(isArray bool, arraySize int) (bool, error) {
+func (field *traceEventField) setTypeFromSizeAndSign(isArray bool, arraySize int) (bool, error) {
 	if isArray {
 		if arraySize == -1 {
 			// If this is an array of unknown size, we have to
@@ -275,7 +217,7 @@ func (field *TraceEventField) setTypeFromSizeAndSign(isArray bool, arraySize int
 	return false, nil
 }
 
-func (field *TraceEventField) parseTypeName(s string, isArray bool, arraySize int) (bool, error) {
+func (field *traceEventField) parseTypeName(s string, isArray bool, arraySize int) (bool, error) {
 	if strings.HasPrefix(s, "const ") {
 		s = s[6:]
 	}
@@ -445,9 +387,9 @@ func (field *TraceEventField) parseTypeName(s string, isArray bool, arraySize in
 	}
 }
 
-var linuxArraySizeSanityWarning bool = false
+var linuxArraySizeSanityWarning = false
 
-func (field *TraceEventField) parseTypeAndName(s string) (bool, error) {
+func (field *traceEventField) parseTypeAndName(s string) (bool, error) {
 	if strings.HasPrefix(s, "__data_loc") {
 		s = s[11:]
 		field.dataLocSize = field.Size
@@ -540,11 +482,11 @@ func (field *TraceEventField) parseTypeAndName(s string) (bool, error) {
 	return false, nil
 }
 
-func parseTraceEventField(line string) (*TraceEventField, error) {
+func parseTraceEventField(line string) (*traceEventField, error) {
 	var err error
 	var fieldString string
 
-	field := &TraceEventField{}
+	field := &traceEventField{}
 	fields := strings.Split(strings.TrimSpace(line), ";")
 	for i := 0; i < len(fields); i++ {
 		if fields[i] == "" {
@@ -587,7 +529,7 @@ func parseTraceEventField(line string) (*TraceEventField, error) {
 	return field, nil
 }
 
-func GetTraceEventFormat(name string) (uint16, map[string]TraceEventField, error) {
+func getTraceEventFormat(name string) (uint16, map[string]traceEventField, error) {
 	filename := filepath.Join(sys.TracingDir(), "events", name, "format")
 	file, err := os.OpenFile(filename, os.O_RDONLY, 0)
 	if err != nil {
@@ -595,14 +537,14 @@ func GetTraceEventFormat(name string) (uint16, map[string]TraceEventField, error
 	}
 	defer file.Close()
 
-	return ReadTraceEventFormat(name, file)
+	return readTraceEventFormat(name, file)
 }
 
-func ReadTraceEventFormat(name string, reader io.Reader) (uint16, map[string]TraceEventField, error) {
+func readTraceEventFormat(name string, reader io.Reader) (uint16, map[string]traceEventField, error) {
 	var eventID uint16
 
 	inFormat := false
-	fields := make(map[string]TraceEventField)
+	fields := make(map[string]traceEventField)
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		rawLine := scanner.Text()

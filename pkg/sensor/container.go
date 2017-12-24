@@ -38,7 +38,7 @@ var containerEventTypes = expression.FieldTypeMap{
 	"exit_core_dumped": api.ValueType_BOOL,
 }
 
-type ContainerEventRepeater struct {
+type containerEventRepeater struct {
 	repeater *stream.Repeater
 	sensor   *Sensor
 
@@ -74,7 +74,7 @@ func newContainerDestroyed(cID string) *api.ContainerEvent {
 	}
 }
 
-func (cer *ContainerEventRepeater) translateContainerEvents(e interface{}) interface{} {
+func (cer *containerEventRepeater) translateContainerEvents(e interface{}) interface{} {
 	ce := e.(*container.Event)
 	var ece *api.ContainerEvent
 
@@ -190,13 +190,13 @@ func (cer *ContainerEventRepeater) translateContainerEvents(e interface{}) inter
 	return nil
 }
 
-func NewContainerEventRepeater(sensor *Sensor) (*ContainerEventRepeater, error) {
+func newContainerEventRepeater(sensor *Sensor) (*containerEventRepeater, error) {
 	ces, err := container.NewEventStream()
 	if err != nil {
 		return nil, err
 	}
 
-	cer := &ContainerEventRepeater{
+	cer := &containerEventRepeater{
 		sensor: sensor,
 	}
 
@@ -230,7 +230,7 @@ type containerEventFilter struct {
 	expr *expression.Expression
 }
 
-func (cer *ContainerEventRepeater) NewEventStream(sub *api.Subscription) (*stream.Stream, error) {
+func (cer *containerEventRepeater) newEventStream(sub *api.Subscription) (*stream.Stream, error) {
 	filters := make(map[api.ContainerEventType]*containerEventFilter)
 	exprs := make(map[api.ContainerEventType]*api.Expression)
 	for _, cef := range sub.EventFilter.ContainerEvents {
@@ -319,7 +319,7 @@ func newContainerFilter(ecf *api.ContainerFilter) *containerFilter {
 	cf := &containerFilter{}
 
 	for _, v := range ecf.Ids {
-		cf.addContainerId(v)
+		cf.addContainerID(v)
 	}
 
 	for _, v := range ecf.Names {
@@ -327,7 +327,7 @@ func newContainerFilter(ecf *api.ContainerFilter) *containerFilter {
 	}
 
 	for _, v := range ecf.ImageIds {
-		cf.addImageId(v)
+		cf.addImageID(v)
 	}
 
 	for _, v := range ecf.ImageNames {
@@ -344,7 +344,7 @@ type containerFilter struct {
 	imageGlobs     map[string]glob.Glob
 }
 
-func (c *containerFilter) addContainerId(cid string) {
+func (c *containerFilter) addContainerID(cid string) {
 	if len(cid) > 0 {
 		if c.containerIds == nil {
 			c.containerIds = make(map[string]bool)
@@ -353,7 +353,7 @@ func (c *containerFilter) addContainerId(cid string) {
 	}
 }
 
-func (c *containerFilter) removeContainerId(cid string) {
+func (c *containerFilter) removeContainerID(cid string) {
 	delete(c.containerIds, cid)
 }
 
@@ -366,7 +366,7 @@ func (c *containerFilter) addContainerName(cname string) {
 	}
 }
 
-func (c *containerFilter) addImageId(iid string) {
+func (c *containerFilter) addImageID(iid string) {
 	if len(iid) > 0 {
 		if c.imageIds == nil {
 			c.imageIds = make(map[string]bool)
@@ -414,19 +414,19 @@ func (c *containerFilter) FilterFunc(i interface{}) bool {
 		//
 
 		if c.containerNames[cev.Name] {
-			c.addContainerId(e.ContainerId)
+			c.addContainerID(e.ContainerId)
 			return true
 		}
 
 		if c.imageIds[cev.ImageId] {
-			c.addContainerId(e.ContainerId)
+			c.addContainerID(e.ContainerId)
 			return true
 		}
 
 		if c.imageGlobs != nil && cev.ImageName != "" {
 			for _, g := range c.imageGlobs {
 				if g.Match(cev.ImageName) {
-					c.addContainerId(e.ContainerId)
+					c.addContainerID(e.ContainerId)
 					return true
 				}
 			}
@@ -443,7 +443,7 @@ func (c *containerFilter) DoFunc(i interface{}) {
 	case *api.Event_Container:
 		cev := e.GetContainer()
 		if cev.Type == api.ContainerEventType_CONTAINER_EVENT_TYPE_DESTROYED {
-			c.removeContainerId(e.ContainerId)
+			c.removeContainerID(e.ContainerId)
 		}
 	}
 }

@@ -36,7 +36,7 @@ BenchmarkContainerCacheMissParallel-8   	  300000	      5789 ns/op
 
 const arrayTaskCacheSize = 32768
 
-var values []task = []task{
+var values = []task{
 	{1, 2, 3, 0x120011, "foo", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2"},
 	{1, 2, 3, 0x120011, "bar", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2"},
 	{1, 2, 3, 0x120011, "baz", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2"},
@@ -56,21 +56,21 @@ func TestCaches(t *testing.T) {
 	for i := arrayTaskCacheSize - 1; i >= 0; i-- {
 		var tk task
 		if arrayCache.LookupTask(i, &tk) {
-			cid := tk.containerId
+			cid := tk.containerID
 
-			if cid != values[i%4].containerId {
+			if cid != values[i%4].containerID {
 				t.Fatalf("Expected %s for pid %d, got %s",
-					values[i%4].containerId, i, cid)
+					values[i%4].containerID, i, cid)
 			}
 
 		}
 
 		if mapCache.LookupTask(i, &tk) {
-			cid := tk.containerId
+			cid := tk.containerID
 
-			if cid != values[i%4].containerId {
+			if cid != values[i%4].containerID {
 				t.Fatalf("Expected %s for pid %d, got %s",
-					values[i%4].containerId, i, cid)
+					values[i%4].containerID, i, cid)
 			}
 
 		}

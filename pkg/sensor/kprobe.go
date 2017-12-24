@@ -35,7 +35,7 @@ type kprobeFilter struct {
 	sensor    *Sensor
 }
 
-var validSymbolRegex *regexp.Regexp = regexp.MustCompile("^[A-Za-z_]{1}[\\w]*$")
+var validSymbolRegex = regexp.MustCompile("^[A-Za-z_]{1}[\\w]*$")
 
 func newKprobeFilter(kef *api.KernelFunctionCallFilter) *kprobeFilter {
 	// The symbol must begin with [A-Za-z_] and contain only [A-Za-z0-9_]

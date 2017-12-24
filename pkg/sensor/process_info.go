@@ -19,7 +19,7 @@ package sensor
 // system-global EventMonitor to keep it up-to-date. The cache also monitors
 // for runc container starts to identify the containerID for a given PID
 // namespace. Process information gathered by the cache may be retrieved via
-// the ProcessId and ProcessContainerId methods.
+// the ProcessID and ProcessContainerID methods.
 //
 // glog levels used:
 //   10 = cache operation level tracing for debugging
@@ -58,7 +58,7 @@ var (
 type taskCache interface {
 	LookupTask(int, *task) bool
 	InsertTask(int, task)
-	SetTaskContainerId(int, string)
+	SetTaskContainerID(int, string)
 	SetTaskCredentials(int, cred)
 	SetTaskCommandLine(int, []string)
 }
@@ -91,9 +91,9 @@ func (c *arrayTaskCache) InsertTask(pid int, t task) {
 	c.entries[pid] = t
 }
 
-func (c *arrayTaskCache) SetTaskContainerId(pid int, cID string) {
-	glog.V(10).Infof("SetTaskContainerId(%d) = %s", pid, cID)
-	c.entries[pid].containerId = cID
+func (c *arrayTaskCache) SetTaskContainerID(pid int, cID string) {
+	glog.V(10).Infof("SetTaskContainerID(%d) = %s", pid, cID)
+	c.entries[pid].containerID = cID
 }
 
 func (c *arrayTaskCache) SetTaskCredentials(pid int, creds cred) {
@@ -142,14 +142,14 @@ func (c *mapTaskCache) InsertTask(pid int, t task) {
 	c.entries[pid] = t
 }
 
-func (c *mapTaskCache) SetTaskContainerId(pid int, cID string) {
-	glog.V(10).Infof("SetTaskContainerId(%d) = %s", pid, cID)
+func (c *mapTaskCache) SetTaskContainerID(pid int, cID string) {
+	glog.V(10).Infof("SetTaskContainerID(%d) = %s", pid, cID)
 
 	c.Lock()
 	defer c.Unlock()
 	t, ok := c.entries[pid]
 	if ok {
-		t.containerId = cID
+		t.containerID = cID
 		c.entries[pid] = t
 	}
 }
@@ -178,11 +178,16 @@ func (c *mapTaskCache) SetTaskCommandLine(pid int, commandLine []string) {
 	}
 }
 
+// ProcessInfoCache is an object that caches process information. It is
+// maintained automatically via an existing sensor object.
 type ProcessInfoCache struct {
 	sensor *Sensor
 	cache  taskCache
 }
 
+// NewProcessInfoCache creates a new process information cache object. An
+// existing sensor object is required in order for the process info cache to
+// able to install its probes to monitor the system to maintain the cache.
 func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	once.Do(func() {
 		procFS = sys.HostProcFS()
@@ -215,7 +220,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		commitCredsArgs, cache.decodeCommitCreds)
 
 	// Attach a probe for task_renamse involving the runc
-	// init processes to trigger containerId lookups
+	// init processes to trigger containerID lookups
 	f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
 	eventName = "task/task_rename"
 	_, err = sensor.monitor.RegisterTracepoint(eventName,
@@ -272,10 +277,10 @@ func (pc *ProcessInfoCache) lookupLeader(pid int) (task, bool) {
 	return t, t.pid == t.tgid
 }
 
-// ProcessId returns the unique ID for the thread group of the process
+// ProcessID returns the unique ID for the thread group of the process
 // indicated by the given PID. This process ID is identical whether it
 // is derived inside or outside a container.
-func (pc *ProcessInfoCache) ProcessId(pid int) (string, bool) {
+func (pc *ProcessInfoCache) ProcessID(pid int) (string, bool) {
 	leader, ok := pc.lookupLeader(pid)
 	if ok {
 		return proc.DeriveUniqueID(leader.pid, leader.ppid), true
@@ -284,13 +289,13 @@ func (pc *ProcessInfoCache) ProcessId(pid int) (string, bool) {
 	return "", false
 }
 
-// processContainerId returns the container ID that the process
+// ProcessContainerID returns the container ID that the process
 // indicated by the given host PID.
-func (pc *ProcessInfoCache) ProcessContainerId(pid int) (string, bool) {
+func (pc *ProcessInfoCache) ProcessContainerID(pid int) (string, bool) {
 	var t task
 	for p := pid; pc.cache.LookupTask(p, &t); p = t.ppid {
-		if len(t.containerId) > 0 {
-			return t.containerId, true
+		if len(t.containerID) > 0 {
+			return t.containerID, true
 		}
 	}
 
@@ -345,7 +350,7 @@ type task struct {
 	creds cred
 
 	// Unique ID for the container instance
-	containerId string
+	containerID string
 }
 
 type cred struct {
@@ -383,18 +388,17 @@ func (pc *ProcessInfoCache) decodeNewTask(
 	command := string(comm2)
 
 	var tgid int
-	var containerId string
 
-	const CLONE_THREAD = 0x10000
-	if (cloneFlags & CLONE_THREAD) != 0 {
+	const cloneThread = 0x10000
+	if (cloneFlags & cloneThread) != 0 {
 		tgid = parentPid
 	} else {
 		// This is a new thread group leader, tgid is the new pid
 		tgid = childPid
 	}
 
-	// Inherit containerId from parent
-	containerId, _ = pc.ProcessContainerId(parentPid)
+	// Inherit containerID from parent
+	containerID, _ := pc.ProcessContainerID(parentPid)
 
 	t := task{
 		pid:         childPid,
@@ -402,7 +406,7 @@ func (pc *ProcessInfoCache) decodeNewTask(
 		tgid:        tgid,
 		cloneFlags:  cloneFlags,
 		command:     command,
-		containerId: containerId,
+		containerID: containerID,
 	}
 
 	pc.cache.InsertTask(t.pid, t)
@@ -454,21 +458,21 @@ func (pc *ProcessInfoCache) decodeRuncTaskRename(
 	var t task
 	pc.cache.LookupTask(pid, &t)
 
-	if len(t.containerId) == 0 {
-		containerId, err := procFS.ContainerID(pid)
-		glog.V(10).Infof("containerID(%d) = %s", pid, containerId)
-		if err == nil && len(containerId) > 0 {
-			pc.cache.SetTaskContainerId(pid, containerId)
+	if len(t.containerID) == 0 {
+		containerID, err := procFS.ContainerID(pid)
+		glog.V(10).Infof("containerID(%d) = %s", pid, containerID)
+		if err == nil && len(containerID) > 0 {
+			pc.cache.SetTaskContainerID(pid, containerID)
 		}
 	} else {
 		var parent task
 		pc.cache.LookupTask(t.ppid, &parent)
 
-		if len(parent.containerId) == 0 {
-			containerId, err := procFS.ContainerID(parent.pid)
-			glog.V(10).Infof("containerID(%d) = %s", pid, containerId)
-			if err == nil && len(containerId) > 0 {
-				pc.cache.SetTaskContainerId(parent.pid, containerId)
+		if len(parent.containerID) == 0 {
+			containerID, err := procFS.ContainerID(parent.pid)
+			glog.V(10).Infof("containerID(%d) = %s", pid, containerID)
+			if err == nil && len(containerID) > 0 {
+				pc.cache.SetTaskContainerID(parent.pid, containerID)
 			}
 
 		}

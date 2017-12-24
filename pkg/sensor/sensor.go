@@ -38,12 +38,12 @@ import (
 )
 
 // Number of random bytes to generate for Sensor Id
-const sensorIdLengthBytes = 32
+const sensorIDLengthBytes = 32
 
-// Sensor represents the state of the singleton Sensor instance
+// Sensor represents the state of a sensor instance.
 type Sensor struct {
 	// Unique Id for this sensor. Sensor Ids are ephemeral.
-	Id string
+	ID string
 
 	// Sensor-unique event sequence number. Each event sent from this
 	// sensor to any subscription has a unique sequence number for the
@@ -58,7 +58,7 @@ type Sensor struct {
 	Metrics MetricsCounters
 
 	// Repeater used for container event subscriptions
-	containerEventRepeater *ContainerEventRepeater
+	containerEventRepeater *containerEventRepeater
 
 	// If temporary fs mounts are made at startup, they're stored here.
 	perfEventMountPoint string
@@ -80,22 +80,23 @@ type Sensor struct {
 	dummySyscallEventCount int64
 }
 
+// NewSensor creates a new Sensor instance.
 func NewSensor() (*Sensor, error) {
-	randomBytes := make([]byte, sensorIdLengthBytes)
+	randomBytes := make([]byte, sensorIDLengthBytes)
 	rand.Read(randomBytes)
-	sensorId := hex.EncodeToString(randomBytes[:])
+	sensorID := hex.EncodeToString(randomBytes[:])
 
 	ts := unix.Timespec{}
 	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
 	bootMonotimeNanos := ts.Nsec + (ts.Sec * int64(time.Second))
 
 	s := &Sensor{
-		Id:                sensorId,
+		ID:                sensorID,
 		bootMonotimeNanos: bootMonotimeNanos,
 		eventMap:          newSafeSubscriptionMap(),
 	}
 
-	cer, err := NewContainerEventRepeater(s)
+	cer, err := newContainerEventRepeater(s)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +105,7 @@ func NewSensor() (*Sensor, error) {
 	return s, nil
 }
 
+// Start starts a sensor instance running.
 func (s *Sensor) Start() error {
 	var err error
 
@@ -158,6 +160,7 @@ func (s *Sensor) Start() error {
 	return nil
 }
 
+// Stop stops a running sensor instance.
 func (s *Sensor) Stop() {
 	if s.monitor != nil {
 		glog.V(2).Info("Stopping sensor-global EventMonitor")
@@ -242,6 +245,8 @@ func (s *Sensor) nextSequenceNumber() uint64 {
 	return s.sequenceNumber
 }
 
+// NewEvent creates a new API Event instance with common sensor-specific fields
+// correctly populated.
 func (s *Sensor) NewEvent() *api.Event {
 	monotime := s.currentMonotimeNanos()
 	sequenceNumber := s.nextSequenceNumber()
@@ -249,29 +254,33 @@ func (s *Sensor) NewEvent() *api.Event {
 	var b []byte
 	buf := bytes.NewBuffer(b)
 
-	binary.Write(buf, binary.LittleEndian, s.Id)
+	binary.Write(buf, binary.LittleEndian, s.ID)
 	binary.Write(buf, binary.LittleEndian, sequenceNumber)
 	binary.Write(buf, binary.LittleEndian, monotime)
 
 	h := sha256.Sum256(buf.Bytes())
-	eventId := hex.EncodeToString(h[:])
+	eventID := hex.EncodeToString(h[:])
 
 	s.Metrics.Events++
 
 	return &api.Event{
-		Id:                   eventId,
-		SensorId:             s.Id,
+		Id:                   eventID,
+		SensorId:             s.ID,
 		SensorMonotimeNanos:  monotime,
 		SensorSequenceNumber: sequenceNumber,
 	}
 }
 
-func (s *Sensor) NewEventFromContainer(containerId string) *api.Event {
+// NewEventFromContainer creates a new API Event instance using a specific
+// container ID.
+func (s *Sensor) NewEventFromContainer(containerID string) *api.Event {
 	e := s.NewEvent()
-	e.ContainerId = containerId
+	e.ContainerId = containerID
 	return e
 }
 
+// NewEventFromSample creates a new API Event instance using perf_event sample
+// information.
 func (s *Sensor) NewEventFromSample(sample *perf.SampleRecord,
 	data perf.TraceEventSampleData) *api.Event {
 
@@ -284,19 +293,19 @@ func (s *Sensor) NewEventFromSample(sample *perf.SampleRecord,
 	e.ProcessPid = data["common_pid"].(int32)
 	e.Cpu = int32(sample.CPU)
 
-	processId, ok := s.processCache.ProcessId(int(e.ProcessPid))
+	processID, ok := s.processCache.ProcessID(int(e.ProcessPid))
 	if ok {
-		e.ProcessId = processId
+		e.ProcessId = processID
 	}
 
 	// Add an associated containerId
-	containerId, ok := s.processCache.ProcessContainerId(int(e.ProcessPid))
+	containerID, ok := s.processCache.ProcessContainerID(int(e.ProcessPid))
 	if ok {
 		// Add the container Id if we have it and then try
 		// using it to look up additional container info
-		e.ContainerId = containerId
+		e.ContainerId = containerID
 
-		containerInfo := container.GetInfo(containerId)
+		containerInfo := container.GetInfo(containerID)
 		if containerInfo != nil {
 			e.ContainerName = containerInfo.Name
 			e.ImageId = containerInfo.ImageID
@@ -494,7 +503,7 @@ func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) 
 	}
 
 	if len(sub.EventFilter.ContainerEvents) > 0 {
-		ces, err := s.containerEventRepeater.NewEventStream(sub)
+		ces, err := s.containerEventRepeater.newEventStream(sub)
 		if err != nil {
 			joiner.Close()
 			return nil, err

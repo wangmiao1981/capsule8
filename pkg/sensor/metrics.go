@@ -14,7 +14,7 @@
 
 package sensor
 
-// Counters used for metrics
+// MetricsCounters is used for tracking metrics information in the sensor
 type MetricsCounters struct {
 	// Number of events created during the sample period
 	Events uint64

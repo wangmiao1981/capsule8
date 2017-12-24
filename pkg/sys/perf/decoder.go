@@ -22,17 +22,22 @@ import (
 	"sync/atomic"
 )
 
+// TraceEventSampleData is a type alias for map[string]interface{}, which is
+// the representation of sample data parsed from a Linux kernel sample.
 type TraceEventSampleData map[string]interface{}
 
+// TraceEventDecoderFn is the signature of a function to call to decode a
+// sample. The first argument is the sample to be decoded, and the second
+// is the parsed sample data.
 type TraceEventDecoderFn func(*SampleRecord, TraceEventSampleData) (interface{}, error)
 
 type traceEventDecoder struct {
-	fields    map[string]TraceEventField
+	fields    map[string]traceEventField
 	decoderfn TraceEventDecoderFn
 }
 
 func newTraceEventDecoder(name string, fn TraceEventDecoderFn) (*traceEventDecoder, uint16, error) {
-	id, fields, err := GetTraceEventFormat(name)
+	id, fields, err := getTraceEventFormat(name)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -107,7 +112,7 @@ func (d *traceEventDecoder) decodeRawData(rawData []byte) (TraceEventSampleData,
 			dataLength = arraySize * field.dataTypeSize
 		}
 
-		var array []interface{} = make([]interface{}, arraySize)
+		var array = make([]interface{}, arraySize)
 		for i := 0; i < arraySize; i++ {
 			array[i], err = decodeDataType(field.dataType, rawData[dataOffset:])
 			if err != nil {
@@ -138,12 +143,12 @@ func (dm *decoderMap) add(name string, id uint16, decoder *traceEventDecoder) {
 	dm.names[name] = id
 }
 
-type TraceEventDecoderMap struct {
+type traceEventDecoderMap struct {
 	sync.Mutex              // used only by writers
 	active     atomic.Value // *decoderMap
 }
 
-func (m *TraceEventDecoderMap) getDecoderMap() *decoderMap {
+func (m *traceEventDecoderMap) getDecoderMap() *decoderMap {
 	value := m.active.Load()
 	if value == nil {
 		return nil
@@ -151,13 +156,13 @@ func (m *TraceEventDecoderMap) getDecoderMap() *decoderMap {
 	return value.(*decoderMap)
 }
 
-func NewTraceEventDecoderMap() *TraceEventDecoderMap {
-	return &TraceEventDecoderMap{}
+func newTraceEventDecoderMap() *traceEventDecoderMap {
+	return &traceEventDecoderMap{}
 }
 
 // Add a decoder "in-place". i.e., don't copy the decoder map before update
 // No synchronization is used. Assumes the caller has adequate protection
-func (m *TraceEventDecoderMap) addDecoderInPlace(name string, fn TraceEventDecoderFn) (uint16, error) {
+func (m *traceEventDecoderMap) addDecoderInPlace(name string, fn TraceEventDecoderFn) (uint16, error) {
 	decoder, id, err := newTraceEventDecoder(name, fn)
 	if err != nil {
 		return 0, err
@@ -176,7 +181,7 @@ func (m *TraceEventDecoderMap) addDecoderInPlace(name string, fn TraceEventDecod
 // Add a decoder safely. Proper synchronization is used to prevent multiple
 // writers from stomping on each other while allowing readers to always
 // operate without locking
-func (m *TraceEventDecoderMap) AddDecoder(name string, fn TraceEventDecoderFn) (uint16, error) {
+func (m *traceEventDecoderMap) AddDecoder(name string, fn TraceEventDecoderFn) (uint16, error) {
 	decoder, id, err := newTraceEventDecoder(name, fn)
 	if err != nil {
 		return 0, err
@@ -204,7 +209,7 @@ func (m *TraceEventDecoderMap) AddDecoder(name string, fn TraceEventDecoderFn) (
 
 // Remove a decoder "in-place". i.e., don't copy the decoder map before update
 // No synchronization is used. Assumes the caller has adequate protection
-func (m *TraceEventDecoderMap) removeDecoderInPlace(name string) {
+func (m *traceEventDecoderMap) removeDecoderInPlace(name string) {
 	dm := m.getDecoderMap()
 	if dm == nil {
 		return
@@ -220,7 +225,7 @@ func (m *TraceEventDecoderMap) removeDecoderInPlace(name string) {
 // Remove a decoder safely. Proper synchronization is used to prevent multiple
 // writers from stomping on each other while allowing readers to always
 // operate without locking
-func (m *TraceEventDecoderMap) RemoveDecoder(name string) {
+func (m *traceEventDecoderMap) RemoveDecoder(name string) {
 	dm := m.getDecoderMap()
 	if dm == nil {
 		return
@@ -250,7 +255,7 @@ func (m *TraceEventDecoderMap) RemoveDecoder(name string) {
 	}
 }
 
-func (m *TraceEventDecoderMap) getDecoder(eventType uint16) *traceEventDecoder {
+func (m *traceEventDecoderMap) getDecoder(eventType uint16) *traceEventDecoder {
 	dm := m.getDecoderMap()
 	if dm == nil {
 		return nil
@@ -258,7 +263,7 @@ func (m *TraceEventDecoderMap) getDecoder(eventType uint16) *traceEventDecoder {
 	return dm.decoders[eventType]
 }
 
-func (m *TraceEventDecoderMap) DecodeSample(sample *SampleRecord) (interface{}, error) {
+func (m *traceEventDecoderMap) DecodeSample(sample *SampleRecord) (interface{}, error) {
 	eventType := uint16(binary.LittleEndian.Uint64(sample.RawData))
 	decoder := m.getDecoder(eventType)
 	if decoder == nil {

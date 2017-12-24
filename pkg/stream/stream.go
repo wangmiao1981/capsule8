@@ -227,6 +227,7 @@ func Ticker(d time.Duration) *Stream {
 // data channel closes, the operator closes its downstream data channel also.
 //
 
+// DoFunc is the signature of a function that is called by Do
 type DoFunc func(interface{})
 
 // Do adds an operator in the stream that calls the given function for
@@ -256,6 +257,7 @@ func Do(in *Stream, f DoFunc) *Stream {
 	}
 }
 
+// MapFunc is the signature of a function that is called by Map
 type MapFunc func(interface{}) interface{}
 
 // Map adds an operator in the stream that calls the given function for
@@ -284,8 +286,11 @@ func Map(in *Stream, f MapFunc) *Stream {
 	}
 }
 
+// FilterFunc is the signature of a function that is called by Filter
 type FilterFunc func(interface{}) bool
 
+// Filter adds a filter to a stream. For each element in the stream, a false
+// return from the filter function causes the element to be discarded.
 func Filter(in *Stream, f FilterFunc) *Stream {
 	data := make(chan interface{}, config.Sensor.ChannelBufferLength)
 
@@ -601,7 +606,7 @@ func OnOffValve(in *Stream) (*Stream, chan<- bool) {
 	return s, ctrl
 }
 
-// Throttles the number of events emitted by the stream
+// Throttle limits the number of events emitted by the stream
 func Throttle(in *Stream, mod api.ThrottleModifier) *Stream {
 	data := make(chan interface{})
 
@@ -640,7 +645,7 @@ func Throttle(in *Stream, mod api.ThrottleModifier) *Stream {
 	}
 }
 
-// Limits the number of results returned
+// Limit limits the number of results returned
 func Limit(in *Stream, mod api.LimitModifier) *Stream {
 	data := make(chan interface{})
 
@@ -648,7 +653,7 @@ func Limit(in *Stream, mod api.LimitModifier) *Stream {
 		defer close(data)
 
 		// Keep a count of how many results have been returned
-		var count int64 = 0
+		var count int64
 		for {
 			// Only send a result up to the specified `Limit`
 			if count < mod.Limit {
@@ -678,6 +683,7 @@ func Limit(in *Stream, mod api.LimitModifier) *Stream {
 // typically used to aggregate a value over the entire stream.
 // ----------------------------------------------------------------------------
 
+// ReduceFunc is the signature of a function called by Reduce.
 type ReduceFunc func(interface{}, interface{}) interface{}
 
 // Reduce adds a terminator onto the stream that accumulates a value using

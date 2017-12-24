@@ -77,6 +77,8 @@ func getDockerContainerDir() string {
 // Docker container configuration file format V2
 // ----------------------------------------------------------------------------
 
+// DockerConfigState is a structure representing the configuration state of a
+// Docker container.
 type DockerConfigState struct {
 	Running           bool      `json:"Running"`
 	Paused            bool      `json:"Paused"`
@@ -91,6 +93,7 @@ type DockerConfigState struct {
 	ExitCode          int       `json:"ExitCode"`
 }
 
+// DockerConfigConfig is a structure representing a Docker image.
 type DockerConfigConfig struct {
 	Hostname   string `json:"Hostname"`
 	Domainname string `json:"Domainname"`
@@ -101,6 +104,7 @@ type DockerConfigConfig struct {
 	// XXX: ...
 }
 
+// DockerConfigV2 is a structure representing a Docker container.
 type DockerConfigV2 struct {
 	// XXX: Fill in as needed...
 	ID     string             `json:"ID"`

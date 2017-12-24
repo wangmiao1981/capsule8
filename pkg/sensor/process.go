@@ -49,9 +49,9 @@ func (f *processFilter) decodeSchedProcessFork(sample *perf.SampleRecord, data p
 		},
 	}
 
-	childId, ok := f.sensor.processCache.ProcessId(int(childPid))
+	childID, ok := f.sensor.processCache.ProcessID(int(childPid))
 	if ok {
-		ev.GetProcess().ForkChildId = childId
+		ev.GetProcess().ForkChildId = childID
 	}
 
 	return ev, nil
