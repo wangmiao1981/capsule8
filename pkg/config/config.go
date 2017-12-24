@@ -74,6 +74,10 @@ var Sensor struct {
 
 	// The default buffer length for Go channels used internally
 	ChannelBufferLength int `split_words:"true" default:"1024"`
+
+	// The size of the process info cache. If the system pid_max is greater
+	// than this size, a less performant method of caching will be used.
+	ProcessInfoCacheSize uint `split_words:"true" default:"131072"`
 }
 
 func init() {
