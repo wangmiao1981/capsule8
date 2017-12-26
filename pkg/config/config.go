@@ -51,6 +51,36 @@ var Sensor struct {
 	//   :8484
 	ServerAddr string `split_words:"true" default:"unix:/var/run/capsule8/sensor.sock"`
 
+	// UseTLS is the boolean switch to enable TLS use. By default it
+	// is false. If UseTLS is true, TLSCACertPath, TLSServerCertPath
+	// and TLSServerKeyPath will need to be set.
+	UseTLS bool `split_words:"true" default:"false"`
+
+	// TLSCACertPath is the path to the file that holds the
+	// certificate authority certificate for the telemetry server.
+	// This should only be set if UseTLS is true.
+	TLSCACertPath string `split_words:"true" default:"/var/lib/capsule8/tls/ca.crt"`
+
+	// TLSClientCertPath is the path to the file that holds the
+	// client certificate for the telemetry server. This should only
+	// be set if UseTLS is true.
+	TLSClientCertPath string `split_words:"true" default:"/var/lib/capsule8/tls/client.crt"`
+
+	// TLSClientKeyPath is the path to the file that holds the
+	// client key for the telemetry server. This should only be set
+	// if UseTLS is true.
+	TLSClientKeyPath string `split_words:"true" default:"/var/lib/capsule8/tls/client.key"`
+
+	// TLSServerCertPath is the path to the file that holds the
+	// server certificate for the telemetry server. This should only
+	// be set if UseTLS is true.
+	TLSServerCertPath string `split_words:"true" default:"/var/lib/capsule8/tls/server.crt"`
+
+	// TLSClientKeyPath is the path to the file that holds the
+	// server key for the telemetry server. This should only be set
+	// if UseTLS is true.
+	TLSServerKeyPath string `split_words:"true" default:"/var/lib/capsule8/tls/server.key"`
+
 	// Names of cgroups to monitor for events. Each cgroup specified must
 	// exist within the perf_event cgroup hierarchy. For example, if this
 	// is set to "docker", the Sensor will monitor containers for events

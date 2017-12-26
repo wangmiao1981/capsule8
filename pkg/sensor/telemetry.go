@@ -15,16 +15,23 @@
 package sensor
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"strings"
 
 	api "github.com/capsule8/capsule8/api/v0"
+	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/golang/glog"
 
 	"golang.org/x/sys/unix"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // TelemetryService is a service that can be used with the ServiceManager to
@@ -103,7 +110,35 @@ func (ts *TelemetryService) Serve() error {
 	defer lis.Close()
 
 	// Start local gRPC service on listener
-	ts.server = grpc.NewServer()
+	if config.Sensor.UseTLS {
+		glog.V(1).Infoln("Creating server with mutual TLS")
+
+		certificate, err := tls.LoadX509KeyPair(config.Sensor.TLSServerCertPath, config.Sensor.TLSServerKeyPath)
+		if err != nil {
+			return fmt.Errorf("could not load server key pair: %s", err)
+		}
+
+		certPool := x509.NewCertPool()
+		ca, err := ioutil.ReadFile(config.Sensor.TLSCACertPath)
+		if err != nil {
+			return fmt.Errorf("could not read ca certificate: %s", err)
+		}
+
+		if ok := certPool.AppendCertsFromPEM(ca); !ok {
+			return errors.New("failed to append certs")
+		}
+
+		creds := credentials.NewTLS(&tls.Config{
+			ClientAuth:   tls.RequireAndVerifyClientCert,
+			Certificates: []tls.Certificate{certificate},
+			ClientCAs:    certPool,
+		})
+		ts.server = grpc.NewServer(grpc.Creds(creds))
+	} else {
+		glog.V(1).Infoln("Creating insecure server")
+		ts.server = grpc.NewServer()
+	}
+
 	t := &telemetryServiceServer{
 		sensor: ts.sensor,
 	}
