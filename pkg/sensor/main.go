@@ -23,12 +23,13 @@ import (
 // Main is the main entrypoint for the sensor
 func Main() {
 	manager := services.NewServiceManager()
-	if len(config.Global.ProfilingAddr) > 0 {
+	if len(config.Global.ProfilingListenAddr) > 0 {
 		service := services.NewProfilingService(
-			config.Global.ProfilingAddr)
+			config.Global.ProfilingListenAddr)
 		manager.RegisterService(service)
 	}
-	if len(config.Sensor.ServerAddr) > 0 {
+
+	if len(config.Sensor.ListenAddr) > 0 {
 		sensor, err := NewSensor()
 		if err != nil {
 			glog.Fatalf("Could not create sensor: %s", err.Error())
@@ -37,7 +38,7 @@ func Main() {
 			glog.Fatalf("Could not start sensor: %s", err.Error())
 		}
 		defer sensor.Stop()
-		service := NewTelemetryService(sensor, config.Sensor.ServerAddr)
+		service := NewTelemetryService(sensor, config.Sensor.ListenAddr)
 		manager.RegisterService(service)
 	}
 

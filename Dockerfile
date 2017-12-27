@@ -14,8 +14,5 @@ LABEL org.label-schema.schema-version="1.0" \
 COPY bin/sensor sensor
 CMD ["/sensor"]
 
-# HTTP Monitoring
-EXPOSE 8080
-
 # For persistent stateful data (e.g. flight recorder event store)
 VOLUME /var/lib/capsule8
