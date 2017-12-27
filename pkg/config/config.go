@@ -61,16 +61,6 @@ var Sensor struct {
 	// This will only be used if UseTLS is true.
 	TLSCACertPath string `split_words:"true" default:"/var/lib/capsule8/tls/ca.crt"`
 
-	// TLSClientCertPath is the path to the file that holds the
-	// client certificate for the telemetry server. This should only
-	// be set if UseTLS is true.
-	TLSClientCertPath string `split_words:"true" default:"/var/lib/capsule8/tls/client.crt"`
-
-	// TLSClientKeyPath is the path to the file that holds the
-	// client key for the telemetry server. This should only be set
-	// if UseTLS is true.
-	TLSClientKeyPath string `split_words:"true" default:"/var/lib/capsule8/tls/client.key"`
-
 	// TLSServerCertPath is the path to the file that holds the
 	// server certificate for the telemetry server. This will only be
 	// used if UseTLS is true.
