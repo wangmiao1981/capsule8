@@ -111,7 +111,7 @@ func (ts *TelemetryService) Serve() error {
 
 	// Start local gRPC service on listener
 	if config.Sensor.UseTLS {
-		glog.V(1).Infoln("Creating server with mutual TLS")
+		glog.V(1).Infoln("Starting telemetry server with TLS credentials")
 
 		certificate, err := tls.LoadX509KeyPair(config.Sensor.TLSServerCertPath, config.Sensor.TLSServerKeyPath)
 		if err != nil {
@@ -135,7 +135,7 @@ func (ts *TelemetryService) Serve() error {
 		})
 		ts.server = grpc.NewServer(grpc.Creds(creds))
 	} else {
-		glog.V(1).Infoln("Creating insecure server")
+		glog.V(1).Infoln("Starting telemetry server")
 		ts.server = grpc.NewServer()
 	}
 
