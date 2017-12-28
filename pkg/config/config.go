@@ -51,6 +51,26 @@ var Sensor struct {
 	//   :8484
 	ServerAddr string `split_words:"true" default:"unix:/var/run/capsule8/sensor.sock"`
 
+	// UseTLS is the boolean switch to enable TLS use. By default it
+	// is false. If UseTLS is true, TLSCACertPath, TLSServerCertPath
+	// and TLSServerKeyPath will need to be set.
+	UseTLS bool `split_words:"true" default:"false"`
+
+	// TLSCACertPath is the path to the file that holds the
+	// certificate authority certificate for the telemetry server.
+	// This will only be used if UseTLS is true.
+	TLSCACertPath string `split_words:"true" default:"/var/lib/capsule8/tls/ca.crt"`
+
+	// TLSServerCertPath is the path to the file that holds the
+	// server certificate for the telemetry server. This will only be
+	// used if UseTLS is true.
+	TLSServerCertPath string `split_words:"true" default:"/var/lib/capsule8/tls/server.crt"`
+
+	// TLSServerKeyPath is the path to the file that holds the
+	// server key for the telemetry server. This will only be used
+	// if UseTLS is true.
+	TLSServerKeyPath string `split_words:"true" default:"/var/lib/capsule8/tls/server.key"`
+
 	// Names of cgroups to monitor for events. Each cgroup specified must
 	// exist within the perf_event cgroup hierarchy. For example, if this
 	// is set to "docker", the Sensor will monitor containers for events
