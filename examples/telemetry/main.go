@@ -35,14 +35,14 @@ import (
 )
 
 var config struct {
-	endpoint string
-	image    string
+	server string
+	image  string
 }
 
 func init() {
-	flag.StringVar(&config.endpoint, "endpoint",
+	flag.StringVar(&config.server, "server",
 		"unix:/var/run/capsule8/sensor.sock",
-		"Capsule8 gRPC API endpoint")
+		"Capsule8 gRPC API server address")
 
 	flag.StringVar(&config.image, "image", "",
 		"container image wildcard pattern to monitor")
@@ -194,7 +194,7 @@ func main() {
 	flag.Parse()
 
 	// Create telemetry service client
-	conn, err := grpc.Dial(config.endpoint,
+	conn, err := grpc.Dial(config.server,
 		grpc.WithDialer(dialer),
 		grpc.WithInsecure())
 
