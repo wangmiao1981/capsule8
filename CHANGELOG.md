@@ -1,8 +1,58 @@
-## 0.2.0 (Dec 14, 2017)
+## 0.3.0-alpha (Dec 29, 2017)
 
 BACKWARDS INCOMPATIBILITIES:
 
-  * Event filtering changed in ([#55](https://github.com/capsule8/capsule8/pull/55)) with updates to the underlying API definitions.
+  * Configuration variables were renamed and some were removed in [#92](https://github.com/capsule8/capsule8/pull/92)
+
+FEATURES:
+
+  * Allow TLS configuration for telemetry server ([#91](https://github.com/capsule8/capsule8/pull/91))
+  * Enable syscall args in API and in functional test ([#86](https://github.com/capsule8/capsule8/pull/86))
+  * Use a kprobe to track process command-line information ([#80](https://github.com/capsule8/capsule8/pull/80))
+  * Properly retrieve syscall arguments and add support for filtering on them ([#78](https://github.com/capsule8/capsule8/pull/78))
+
+IMPROVEMENTS:
+
+  * Refactor CI to use CircleCI 2.0 ([#90](https://github.com/capsule8/capsule8/pull/90))
+  * Apply consistency to network endpoint address naming ([#92](https://github.com/capsule8/capsule8/pull/92))
+  * Clean up all golint warnings ([#89](https://github.com/capsule8/capsule8/pull/89))
+  * Make the process info cache size configurable ([#88](https://github.com/capsule8/capsule8/pull/88))
+  * Move contributing guidelines and issue template into .github ([#87](https://github.com/capsule8/capsule8/pull/87))
+  * Add issue template ([#84](https://github.com/capsule8/capsule8/pull/84))
+  * Default to https for vendor submodule ([#83](https://github.com/capsule8/capsule8/pull/83))
+  * Update vendoring of api and aws tools ([#79](https://github.com/capsule8/capsule8/pull/79))
+  * Add make target to run the sensor in the background ([#73](https://github.com/capsule8/capsule8/pull/73))
+
+BUG FIXES:
+
+  * Fix regenerating code from .protos ([#85](https://github.com/capsule8/capsule8/pull/85))
+  * Remove accidentally committed binary ([#81](https://github.com/capsule8/capsule8/pull/81))
+  * Remove accidentally committed binaries ([#77](https://github.com/capsule8/capsule8/pull/77))
+
+## 0.2.1-alpha (Dec 29, 2017)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  * Add make target to run the sensor in the background ([#73](https://github.com/capsule8/capsule8/pull/73))
+
+BUG FIXES:
+
+  * Remove accidentally committed binary and update vendoring ([#82](https://github.com/capsule8/capsule8/pull/82))
+  * Remove accidentally committed binaries ([#77](https://github.com/capsule8/capsule8/pull/77))
+
+## 0.2.0-alpha (Dec 14, 2017)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  * Event filtering changed in [#55](https://github.com/capsule8/capsule8/pull/55) with updates to the underlying API definitions.
 
 FEATURES:
 
@@ -35,7 +85,7 @@ BUG FIXES:
   * Fix 'args' type information handling in various kernel versions ([#51](https://github.com/capsule8/capsule8/pull/51))
 
 
-## 0.1.1 (Dec 14, 2017)
+## 0.1.1-alpha (Dec 14, 2017)
 
 BACKWARDS INCOMPATIBILITIES:
 
