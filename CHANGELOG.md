@@ -1,4 +1,23 @@
-## 0.2.0 (Dec 14, 2017)
+## 0.2.1-alpha (Dec 29, 2017)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  * Add make target to run the sensor in the background ([#73](https://github.com/capsule8/capsule8/pull/73))
+
+BUG FIXES:
+
+  * Remove accidentally committed binary and update vendoring ([#82](https://github.com/capsule8/capsule8/pull/82))
+  * Remove accidentally committed binaries ([#77](https://github.com/capsule8/capsule8/pull/77))
+
+## 0.2.0-alpha (Dec 14, 2017)
 
 BACKWARDS INCOMPATIBILITIES:
 
@@ -35,7 +54,7 @@ BUG FIXES:
   * Fix 'args' type information handling in various kernel versions ([#51](https://github.com/capsule8/capsule8/pull/51))
 
 
-## 0.1.1 (Dec 14, 2017)
+## 0.1.1-alpha (Dec 14, 2017)
 
 BACKWARDS INCOMPATIBILITIES:
 
