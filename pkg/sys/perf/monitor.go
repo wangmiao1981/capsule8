@@ -937,7 +937,7 @@ func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 	}
 	monitor.isRunning = true
 
-	err := unix.Pipe2(monitor.pipe[:], unix.O_DIRECT|unix.O_NONBLOCK)
+	err := unix.Pipe(monitor.pipe[:])
 	monitor.lock.Unlock()
 	if err != nil {
 		monitor.stopWithSignal()
