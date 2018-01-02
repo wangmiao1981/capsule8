@@ -16,6 +16,7 @@ package perf
 
 import (
 	"bytes"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/sys"
@@ -162,6 +164,7 @@ func WithFilter(filter string) RegisterEventOption {
 const (
 	eventTypeTracepoint int = iota
 	eventTypeKprobe
+	eventTypeUprobe
 )
 
 type registeredEvent struct {
@@ -237,6 +240,7 @@ type EventMonitor struct {
 
 	// Mutable by various goroutines, but not required by the monitor goroutine
 	nextEventID uint64
+	nextProbeID uint64
 	events      map[uint64]registeredEvent // event id : event
 	eventfds    map[int]int                // fd : cpu index
 	eventids    map[int]uint64             // fd : stream id
@@ -311,6 +315,31 @@ func (monitor *EventMonitor) addKprobe(name string, address string, onReturn boo
 func (monitor *EventMonitor) removeKprobe(name string) error {
 	return monitor.writeTraceCommand("kprobe_events",
 		fmt.Sprintf("-:%s", name))
+}
+
+func (monitor *EventMonitor) addUprobe(name string, bin string, address string, onReturn bool, output string) error {
+	output = normalizeFetchargs(output)
+
+	var definition string
+	if onReturn {
+		definition = fmt.Sprintf("r:%s %s:%s %s", name, bin, address, output)
+	} else {
+		definition = fmt.Sprintf("p:%s %s:%s %s", name, bin, address, output)
+	}
+
+	glog.V(1).Infof("Adding uprobe: '%s'", definition)
+	return monitor.writeTraceCommand("uprobe_events", definition)
+}
+
+func (monitor *EventMonitor) removeUprobe(name string) error {
+	return monitor.writeTraceCommand("uprobe_events",
+		fmt.Sprintf("-:%s", name))
+}
+
+func (monitor *EventMonitor) newProbeName() string {
+	monitor.nextProbeID++
+	return fmt.Sprintf("capsule8/sensor_%d_%d", unix.Getpid(),
+		monitor.nextProbeID)
 }
 
 func (monitor *EventMonitor) perfEventOpen(eventAttr *EventAttr, filter string) ([]int, error) {
@@ -418,7 +447,6 @@ func (monitor *EventMonitor) newRegisteredEvent(name string, fn TraceEventDecode
 func (monitor *EventMonitor) RegisterTracepoint(name string,
 	fn TraceEventDecoderFn, options ...RegisterEventOption) (uint64, error) {
 
-	// Process options
 	opts := registerEventOptions{}
 	for _, option := range options {
 		option(&opts)
@@ -443,7 +471,6 @@ func (monitor *EventMonitor) RegisterTracepoint(name string,
 func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, output string,
 	fn TraceEventDecoderFn, options ...RegisterEventOption) (uint64, error) {
 
-	// Process options
 	opts := registerEventOptions{}
 	for _, option := range options {
 		option(&opts)
@@ -452,15 +479,7 @@ func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, outpu
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
 
-	// Choose a name to refer to the kprobe by. We could allow the kernel
-	// to assign a name, but getting the right name back from the kernel
-	// can be somewhat unreliable. Choosing our own unique name ensures
-	// that we're always dealing with the right event and that we're not
-	// stomping on some other process's probe
-	ts := unix.Timespec{}
-	unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts)
-	name := fmt.Sprintf("capsule8/sensor_%d_%d", unix.Getpid(), ts.Nano())
-
+	name := monitor.newProbeName()
 	err := monitor.addKprobe(name, address, onReturn, output)
 	if err != nil {
 		return 0, err
@@ -473,6 +492,113 @@ func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, outpu
 	}
 
 	return eventid, nil
+}
+
+// RegisterUprobe is used to register a uprobe with an EventMonitor. The uprobe
+// will first be registered with the kernel, and then registered with the
+// EventMonitor. An event ID is returned that is unique to the EventMonitor and
+// is to be used to unregister the event. The event ID will also be passed to
+// the EventMonitor's dispatch function.
+func (monitor *EventMonitor) RegisterUprobe(bin string, address string,
+	onReturn bool, output string, fn TraceEventDecoderFn,
+	options ...RegisterEventOption) (uint64, error) {
+
+	opts := registerEventOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
+
+	// If the address looks like a symbol that needs to be resolved, it
+	// must be resolved here and now. The kernel does not do symbol
+	// resolution for uprobes.
+	if address[0] == '_' || unicode.IsLetter(rune(address[0])) {
+		var err error
+		address, err = monitor.resolveSymbol(bin, address)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	monitor.lock.Lock()
+	defer monitor.lock.Unlock()
+
+	name := monitor.newProbeName()
+	err := monitor.addUprobe(name, bin, address, onReturn, output)
+	if err != nil {
+		return 0, err
+	}
+
+	eventid, err := monitor.newRegisteredEvent(name, fn, opts, eventTypeUprobe)
+	if err != nil {
+		monitor.removeUprobe(name)
+		return 0, err
+	}
+
+	return eventid, nil
+}
+
+func baseAddress(file *elf.File, vaddr uint64) uint64 {
+	if file.FileHeader.Type != elf.ET_EXEC {
+		return 0
+	}
+
+	for _, prog := range file.Progs {
+		if prog.Type != elf.PT_LOAD {
+			continue
+		}
+
+		if vaddr < prog.Vaddr || vaddr >= prog.Vaddr+prog.Memsz {
+			continue
+		}
+
+		return prog.Vaddr
+	}
+
+	return 0
+}
+
+func symbolOffset(file *elf.File, name string, symbols []elf.Symbol) uint64 {
+	for _, sym := range symbols {
+		if sym.Name == name {
+			return sym.Value - baseAddress(file, sym.Value)
+		}
+	}
+
+	return 0
+}
+
+func (monitor *EventMonitor) resolveSymbol(bin, symbol string) (string, error) {
+	file, err := elf.Open(bin)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	// We don't know how to deal with anything other than ET_DYN or
+	// ET_EXEC types.
+	if file.FileHeader.Type != elf.ET_DYN && file.FileHeader.Type != elf.ET_EXEC {
+		return "", fmt.Errorf("Executable is of unsupported ELF type %d",
+			file.FileHeader.Type)
+	}
+
+	// Check symbols followed by dynamic symbols. Ignore errors from either
+	// one, because they'll just be about the sections not existing, which
+	// is fine. In the end, we'll generate our own error to return to the
+	// caller if the symbol isn't found.
+
+	var offset uint64
+	symbols, _ := file.Symbols()
+	offset = symbolOffset(file, symbol, symbols)
+	if offset == 0 {
+		symbols, _ = file.DynamicSymbols()
+		offset = symbolOffset(file, symbol, symbols)
+		if offset == 0 {
+			return "", fmt.Errorf("Symbol %q not found in %q",
+				symbol, bin)
+		}
+	}
+
+	return fmt.Sprintf("%#x", offset), nil
 }
 
 // This should be called with monitor.lock held
@@ -501,6 +627,8 @@ func (monitor *EventMonitor) removeRegisteredEvent(event registeredEvent) {
 		break
 	case eventTypeKprobe:
 		monitor.removeKprobe(event.name)
+	case eventTypeUprobe:
+		monitor.removeUprobe(event.name)
 	}
 
 	monitor.decoders.RemoveDecoder(event.name)
