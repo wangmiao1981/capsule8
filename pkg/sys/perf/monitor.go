@@ -18,9 +18,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +37,7 @@ type eventMonitorOptions struct {
 	flags              uintptr
 	defaultEventAttr   *EventAttr
 	perfEventDir       string
+	tracingDir         string
 	ringBufferNumPages int
 	cgroups            []string
 	pids               []int
@@ -68,6 +71,14 @@ func WithDefaultEventAttr(defaultEventAttr *EventAttr) EventMonitorOption {
 func WithPerfEventDir(dir string) EventMonitorOption {
 	return func(o *eventMonitorOptions) {
 		o.perfEventDir = dir
+	}
+}
+
+// WithTracingDir is used to set an alternate mountpoint to use for managing
+// tracepoints, kprobes, and uprobes.
+func WithTracingDir(dir string) EventMonitorOption {
+	return func(o *eventMonitorOptions) {
+		o.tracingDir = dir
 	}
 }
 
@@ -232,6 +243,7 @@ type EventMonitor struct {
 
 	// Immutable, used only when adding new tracepoints/probes
 	defaultAttr EventAttr
+	tracingDir  string
 
 	// Used only once during shutdown
 	cond *sync.Cond
@@ -251,6 +263,54 @@ func fixupEventAttr(eventAttr *EventAttr) {
 	eventAttr.Watermark = true
 	eventAttr.UseClockID = false
 	eventAttr.WakeupWatermark = 1 // WakeupEvents not used
+}
+
+func (monitor *EventMonitor) writeTraceCommand(name string, cmd string) error {
+	filename := filepath.Join(monitor.tracingDir, name)
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		glog.Fatalf("Couldn't open %s WO+A: %s", filename, err)
+	}
+	defer file.Close()
+
+	_, err = file.Write([]byte(cmd))
+	return err
+}
+
+func normalizeFetchargs(args string) string {
+	// Normalize the output string so we can match it later
+	args = strings.TrimSpace(args)
+	if strings.Index(args, "  ") != -1 {
+		parts := strings.Split(args, " ")
+		result := make([]string, 0, len(parts))
+		for _, s := range parts {
+			if len(s) > 0 {
+				result = append(result, s)
+			}
+		}
+		args = strings.Join(result, " ")
+	}
+
+	return args
+}
+
+func (monitor *EventMonitor) addKprobe(name string, address string, onReturn bool, output string) error {
+	output = normalizeFetchargs(output)
+
+	var definition string
+	if onReturn {
+		definition = fmt.Sprintf("r:%s %s %s", name, address, output)
+	} else {
+		definition = fmt.Sprintf("p:%s %s %s", name, address, output)
+	}
+
+	glog.V(1).Infof("Adding kprobe: '%s'", definition)
+	return monitor.writeTraceCommand("kprobe_events", definition)
+}
+
+func (monitor *EventMonitor) removeKprobe(name string) error {
+	return monitor.writeTraceCommand("kprobe_events",
+		fmt.Sprintf("-:%s", name))
 }
 
 func (monitor *EventMonitor) perfEventOpen(eventAttr *EventAttr, filter string) ([]int, error) {
@@ -401,14 +461,14 @@ func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, outpu
 	unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts)
 	name := fmt.Sprintf("capsule8/sensor_%d_%d", unix.Getpid(), ts.Nano())
 
-	name, err := addKprobe(name, address, onReturn, output)
+	err := monitor.addKprobe(name, address, onReturn, output)
 	if err != nil {
 		return 0, err
 	}
 
 	eventid, err := monitor.newRegisteredEvent(name, fn, opts, eventTypeKprobe)
 	if err != nil {
-		removeKprobe(name)
+		monitor.removeKprobe(name)
 		return 0, err
 	}
 
@@ -440,7 +500,7 @@ func (monitor *EventMonitor) removeRegisteredEvent(event registeredEvent) {
 	case eventTypeTracepoint:
 		break
 	case eventTypeKprobe:
-		removeKprobe(event.name)
+		monitor.removeKprobe(event.name)
 	}
 
 	monitor.decoders.RemoveDecoder(event.name)
@@ -1024,6 +1084,11 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 	// Only allow certain flags to be passed
 	opts.flags &= PERF_FLAG_FD_CLOEXEC
 
+	// If no tracing dir was specified, scan mounts for one
+	if len(opts.tracingDir) == 0 {
+		opts.tracingDir = sys.TracingDir()
+	}
+
 	// If no perf_event cgroup mountpoint was specified, scan mounts for one
 	if len(opts.perfEventDir) == 0 && len(opts.cgroups) > 0 {
 		opts.perfEventDir = sys.PerfEventDir()
@@ -1044,12 +1109,13 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 		groups:       make(map[int]perfEventGroup),
 		eventAttrMap: newSafeEventAttrMap(),
 		eventIDMap:   newSafeUInt64Map(),
-		decoders:     newTraceEventDecoderMap(),
+		decoders:     newTraceEventDecoderMap(opts.tracingDir),
 		nextEventID:  1,
 		events:       make(map[uint64]registeredEvent),
 		eventfds:     make(map[int]int),
 		eventids:     make(map[int]uint64),
 		defaultAttr:  eventAttr,
+		tracingDir:   opts.tracingDir,
 	}
 	monitor.lock = &sync.Mutex{}
 	monitor.cond = sync.NewCond(monitor.lock)
