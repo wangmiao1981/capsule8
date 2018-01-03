@@ -18,7 +18,6 @@
 syntax = "proto3";
 
 package capsule8.api.v0;
-option go_package = "github.com/capsule8/capsule8/api/v0";
 
 import "capsule8/api/v0/subscription.proto";
 import "capsule8/api/v0/event.proto";
@@ -30,7 +29,8 @@ import "google/api/annotations.proto";
 // The Telemetry API allows you to subscribe to streams of live and
 // historical Events from Capsule8 Sensors.
 //
-service TelemetryService {
+
+service TelemetryService {  
         // Opens a new stream of telemetry events
         rpc GetEvents(GetEventsRequest) returns (stream GetEventsResponse) {
                 option (google.api.http) = {
