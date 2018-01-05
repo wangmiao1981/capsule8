@@ -1,0 +1,24 @@
+apiVersion: extensions/v1beta1
+kind: DaemonSet
+metadata:
+  name: capsule8-meltdown-detector
+spec:
+  template:
+    metadata:
+      labels:
+        app: capsule8-meltdown-detector
+    spec:
+      containers:
+        - name: capsule8-meltdown-detector
+          image: getcapsule8/meltdown-detector
+          securityContext:
+            capabilities:
+              add: ["SYS_ADMIN"]
+          volumeMounts:
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+              readOnly: true              
+      volumes:
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
