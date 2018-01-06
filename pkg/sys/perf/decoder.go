@@ -36,8 +36,8 @@ type traceEventDecoder struct {
 	decoderfn TraceEventDecoderFn
 }
 
-func newTraceEventDecoder(name string, fn TraceEventDecoderFn) (*traceEventDecoder, uint16, error) {
-	id, fields, err := getTraceEventFormat(name)
+func newTraceEventDecoder(tracingDir, name string, fn TraceEventDecoderFn) (*traceEventDecoder, uint16, error) {
+	id, fields, err := getTraceEventFormat(tracingDir, name)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -146,6 +146,7 @@ func (dm *decoderMap) add(name string, id uint16, decoder *traceEventDecoder) {
 type traceEventDecoderMap struct {
 	sync.Mutex              // used only by writers
 	active     atomic.Value // *decoderMap
+	tracingDir string
 }
 
 func (m *traceEventDecoderMap) getDecoderMap() *decoderMap {
@@ -156,14 +157,16 @@ func (m *traceEventDecoderMap) getDecoderMap() *decoderMap {
 	return value.(*decoderMap)
 }
 
-func newTraceEventDecoderMap() *traceEventDecoderMap {
-	return &traceEventDecoderMap{}
+func newTraceEventDecoderMap(tracingDir string) *traceEventDecoderMap {
+	return &traceEventDecoderMap{
+		tracingDir: tracingDir,
+	}
 }
 
 // Add a decoder "in-place". i.e., don't copy the decoder map before update
 // No synchronization is used. Assumes the caller has adequate protection
 func (m *traceEventDecoderMap) addDecoderInPlace(name string, fn TraceEventDecoderFn) (uint16, error) {
-	decoder, id, err := newTraceEventDecoder(name, fn)
+	decoder, id, err := newTraceEventDecoder(m.tracingDir, name, fn)
 	if err != nil {
 		return 0, err
 	}
@@ -182,7 +185,7 @@ func (m *traceEventDecoderMap) addDecoderInPlace(name string, fn TraceEventDecod
 // writers from stomping on each other while allowing readers to always
 // operate without locking
 func (m *traceEventDecoderMap) AddDecoder(name string, fn TraceEventDecoderFn) (uint16, error) {
-	decoder, id, err := newTraceEventDecoder(name, fn)
+	decoder, id, err := newTraceEventDecoder(m.tracingDir, name, fn)
 	if err != nil {
 		return 0, err
 	}

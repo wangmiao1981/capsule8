@@ -349,6 +349,11 @@ func (s *Sensor) buildMonitorGroups() ([]string, []int, error) {
 func (s *Sensor) createEventMonitor() error {
 	eventMonitorOptions := []perf.EventMonitorOption{}
 
+	if len(s.traceFSMountPoint) > 0 {
+		eventMonitorOptions = append(eventMonitorOptions,
+			perf.WithTracingDir(s.traceFSMountPoint))
+	}
+
 	cgroups, pids, err := s.buildMonitorGroups()
 	if err != nil {
 		return err
