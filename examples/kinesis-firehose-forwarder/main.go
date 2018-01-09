@@ -361,7 +361,7 @@ func main() {
 // Convert received telemetry event from proto to JSON and enrich with a
 // few fields.
 //
-func convertTelemetryToFirehoseRecords(telemetryEvents []*api.TelemetryEvent) ([]*firehose.Record, error) {
+func convertTelemetryToFirehoseRecords(telemetryEvents []*api.ReceivedTelemetryEvent) ([]*firehose.Record, error) {
 	var records []*firehose.Record
 
 	jsonMarshaller := jsonpb.Marshaler{

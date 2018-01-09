@@ -31,9 +31,9 @@ type chargen struct {
 	payload []byte
 }
 
-func (c *chargen) newChargenEvent(index uint64, characters string) *api.Event {
+func (c *chargen) newChargenEvent(index uint64, characters string) *api.TelemetryEvent {
 	e := c.sensor.NewEvent()
-	e.Event = &api.Event_Chargen{
+	e.Event = &api.TelemetryEvent_Chargen{
 		Chargen: &api.ChargenEvent{
 			Index:      index,
 			Characters: characters,

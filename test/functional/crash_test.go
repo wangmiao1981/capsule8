@@ -95,11 +95,11 @@ func (ct *crashTest) CreateSubscription(t *testing.T) *api.Subscription {
 	return sub
 }
 
-func (ct *crashTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.TelemetryEvent) bool {
+func (ct *crashTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.ReceivedTelemetryEvent) bool {
 	glog.V(2).Infof("%+v", telemetryEvent)
 
 	switch event := telemetryEvent.Event.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		if event.Container.Type == api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED {
 			if event.Container.ImageId == ct.testContainer.ImageID {
 				if len(ct.containerID) > 0 {
@@ -124,7 +124,7 @@ func (ct *crashTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.Tele
 			glog.V(1).Infof("containerExited = true")
 		}
 
-	case *api.Event_Process:
+	case *api.TelemetryEvent_Process:
 		if event.Process.Type == api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC {
 			if event.Process.ExecFilename == "/main" &&
 				telemetryEvent.Event.ContainerId == ct.containerID {

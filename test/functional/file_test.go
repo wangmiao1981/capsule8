@@ -71,10 +71,10 @@ func (ft *fileTest) CreateSubscription(t *testing.T) *api.Subscription {
 	}
 }
 
-func (ft *fileTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent) bool {
+func (ft *fileTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
 	glog.V(2).Infof("%+v", te)
 	switch event := te.Event.Event.(type) {
-	case *api.Event_File:
+	case *api.TelemetryEvent_File:
 		if td, ok := ft.openEvts[event.File.Filename]; ok {
 			if !eventMatchFileTestData(event.File, td) {
 				t.Errorf("Expected %#v, got %#v\n", td, event.File)

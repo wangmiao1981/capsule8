@@ -31,9 +31,9 @@ type ticker struct {
 	ticker   *stream.Stream
 }
 
-func (t *ticker) newTickerEvent(tick time.Time) *api.Event {
+func (t *ticker) newTickerEvent(tick time.Time) *api.TelemetryEvent {
 	e := t.sensor.NewEvent()
-	e.Event = &api.Event_Ticker{
+	e.Event = &api.TelemetryEvent_Ticker{
 		Ticker: &api.TickerEvent{
 			Seconds:     tick.Unix(),
 			Nanoseconds: tick.UnixNano(),

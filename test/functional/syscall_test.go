@@ -111,10 +111,10 @@ func (st *syscallTest) CreateSubscription(t *testing.T) *api.Subscription {
 	}
 }
 
-func (st *syscallTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent) bool {
+func (st *syscallTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
 	glog.V(2).Infof("Got Event %+v\n", te.Event)
 	switch event := te.Event.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		switch event.Container.Type {
 		case api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED:
 			return true
@@ -124,7 +124,7 @@ func (st *syscallTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent
 			return false
 		}
 
-	case *api.Event_Syscall:
+	case *api.TelemetryEvent_Syscall:
 		if event.Syscall.Id != syscall.SYS_ALARM {
 			t.Errorf("Expected syscall number %d, got %d\n",
 				syscall.SYS_ALARM, event.Syscall.Id)

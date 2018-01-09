@@ -42,7 +42,7 @@ func (f *processFilter) decodeSchedProcessFork(sample *perf.SampleRecord, data p
 	childPid := data["child_pid"].(int32)
 
 	ev := f.sensor.NewEventFromSample(sample, data)
-	ev.Event = &api.Event_Process{
+	ev.Event = &api.TelemetryEvent_Process{
 		Process: &api.ProcessEvent{
 			Type:         api.ProcessEventType_PROCESS_EVENT_TYPE_FORK,
 			ForkChildPid: childPid,
@@ -75,7 +75,7 @@ func (f *processFilter) decodeSchedProcessExec(sample *perf.SampleRecord, data p
 		ExecCommandLine: commandLine,
 	}
 
-	ev.Event = &api.Event_Process{
+	ev.Event = &api.TelemetryEvent_Process{
 		Process: processEvent,
 	}
 
@@ -100,7 +100,7 @@ func (f *processFilter) decodeDoExit(sample *perf.SampleRecord, data perf.TraceE
 	}
 
 	ev := f.sensor.NewEventFromSample(sample, data)
-	ev.Event = &api.Event_Process{
+	ev.Event = &api.TelemetryEvent_Process{
 		Process: &api.ProcessEvent{
 			Type:           api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT,
 			ExitCode:       int32(code),

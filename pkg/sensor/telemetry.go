@@ -182,12 +182,12 @@ sendLoop:
 		}
 
 		// Send back events right away
-		te := &api.TelemetryEvent{
-			Event: ev.(*api.Event),
+		te := &api.ReceivedTelemetryEvent{
+			Event: ev.(*api.TelemetryEvent),
 		}
 
 		err = stream.Send(&api.GetEventsResponse{
-			Events: []*api.TelemetryEvent{
+			Events: []*api.ReceivedTelemetryEvent{
 				te,
 			},
 		})

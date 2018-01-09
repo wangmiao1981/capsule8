@@ -183,7 +183,7 @@ func (s *Sensor) dispatchSample(eventID uint64, sample interface{}, err error) {
 		glog.Warning(err)
 	}
 
-	if event, ok := sample.(*api.Event); ok && event != nil {
+	if event, ok := sample.(*api.TelemetryEvent); ok && event != nil {
 		eventMap := s.eventMap.getMap()
 		if sub, ok := eventMap[eventID]; ok && sub != nil {
 			if sub.data != nil {
@@ -247,7 +247,7 @@ func (s *Sensor) nextSequenceNumber() uint64 {
 
 // NewEvent creates a new API Event instance with common sensor-specific fields
 // correctly populated.
-func (s *Sensor) NewEvent() *api.Event {
+func (s *Sensor) NewEvent() *api.TelemetryEvent {
 	monotime := s.currentMonotimeNanos()
 	sequenceNumber := s.nextSequenceNumber()
 
@@ -263,7 +263,7 @@ func (s *Sensor) NewEvent() *api.Event {
 
 	s.Metrics.Events++
 
-	return &api.Event{
+	return &api.TelemetryEvent{
 		Id:                   eventID,
 		SensorId:             s.ID,
 		SensorMonotimeNanos:  monotime,
@@ -273,7 +273,7 @@ func (s *Sensor) NewEvent() *api.Event {
 
 // NewEventFromContainer creates a new API Event instance using a specific
 // container ID.
-func (s *Sensor) NewEventFromContainer(containerID string) *api.Event {
+func (s *Sensor) NewEventFromContainer(containerID string) *api.TelemetryEvent {
 	e := s.NewEvent()
 	e.ContainerId = containerID
 	return e
@@ -282,7 +282,7 @@ func (s *Sensor) NewEventFromContainer(containerID string) *api.Event {
 // NewEventFromSample creates a new API Event instance using perf_event sample
 // information.
 func (s *Sensor) NewEventFromSample(sample *perf.SampleRecord,
-	data perf.TraceEventSampleData) *api.Event {
+	data perf.TraceEventSampleData) *api.TelemetryEvent {
 
 	e := s.NewEvent()
 	e.SensorMonotimeNanos = int64(sample.Time) - s.bootMonotimeNanos
@@ -556,7 +556,7 @@ func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) 
 
 func filterNils(e interface{}) bool {
 	if e != nil {
-		ev := e.(*api.Event)
+		ev := e.(*api.TelemetryEvent)
 		return ev != nil
 	}
 	return false

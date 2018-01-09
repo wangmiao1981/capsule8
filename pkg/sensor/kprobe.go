@@ -114,7 +114,7 @@ func (f *kprobeFilter) decodeKprobe(sample *perf.SampleRecord, data perf.TraceEv
 	}
 
 	ev := f.sensor.NewEventFromSample(sample, data)
-	ev.Event = &api.Event_KernelCall{
+	ev.Event = &api.TelemetryEvent_KernelCall{
 		KernelCall: &api.KernelFunctionCallEvent{
 			Arguments: args,
 		},
