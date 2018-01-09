@@ -125,11 +125,11 @@ func (ct *exitTest) CreateSubscription(t *testing.T) *api.Subscription {
 	return sub
 }
 
-func (ct *exitTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.TelemetryEvent) bool {
+func (ct *exitTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.ReceivedTelemetryEvent) bool {
 	glog.V(2).Infof("%+v", telemetryEvent)
 
 	switch event := telemetryEvent.Event.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		switch event.Container.Type {
 		case api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED:
 			if event.Container.ImageId == ct.testContainer.ImageID {
@@ -157,7 +157,7 @@ func (ct *exitTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.Telem
 			}
 		}
 
-	case *api.Event_Process:
+	case *api.TelemetryEvent_Process:
 		switch event.Process.Type {
 		case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:
 			if telemetryEvent.Event.ContainerId == ct.containerID {

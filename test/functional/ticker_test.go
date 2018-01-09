@@ -57,11 +57,11 @@ func (tickTest *tickerTest) CreateSubscription(t *testing.T) *api.Subscription {
 	}
 }
 
-func (tickTest *tickerTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent) bool {
+func (tickTest *tickerTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
 	glog.V(2).Infof("%+v", te)
 
 	switch event := te.Event.Event.(type) {
-	case *api.Event_Ticker:
+	case *api.TelemetryEvent_Ticker:
 		if tickTest.count == 0 {
 			tickTest.firstEventNanos = event.Ticker.Nanoseconds
 		}

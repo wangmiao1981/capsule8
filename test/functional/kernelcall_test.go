@@ -92,12 +92,12 @@ func (kt *kernelCallTest) CreateSubscription(t *testing.T) *api.Subscription {
 	}
 }
 
-func (kt *kernelCallTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent) bool {
+func (kt *kernelCallTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
 	switch event := te.Event.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		return true
 
-	case *api.Event_KernelCall:
+	case *api.TelemetryEvent_KernelCall:
 		glog.V(2).Infof("Got Event %+v\n", te.Event)
 		if te.Event.ImageId == kt.testContainer.ImageID {
 

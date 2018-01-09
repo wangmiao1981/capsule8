@@ -78,14 +78,14 @@ func (st *procStressTest) CreateSubscription(t *testing.T) *api.Subscription {
 	}
 }
 
-func (st *procStressTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.TelemetryEvent) bool {
+func (st *procStressTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.ReceivedTelemetryEvent) bool {
 	glog.V(2).Infof("%+v", telemetryEvent)
 
 	switch event := telemetryEvent.Event.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		// Ignore
 
-	case *api.Event_Process:
+	case *api.TelemetryEvent_Process:
 		glog.V(2).Infof("%+v", *event.Process)
 		switch event.Process.Type {
 		case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:

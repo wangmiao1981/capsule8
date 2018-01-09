@@ -53,11 +53,11 @@ func (ct *chargenTest) CreateSubscription(t *testing.T) *api.Subscription {
 	}
 }
 
-func (ct *chargenTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent) bool {
+func (ct *chargenTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
 	glog.V(2).Infof("%+v", te)
 
 	switch event := te.Event.Event.(type) {
-	case *api.Event_Chargen:
+	case *api.TelemetryEvent_Chargen:
 		if len(event.Chargen.Characters) != chargenLength {
 			t.Errorf("Event %#v has the wrong number of characters.\n", *event.Chargen)
 			return false

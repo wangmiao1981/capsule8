@@ -45,7 +45,7 @@ type TelemetryTest interface {
 	CreateSubscription(t *testing.T) *api.Subscription
 
 	// return true to keep going, false if done
-	HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent) bool
+	HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool
 }
 
 type TelemetryTester struct {

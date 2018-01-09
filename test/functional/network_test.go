@@ -168,10 +168,10 @@ func (nt *networkTest) CreateSubscription(t *testing.T) *api.Subscription {
 	}
 }
 
-func (nt *networkTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent) bool {
+func (nt *networkTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
 
 	switch event := te.Event.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		switch event.Container.Type {
 		case api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED:
 			return true
@@ -193,7 +193,7 @@ func (nt *networkTest) HandleTelemetryEvent(t *testing.T, te *api.TelemetryEvent
 			return false
 		}
 
-	case *api.Event_Network:
+	case *api.TelemetryEvent_Network:
 		glog.V(2).Infof("Got Network Event %+v\n", te.Event)
 		if te.Event.ImageId == nt.testContainer.ImageID {
 			switch event.Network.Type {
