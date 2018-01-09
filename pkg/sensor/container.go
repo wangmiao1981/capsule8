@@ -180,7 +180,7 @@ func (cer *containerEventRepeater) translateContainerEvents(e interface{}) inter
 		}
 
 		ev := cer.sensor.NewEventFromContainer(ce.ID)
-		ev.Event = &api.Event_Container{
+		ev.Event = &api.TelemetryEvent_Container{
 			Container: ece,
 		}
 
@@ -279,10 +279,10 @@ func (cer *containerEventRepeater) newEventStream(sub *api.Subscription) (*strea
 	s := cer.repeater.NewStream()
 
 	s = stream.Filter(s, func(i interface{}) bool {
-		e := i.(*api.Event)
+		e := i.(*api.TelemetryEvent)
 
 		switch e.Event.(type) {
-		case *api.Event_Container:
+		case *api.TelemetryEvent_Container:
 			cev := e.GetContainer()
 			cef, ok := filters[cev.Type]
 			if !ok {
@@ -394,7 +394,7 @@ func (c *containerFilter) addImageName(iname string) {
 }
 
 func (c *containerFilter) FilterFunc(i interface{}) bool {
-	e := i.(*api.Event)
+	e := i.(*api.TelemetryEvent)
 
 	//
 	// Fast path: Check if containerId is in containerIds map
@@ -404,7 +404,7 @@ func (c *containerFilter) FilterFunc(i interface{}) bool {
 	}
 
 	switch e.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		cev := e.GetContainer()
 
 		//
@@ -437,10 +437,10 @@ func (c *containerFilter) FilterFunc(i interface{}) bool {
 }
 
 func (c *containerFilter) DoFunc(i interface{}) {
-	e := i.(*api.Event)
+	e := i.(*api.TelemetryEvent)
 
 	switch e.Event.(type) {
-	case *api.Event_Container:
+	case *api.TelemetryEvent_Container:
 		cev := e.GetContainer()
 		if cev.Type == api.ContainerEventType_CONTAINER_EVENT_TYPE_DESTROYED {
 			c.removeContainerID(e.ContainerId)

@@ -44,7 +44,7 @@ type networkFilter struct {
 	sensor *Sensor
 }
 
-func (f *networkFilter) newNetworkEvent(eventType api.NetworkEventType, sample *perf.SampleRecord, data perf.TraceEventSampleData) *api.Event {
+func (f *networkFilter) newNetworkEvent(eventType api.NetworkEventType, sample *perf.SampleRecord, data perf.TraceEventSampleData) *api.TelemetryEvent {
 	// If this even contains a network address, throw away any family that
 	// we do not support without doing the extra work of creating an event
 	// just to throw it away
@@ -63,12 +63,12 @@ func (f *networkFilter) newNetworkEvent(eventType api.NetworkEventType, sample *
 	}
 
 	event := f.sensor.NewEventFromSample(sample, data)
-	event.Event = &api.Event_Network{
+	event.Event = &api.TelemetryEvent_Network{
 		Network: &api.NetworkEvent{
 			Type: eventType,
 		},
 	}
-	network := event.Event.(*api.Event_Network).Network
+	network := event.Event.(*api.TelemetryEvent_Network).Network
 
 	if haveFamily {
 		switch family {
@@ -156,7 +156,7 @@ func (f *networkFilter) decodeSysExitConnect(sample *perf.SampleRecord, data per
 func (f *networkFilter) decodeSysEnterListen(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
 	event := f.newNetworkEvent(api.NetworkEventType_NETWORK_EVENT_TYPE_LISTEN_ATTEMPT, sample, data)
 
-	network := event.Event.(*api.Event_Network).Network
+	network := event.Event.(*api.TelemetryEvent_Network).Network
 	network.Backlog = data["backlog"].(uint64)
 
 	return event, nil
