@@ -59,9 +59,9 @@ func (eg *EventGroup) Open() error {
 		for _, ea := range eg.eventAttrs {
 			flags := eg.options.flags | PERF_FLAG_FD_CLOEXEC
 
-			// Fixup
-			ea.Size = sizeofPerfEventAttrVer5
-			ea.SampleType |= PERF_SAMPLE_CPU | PERF_SAMPLE_STREAM_ID | PERF_SAMPLE_IDENTIFIER | PERF_SAMPLE_TIME
+			// The parsers currently require this (requires kernel 3.12)
+			ea.SampleType |= PERF_SAMPLE_IDENTIFIER
+
 			fd, err := open(ea, -1, cpu, eg.groupFds[cpu], flags)
 			if err != nil {
 				glog.Fatal(err)
