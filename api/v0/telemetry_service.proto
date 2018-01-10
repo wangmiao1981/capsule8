@@ -23,6 +23,8 @@ import "capsule8/api/v0/subscription.proto";
 import "capsule8/api/v0/telemetry_event.proto";
 import "google/api/annotations.proto";
 
+option go_package = "github.com/capsule8/capsule8/api/v0";
+
 //
 // Capsule8 Telemetry API
 //

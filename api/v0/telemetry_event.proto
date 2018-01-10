@@ -18,6 +18,8 @@ package capsule8.api.v0;
 
 import "capsule8/api/v0/types.proto";
 
+option go_package = "github.com/capsule8/capsule8/api/v0";
+
 // An event observed by the Sensor.
 message TelemetryEvent {
         // Unique identifier for the event

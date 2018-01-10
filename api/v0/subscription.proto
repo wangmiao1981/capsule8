@@ -20,6 +20,8 @@ import "capsule8/api/v0/telemetry_event.proto";
 import "capsule8/api/v0/expression.proto";
 import "google/protobuf/wrappers.proto";
 
+option go_package = "github.com/capsule8/capsule8/api/v0";
+
 //
 // The Subscription message identifies a subscriber's interest in
 // telemetry events.

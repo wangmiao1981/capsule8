@@ -16,6 +16,8 @@ syntax = "proto3";
 
 package capsule8.api.v0;
 
+option go_package = "github.com/capsule8/capsule8/api/v0";
+
 // Supported network address families
 enum NetworkAddressFamily {
         // The network address family is unknown
