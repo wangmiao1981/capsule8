@@ -32,7 +32,7 @@ const (
 	// Alarm thresholds as cache miss rates (between 0 and 1).
 	// These values tune the trade-off between false negatives and
 	// false positives.
-	alarmThresholdInfo    = 0.95
+	alarmThresholdInfo    = 0.97
 	alarmThresholdWarning = 0.98
 	alarmThresholdError   = 0.99
 
@@ -77,7 +77,6 @@ func main() {
 			perf.PERF_SAMPLE_TID | perf.PERF_SAMPLE_READ | perf.PERF_SAMPLE_TIME,
 		ReadFormat:   perf.PERF_FORMAT_GROUP | perf.PERF_FORMAT_ID,
 		Pinned:       true,
-		Exclusive:    true,
 		SamplePeriod: LLCLoadSampleSize,
 		WakeupEvents: 1,
 	}
