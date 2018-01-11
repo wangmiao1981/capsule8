@@ -1,3 +1,27 @@
+## 0.4.0-alpha (Jan 11, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  * In the api definitions what had formerly been called `Event`s are now `TelemetryEvent`s [#99](https://github.com/capsule8/capsule8/pull/99)
+
+FEATURES:
+
+  * Add cache side channel detection ([#100](https://github.com/capsule8/capsule8/pull/100))
+  * Add preliminary uprobe support ([#95](https://github.com/capsule8/capsule8/pull/95))
+
+IMPROVEMENTS:
+
+  * Perf event attr exclusive fails silently on most distro kernels, don't use it ([#103](https://github.com/capsule8/capsule8/pull/103))
+  * Reduce perf/event_group event attr fixups ([#101](https://github.com/capsule8/capsule8/pull/101))
+  * Rename event to telemetry event ([#99](https://github.com/capsule8/capsule8/pull/99))
+  * Add meltdown detector example that uses the Telemetry API ([#98](https://github.com/capsule8/capsule8/pull/98))
+  * Add meltdown detector example ([#97](https://github.com/capsule8/capsule8/pull/97))
+  * Add gRPC gateway reverse proxies for Telemetry Service ([#96](https://github.com/capsule8/capsule8/pull/96))
+
+BUG FIXES:
+
+  None
+
 ## 0.3.0-alpha (Dec 29, 2017)
 
 BACKWARDS INCOMPATIBILITIES:
