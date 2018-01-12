@@ -134,12 +134,12 @@ func TestExpressionValidation(t *testing.T) {
 	var expr *api.Expression
 
 	types := FieldTypeMap{
-		"port":     api.ValueType_UINT16,
-		"filename": api.ValueType_STRING,
-		"path":     api.ValueType_STRING,
-		"service":  api.ValueType_STRING,
-		"address":  api.ValueType_STRING,
-		"flags":    api.ValueType_UINT32,
+		"port":     int32(api.ValueType_UINT16),
+		"filename": int32(api.ValueType_STRING),
+		"path":     int32(api.ValueType_STRING),
+		"service":  int32(api.ValueType_STRING),
+		"address":  int32(api.ValueType_STRING),
+		"flags":    int32(api.ValueType_UINT32),
 	}
 
 	var binaryOps = []api.Expression_ExpressionType{

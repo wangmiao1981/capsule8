@@ -52,12 +52,12 @@ func TestExpressionEvaluation(t *testing.T) {
 	var expr *api.Expression
 
 	types := FieldTypeMap{
-		"port":     api.ValueType_UINT16,
-		"address":  api.ValueType_STRING,
-		"flags":    api.ValueType_UINT32,
-		"filename": api.ValueType_STRING,
-		"path":     api.ValueType_STRING,
-		"service":  api.ValueType_STRING,
+		"port":     int32(api.ValueType_UINT16),
+		"address":  int32(api.ValueType_STRING),
+		"flags":    int32(api.ValueType_UINT32),
+		"filename": int32(api.ValueType_STRING),
+		"path":     int32(api.ValueType_STRING),
+		"service":  int32(api.ValueType_STRING),
 	}
 
 	values := FieldValueMap{

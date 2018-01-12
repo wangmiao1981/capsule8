@@ -326,7 +326,7 @@ func validateTypes(expr *api.Expression, types FieldTypeMap) (api.ValueType, err
 		if !ok {
 			return 0, fmt.Errorf("Undefined identifier %q", ident)
 		}
-		return t, nil
+		return api.ValueType(t), nil
 	case api.Expression_VALUE:
 		return expr.GetValue().GetType(), nil
 	case api.Expression_LOGICAL_AND, api.Expression_LOGICAL_OR:
