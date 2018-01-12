@@ -29,6 +29,7 @@ import (
 
 	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/container"
+	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/capsule8/capsule8/pkg/stream"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
@@ -178,18 +179,39 @@ func (s *Sensor) Stop() {
 	}
 }
 
-func (s *Sensor) dispatchSample(eventID uint64, sample interface{}, err error) {
-	if err != nil {
-		glog.Warning(err)
+func (s *Sensor) dispatchSample(eventID uint64, sample perf.EventMonitorSample) {
+	if sample.Err != nil {
+		glog.Warning(sample.Err)
 	}
 
-	if event, ok := sample.(*api.TelemetryEvent); ok && event != nil {
-		eventMap := s.eventMap.getMap()
-		eventMap.forEach(func(eventID, subscriptionID uint64, s *subscription) {
-			if s.data != nil {
-				s.data <- event
+	event, ok := sample.DecodedSample.(*api.TelemetryEvent)
+	if !ok || event == nil {
+		return
+	}
+
+	eventMap := s.eventMap.getMap()
+	subscriptions, ok := eventMap[eventID]
+	if !ok {
+		return
+	}
+
+	for _, s := range subscriptions {
+		if s.data == nil {
+			continue
+		}
+		if s.filter != nil {
+			v, err := s.filter.Evaluate(
+				expression.FieldTypeMap(sample.Fields),
+				expression.FieldValueMap(sample.DecodedData))
+			if err != nil {
+				glog.V(1).Infof("Expression evaluation error: %s", err)
+				continue
 			}
-		})
+			if !expression.IsValueTrue(v) {
+				continue
+			}
+		}
+		s.data <- event
 	}
 }
 
