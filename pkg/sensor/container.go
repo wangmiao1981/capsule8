@@ -28,14 +28,14 @@ import (
 )
 
 var containerEventTypes = expression.FieldTypeMap{
-	"name":             api.ValueType_STRING,
-	"image_id":         api.ValueType_STRING,
-	"image_name":       api.ValueType_STRING,
-	"host_pid":         api.ValueType_SINT32,
-	"exit_code":        api.ValueType_SINT32,
-	"exit_status":      api.ValueType_UINT32,
-	"exit_signal":      api.ValueType_UINT32,
-	"exit_core_dumped": api.ValueType_BOOL,
+	"name":             int32(api.ValueType_STRING),
+	"image_id":         int32(api.ValueType_STRING),
+	"image_name":       int32(api.ValueType_STRING),
+	"host_pid":         int32(api.ValueType_SINT32),
+	"exit_code":        int32(api.ValueType_SINT32),
+	"exit_status":      int32(api.ValueType_UINT32),
+	"exit_signal":      int32(api.ValueType_UINT32),
+	"exit_core_dumped": int32(api.ValueType_BOOL),
 }
 
 type containerEventRepeater struct {

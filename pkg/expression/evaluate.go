@@ -26,7 +26,7 @@ import (
 )
 
 // nullValueType is only used internally
-const nullValueType api.ValueType = api.ValueType_VALUETYPE_UNSPECIFIED
+const nullValueType = api.ValueType_VALUETYPE_UNSPECIFIED
 
 func timestampValue(stamp *google_protobuf2.Timestamp) uint64 {
 	return (uint64(stamp.Seconds) * uint64(time.Second)) +
@@ -212,19 +212,19 @@ type evalContext struct {
 	stack  []api.Value
 }
 
-var typeStrings = map[api.ValueType]string{
-	api.ValueType_STRING:    "string",
-	api.ValueType_SINT8:     "int8",
-	api.ValueType_SINT16:    "int16",
-	api.ValueType_SINT32:    "int32",
-	api.ValueType_SINT64:    "int64",
-	api.ValueType_UINT8:     "uint8",
-	api.ValueType_UINT16:    "uint16",
-	api.ValueType_UINT32:    "uint32",
-	api.ValueType_UINT64:    "uint64",
-	api.ValueType_BOOL:      "bool",
-	api.ValueType_DOUBLE:    "float64",
-	api.ValueType_TIMESTAMP: "uint64",
+var typeStrings = map[int32]string{
+	int32(api.ValueType_STRING):    "string",
+	int32(api.ValueType_SINT8):     "int8",
+	int32(api.ValueType_SINT16):    "int16",
+	int32(api.ValueType_SINT32):    "int32",
+	int32(api.ValueType_SINT64):    "int64",
+	int32(api.ValueType_UINT8):     "uint8",
+	int32(api.ValueType_UINT16):    "uint16",
+	int32(api.ValueType_UINT32):    "uint32",
+	int32(api.ValueType_UINT64):    "uint64",
+	int32(api.ValueType_BOOL):      "bool",
+	int32(api.ValueType_DOUBLE):    "float64",
+	int32(api.ValueType_TIMESTAMP): "uint64",
 }
 
 func (c *evalContext) pushIdentifier(ident string) error {
@@ -234,17 +234,17 @@ func (c *evalContext) pushIdentifier(ident string) error {
 	}
 	v, ok := c.values[ident]
 	if !ok {
-		t = nullValueType
+		t = int32(nullValueType)
 	} else if reflect.TypeOf(v).String() != typeStrings[t] {
 		return fmt.Errorf("Data type mismatch for %q (expected %s; got %s)",
 			ident, typeStrings[t], reflect.TypeOf(v))
 	}
 
 	value := api.Value{
-		Type: t,
+		Type: api.ValueType(t),
 	}
 
-	switch t {
+	switch value.Type {
 	case api.ValueType_STRING:
 		value.Value = &api.Value_StringValue{StringValue: v.(string)}
 	case api.ValueType_SINT8:

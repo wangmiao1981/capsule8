@@ -19,7 +19,7 @@ import (
 )
 
 // FieldTypeMap is a mapping of types for field names/identifiers
-type FieldTypeMap map[string]api.ValueType
+type FieldTypeMap map[string]int32
 
 // FieldValueMap is a mapping of values for field names/identifiers.
 type FieldValueMap map[string]interface{}
