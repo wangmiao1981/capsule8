@@ -131,6 +131,8 @@ func (tt *TelemetryTester) runTelemetryTest(t *testing.T) {
 			}
 
 			for _, telemetryEvent := range response.Events {
+				glog.V(2).Infof("Telemetry event %+v",
+					telemetryEvent)
 				if !tt.test.HandleTelemetryEvent(t, telemetryEvent) {
 					cancel()
 					tt.waitGroup.Done()

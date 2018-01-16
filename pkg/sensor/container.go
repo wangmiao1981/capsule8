@@ -15,11 +15,14 @@
 package sensor
 
 import (
+	"reflect"
+	"sync"
+	"unicode"
+
 	api "github.com/capsule8/capsule8/api/v0"
 
-	"github.com/capsule8/capsule8/pkg/container"
 	"github.com/capsule8/capsule8/pkg/expression"
-	"github.com/capsule8/capsule8/pkg/stream"
+	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"github.com/gobwas/glob"
 	"github.com/golang/glog"
@@ -38,279 +41,385 @@ var containerEventTypes = expression.FieldTypeMap{
 	"exit_core_dumped": int32(api.ValueType_BOOL),
 }
 
-type containerEventRepeater struct {
-	repeater *stream.Repeater
-	sensor   *Sensor
+type containerCache struct {
+	sync.Mutex
+	cache map[string]*ContainerInfo
 
-	// We get two ContainerCreated events. Use this map to merge them
-	createdMap map[string]*api.ContainerEvent
+	sensor *Sensor
 
-	// We get two ContainerStarted events from the container EventStream:
-	// one from Docker and one from OCI. Use this map to merge them
-	startedMap map[string]*api.ContainerEvent
+	// These are external event IDs registered with the sensor's event
+	// monitor instance. The cache will enqueue these events as appropriate
+	// as the cache is updated.
+	containerCreatedEventID   uint64 // api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED
+	containerRunningEventID   uint64 // api.ContainerEventType_CONTAINER_EVENT_TYPE_RUNNING
+	containerExitedEventID    uint64 // api.ContainerEventType_CONTAINER_EVENT_TYPE_EXITED
+	containerDestroyedEventID uint64 // api.ContainerEventType_CONTAINER_EVENT_TYPE_DESTROYED
+	containerUpdatedEventID   uint64 // api.ContainerEventType_CONTAINER_EVENT_TYPE_UPDATED
 }
 
-func newContainerCreated(cID string) *api.ContainerEvent {
-	return &api.ContainerEvent{
-		Type: api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED,
-	}
+// ContainerState represents the state of a container (created, running, etc.)
+type ContainerState uint
+
+const (
+	_ ContainerState = iota
+
+	// ContainerStateCreated indicates the container exists, but is not
+	// running.
+	ContainerStateCreated
+
+	// ContainerStatePaused indicates the container is paused.
+	ContainerStatePaused
+
+	// ContainerStateRunning indicates the container is running.
+	ContainerStateRunning
+
+	// ContainerStateRestarting indicates the container is in the process
+	// of restarting.
+	ContainerStateRestarting
+
+	// ContainerStateExited indicates the container has exited.
+	ContainerStateExited
+
+	// ContainerStateRemoving indicates the container is being removed.
+	ContainerStateRemoving
+)
+
+// ContainerStateNames is a mapping of container states to printable names.
+var ContainerStateNames = map[ContainerState]string{
+	ContainerStateCreated:    "created",
+	ContainerStateRestarting: "restarting",
+	ContainerStateRunning:    "running",
+	ContainerStateRemoving:   "removing",
+	ContainerStatePaused:     "paused",
+	ContainerStateExited:     "exited",
 }
 
-func newContainerRunning(cID string) *api.ContainerEvent {
-	return &api.ContainerEvent{
-		Type: api.ContainerEventType_CONTAINER_EVENT_TYPE_RUNNING,
-	}
+// ContainerInfo records interesting information known about a container.
+type ContainerInfo struct {
+	cache *containerCache // the cache to which this info belongs
+
+	ID        string
+	Name      string
+	ImageID   string
+	ImageName string
+
+	Pid      int
+	ExitCode int
+
+	State ContainerState
+
+	JSONConfig string
+	OCIConfig  string
 }
 
-func newContainerExited(cID string) *api.ContainerEvent {
-	return &api.ContainerEvent{
-		Type: api.ContainerEventType_CONTAINER_EVENT_TYPE_EXITED,
-	}
-}
-
-func newContainerDestroyed(cID string) *api.ContainerEvent {
-	return &api.ContainerEvent{
-		Type: api.ContainerEventType_CONTAINER_EVENT_TYPE_DESTROYED,
-	}
-}
-
-func (cer *containerEventRepeater) translateContainerEvents(e interface{}) interface{} {
-	ce := e.(*container.Event)
-	var ece *api.ContainerEvent
-
-	switch ce.State {
-	case container.ContainerCreated:
-		if cer.createdMap == nil {
-			cer.createdMap = make(map[string]*api.ContainerEvent)
-		}
-
-		if cer.createdMap[ce.ID] != nil {
-			ece = cer.createdMap[ce.ID]
-		} else {
-			ece = newContainerCreated(ce.ID)
-			ece.Name = ce.Name
-			ece.ImageId = ce.ImageID
-			ece.ImageName = ce.Image
-		}
-
-		if len(ce.DockerConfig) > len(ece.DockerConfigJson) {
-			ece.DockerConfigJson = ce.DockerConfig
-		}
-
-		if cer.createdMap[ce.ID] == nil {
-			cer.createdMap[ce.ID] = ece
-			ece = nil
-		} else {
-			delete(cer.createdMap, ce.ID)
-		}
-
-	case container.ContainerStarted:
-		if cer.startedMap == nil {
-			cer.startedMap = make(map[string]*api.ContainerEvent)
-		}
-
-		if cer.startedMap[ce.ID] != nil {
-			//
-			// If we have already received one container
-			// started event, merge the 2nd one into it
-			//
-			ece = cer.startedMap[ce.ID]
-		} else {
-			ece = newContainerRunning(ce.ID)
-		}
-
-		if ce.Pid != 0 {
-			ece.HostPid = int32(ce.Pid)
-		}
-
-		if len(ce.DockerConfig) > 0 {
-			ece.DockerConfigJson = ce.DockerConfig
-		}
-
-		if len(ce.OciConfig) > 0 {
-			ece.OciConfigJson = ce.OciConfig
-		}
-
-		if cer.startedMap[ce.ID] == nil {
-			cer.startedMap[ce.ID] = ece
-			ece = nil
-		} else {
-			delete(cer.startedMap, ce.ID)
-		}
-
-	case container.ContainerStopped:
-		ece = newContainerExited(ce.ID)
-
-		if ce.Pid != 0 {
-			ece.HostPid = int32(ce.Pid)
-		}
-
-		if len(ce.DockerConfig) > 0 {
-			ece.DockerConfigJson = ce.DockerConfig
-		}
-
-		ece.Name = ce.Name
-		ece.ImageId = ce.ImageID
-		ece.ImageName = ce.Image
-		ece.ExitCode = ce.ExitCode
-
-		ws := unix.WaitStatus(ce.ExitCode)
-
-		if ws.Exited() {
-			ece.ExitStatus = uint32(ws.ExitStatus())
-		} else if ws.Signaled() {
-			ece.ExitSignal = uint32(ws.Signal())
-			ece.ExitCoreDumped = ws.CoreDump()
-		}
-
-	case container.ContainerRemoved:
-		ece = newContainerDestroyed(ce.ID)
-
-	default:
-		panic("Invalid value for ContainerState")
-	}
-
-	if ece != nil {
-		if len(ce.DockerConfig) > 0 {
-			ece.DockerConfigJson = ce.DockerConfig
-		}
-
-		if len(ce.OciConfig) > 0 {
-			ece.OciConfigJson = ce.OciConfig
-		}
-
-		ev := cer.sensor.NewEventFromContainer(ce.ID)
-		ev.Event = &api.TelemetryEvent_Container{
-			Container: ece,
-		}
-
-		return ev
-	}
-
-	return nil
-}
-
-func newContainerEventRepeater(sensor *Sensor) (*containerEventRepeater, error) {
-	ces, err := container.NewEventStream()
-	if err != nil {
-		return nil, err
-	}
-
-	cer := &containerEventRepeater{
+func newContainerCache(sensor *Sensor) *containerCache {
+	cache := &containerCache{
+		cache:  make(map[string]*ContainerInfo),
 		sensor: sensor,
 	}
 
-	// Translate container events to protobuf versions
-	ces = stream.Map(ces, cer.translateContainerEvents)
-	ces = stream.Filter(ces, filterNils)
-	cer.repeater = stream.NewRepeater(ces)
-
-	return cer, nil
-}
-
-func convertEvent(cev *api.ContainerEvent) expression.FieldValueMap {
-	values := expression.FieldValueMap{
-		"image_id":   cev.ImageId,
-		"image_name": cev.ImageName,
-		"host_pid":   cev.HostPid,
+	var err error
+	cache.containerCreatedEventID, err = sensor.monitor.RegisterExternalEvent(
+		"CONTAINER_CREATED",
+		cache.decodeContainerCreatedEvent,
+		containerEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
-	switch cev.Type {
-	case api.ContainerEventType_CONTAINER_EVENT_TYPE_EXITED:
-		values["exit_code"] = cev.ExitCode
-		values["exit_status"] = cev.ExitStatus
-		values["exit_signal"] = cev.ExitSignal
-		values["exit_core_dumped"] = cev.ExitCoreDumped
+	cache.containerRunningEventID, err = sensor.monitor.RegisterExternalEvent(
+		"CONTAINER_RUNNING",
+		cache.decodeContainerRunningEvent,
+		containerEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
 	}
-	return values
+
+	cache.containerExitedEventID, err = sensor.monitor.RegisterExternalEvent(
+		"CONTAINER_EXITED",
+		cache.decodeContainerExitedEvent,
+		containerEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
+	}
+
+	cache.containerDestroyedEventID, err = sensor.monitor.RegisterExternalEvent(
+		"CONTAINER_DESTROYED",
+		cache.decodeContainerDestroyedEvent,
+		containerEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
+	}
+
+	cache.containerUpdatedEventID, err = sensor.monitor.RegisterExternalEvent(
+		"CONTAINER_UPDATED",
+		cache.decodeContainerUpdatedEvent,
+		containerEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register extern event: %s", err)
+	}
+
+	return cache
 }
 
-type containerEventFilter struct {
-	view api.ContainerEventView
-	expr *expression.Expression
+func (cc *containerCache) deleteContainer(containerID string, sampleID perf.SampleID) {
+	cc.Lock()
+	info, ok := cc.cache[containerID]
+	if ok {
+		delete(cc.cache, containerID)
+	}
+	cc.Unlock()
+
+	if ok {
+		glog.V(2).Infof("Sending CONTAINER_DESTROYED for %s", info.ID)
+		cc.enqueueContainerEvent(cc.containerDestroyedEventID,
+			sampleID, info)
+	}
 }
 
-func (cer *containerEventRepeater) newEventStream(sub *api.Subscription) (*stream.Stream, error) {
-	filters := make(map[api.ContainerEventType]*containerEventFilter)
-	exprs := make(map[api.ContainerEventType]*api.Expression)
-	for _, cef := range sub.EventFilter.ContainerEvents {
-		exprs[cef.Type] = expression.LogicalOr(
-			exprs[cef.Type],
-			cef.FilterExpression)
-		if f, ok := filters[cef.Type]; ok {
-			if cef.View == api.ContainerEventView_FULL {
-				f.view = cef.View
+func (cc *containerCache) newContainerInfo(containerID string) *ContainerInfo {
+	return &ContainerInfo{
+		cache: cc,
+		ID:    containerID,
+	}
+}
+
+func (cc *containerCache) lookupContainer(containerID string, create bool) *ContainerInfo {
+	cc.Lock()
+	defer cc.Unlock()
+
+	info := cc.cache[containerID]
+	if info == nil && create {
+		info = cc.newContainerInfo(containerID)
+		cc.cache[containerID] = info
+	}
+
+	return info
+}
+
+func (cc *containerCache) enqueueContainerEvent(
+	eventID uint64,
+	sampleID perf.SampleID,
+	info *ContainerInfo,
+) error {
+	data := map[string]interface{}{
+		"container_id": info.ID,
+		"name":         info.Name,
+		"image_id":     info.ImageID,
+		"image_name":   info.ImageName,
+		"host_pid":     int32(info.Pid),
+		"exit_code":    int32(info.ExitCode),
+	}
+
+	ws := unix.WaitStatus(info.ExitCode)
+	if ws.Exited() {
+		data["exit_status"] = uint32(ws.ExitStatus())
+		data["exit_signal"] = uint32(0)
+	} else if ws.Signaled() {
+		data["exit_status"] = uint32(0)
+		data["exit_signal"] = uint32(ws.Signal())
+	}
+	data["exit_core_dumped"] = ws.CoreDump()
+
+	return cc.sensor.monitor.EnqueueExternalSample(eventID, sampleID, data)
+}
+
+func (cc *containerCache) newContainerEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+	eventType api.ContainerEventType,
+) (*api.TelemetryEvent, error) {
+	cev := &api.ContainerEvent{
+		Type:           eventType,
+		ImageId:        data["image_id"].(string),
+		ImageName:      data["image_name"].(string),
+		HostPid:        data["host_pid"].(int32),
+		ExitCode:       data["exit_code"].(int32),
+		ExitStatus:     data["exit_status"].(uint32),
+		ExitSignal:     data["exit_signal"].(uint32),
+		ExitCoreDumped: data["exit_core_dumped"].(bool),
+	}
+
+	if s, ok := data["docker_config"].(string); ok && len(s) > 0 {
+		cev.DockerConfigJson = s
+	}
+	if s, ok := data["oci_config"].(string); ok && len(s) > 0 {
+		cev.OciConfigJson = s
+	}
+
+	event := cc.sensor.NewEventFromSample(sample, data)
+	event.ContainerId = data["container_id"].(string)
+	event.Event = &api.TelemetryEvent_Container{
+		Container: cev,
+	}
+	return event, nil
+}
+
+func (cc *containerCache) decodeContainerCreatedEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return cc.newContainerEvent(sample, data,
+		api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED)
+}
+
+func (cc *containerCache) decodeContainerRunningEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return cc.newContainerEvent(sample, data,
+		api.ContainerEventType_CONTAINER_EVENT_TYPE_RUNNING)
+}
+
+func (cc *containerCache) decodeContainerExitedEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return cc.newContainerEvent(sample, data,
+		api.ContainerEventType_CONTAINER_EVENT_TYPE_EXITED)
+}
+
+func (cc *containerCache) decodeContainerDestroyedEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return cc.newContainerEvent(sample, data,
+		api.ContainerEventType_CONTAINER_EVENT_TYPE_DESTROYED)
+}
+
+func (cc *containerCache) decodeContainerUpdatedEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return cc.newContainerEvent(sample, data,
+		api.ContainerEventType_CONTAINER_EVENT_TYPE_UPDATED)
+}
+
+// Update updates the data cached for a container with new information. Some
+// new information may trigger telemetry events to fire.
+func (info *ContainerInfo) Update(
+	sampleID perf.SampleID,
+	data map[string]interface{},
+
+) {
+	oldState := info.State
+	dataChanged := false
+
+	s := reflect.ValueOf(info).Elem()
+	t := s.Type()
+	for i := t.NumField() - 1; i >= 0; i-- {
+		f := t.Field(i)
+		if !unicode.IsUpper(rune(f.Name[0])) {
+			continue
+		}
+		v, ok := data[f.Name]
+		if !ok {
+			continue
+		}
+		if !reflect.TypeOf(v).AssignableTo(f.Type) {
+			glog.Fatalf("Cannot assign %v to %s %s",
+				v, f.Name, f.Type)
+		}
+
+		if s.Field(i).Interface() != v {
+			if f.Name != "State" {
+				dataChanged = true
 			}
-		} else {
-			filters[cef.Type] = &containerEventFilter{
-				view: cef.View,
-			}
+			s.Field(i).Set(reflect.ValueOf(v))
 		}
 	}
 
-	var badTypes []api.ContainerEventType
-	for t, expr := range exprs {
-		if expr != nil {
-			e, err := expression.NewExpression(expr)
-			if err != nil {
-				glog.V(1).Infof("Invalid container filter expression: %s", err)
-				badTypes = append(badTypes, t)
-				continue
-			}
-			err = e.Validate(containerEventTypes)
-			if err != nil {
-				glog.V(1).Infof("Invalid container filter expression: %s", err)
-				badTypes = append(badTypes, t)
-				continue
-			}
-			filters[t].expr = e
+	if info.State != oldState {
+		if oldState < ContainerStateCreated {
+			glog.V(2).Infof("Sending CONTAINER_CREATED for %s", info.ID)
+			info.cache.enqueueContainerEvent(
+				info.cache.containerCreatedEventID, sampleID,
+				info)
 		}
+		if oldState < ContainerStateRunning &&
+			info.State >= ContainerStateRunning {
+			glog.V(2).Infof("Sending CONTAINER_RUNNING for %s", info.ID)
+			info.cache.enqueueContainerEvent(
+				info.cache.containerRunningEventID, sampleID,
+				info)
+		}
+		if oldState < ContainerStateRestarting &&
+			info.State >= ContainerStateRestarting {
+			glog.V(2).Infof("Sending CONTAINER_EXITED for %s", info.ID)
+			info.cache.enqueueContainerEvent(
+				info.cache.containerExitedEventID,
+				sampleID, info)
+		}
+	} else if dataChanged {
+		glog.V(2).Infof("Sending CONTAINER_UPDATED for %s", info.ID)
+		info.cache.enqueueContainerEvent(
+			info.cache.containerUpdatedEventID, sampleID, info)
 	}
-	for _, t := range badTypes {
-		delete(filters, t)
+}
+
+func registerContainerEvents(
+	sensor *Sensor,
+	eventMap subscriptionMap,
+	events []*api.ContainerEventFilter,
+) {
+	var (
+		filters       [6]*api.Expression
+		subscriptions [6]*subscription
+	)
+
+	for _, cef := range events {
+		t := cef.Type
+		if t < 1 || t > 5 {
+			continue
+		}
+		if subscriptions[t] == nil {
+			var eventID uint64
+			switch t {
+			case api.ContainerEventType_CONTAINER_EVENT_TYPE_CREATED:
+				eventID = sensor.containerCache.containerCreatedEventID
+			case api.ContainerEventType_CONTAINER_EVENT_TYPE_RUNNING:
+				eventID = sensor.containerCache.containerRunningEventID
+			case api.ContainerEventType_CONTAINER_EVENT_TYPE_EXITED:
+				eventID = sensor.containerCache.containerExitedEventID
+			case api.ContainerEventType_CONTAINER_EVENT_TYPE_DESTROYED:
+				eventID = sensor.containerCache.containerDestroyedEventID
+			case api.ContainerEventType_CONTAINER_EVENT_TYPE_UPDATED:
+				eventID = sensor.containerCache.containerUpdatedEventID
+			}
+			subscriptions[t] = eventMap.subscribe(eventID)
+		}
+		filters[t] = expression.LogicalOr(filters[t], cef.FilterExpression)
 	}
-	if len(filters) == 0 {
-		return nil, nil
-	}
 
-	// Create a new EventStream and apply a filter based on this unique
-	// subscription to the copy of the container event stream that we
-	// got from the Repeater.
-	s := cer.repeater.NewStream()
-
-	s = stream.Filter(s, func(i interface{}) bool {
-		e := i.(*api.TelemetryEvent)
-
-		switch e.Event.(type) {
-		case *api.TelemetryEvent_Container:
-			cev := e.GetContainer()
-			cef, ok := filters[cev.Type]
-			if !ok {
-				return false
-			}
-
-			if cef.expr != nil {
-				containerEventValues := convertEvent(cev)
-				v, err := cef.expr.Evaluate(
-					containerEventTypes,
-					containerEventValues)
-				if err != nil || !expression.IsValueTrue(v) {
-					return false
-				}
-			}
-
-			if cef.view != api.ContainerEventView_FULL {
-				cev.OciConfigJson = ""
-				cev.DockerConfigJson = ""
-			}
-
-			return true
+	for i, s := range subscriptions {
+		if filters[i] == nil {
+			// No filter, no problem
+			continue
 		}
 
-		return false
-	})
+		expr, err := expression.NewExpression(filters[i])
+		if err != nil {
+			// Bad filter. Remove subscription
+			glog.V(1).Infof("Invalid container filter expression: %s", err)
+			eventMap.unsubscribe(s.eventID)
+			continue
+		}
 
-	return s, nil
+		err = expr.Validate(containerEventTypes)
+		if err != nil {
+			// Bad filter. Remove subscription
+			glog.V(1).Infof("Invalid container filter expression: %s", err)
+			eventMap.unsubscribe(s.eventID)
+			continue
+		}
+
+		s.filter = expr
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////

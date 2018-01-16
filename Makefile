@@ -47,8 +47,9 @@ DOCKER_RUN_FLAGS+=
 CLANG?=clang
 
 # Needed to regenerate code from protos
-PROTOC_GEN_GO=${GOPATH}/bin/protoc-gen-go
-PROTOC_GEN_GRPC_GATEWAY=${GOPATH}/bin/protoc-gen-grpc-gateway
+GOBIN?=${GOPATH}/bin
+PROTOC_GEN_GO=${GOBIN}/protoc-gen-go
+PROTOC_GEN_GRPC_GATEWAY=${GOBIN}/protoc-gen-grpc-gateway
 GO_OUT=../
 GRPC_GATEWAY_OUT=../
 PROTO_INC=-I../:third_party/protobuf/src:third_party/googleapis 

@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	api "github.com/capsule8/capsule8/api/v0"
-	"github.com/golang/glog"
 )
 
 const chargenLength = 40
@@ -54,8 +53,6 @@ func (ct *chargenTest) CreateSubscription(t *testing.T) *api.Subscription {
 }
 
 func (ct *chargenTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
-	glog.V(2).Infof("%+v", te)
-
 	switch event := te.Event.Event.(type) {
 	case *api.TelemetryEvent_Chargen:
 		if len(event.Chargen.Characters) != chargenLength {

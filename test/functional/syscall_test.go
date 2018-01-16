@@ -112,7 +112,6 @@ func (st *syscallTest) CreateSubscription(t *testing.T) *api.Subscription {
 }
 
 func (st *syscallTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
-	glog.V(2).Infof("Got Event %+v\n", te.Event)
 	switch event := te.Event.Event.(type) {
 	case *api.TelemetryEvent_Container:
 		switch event.Container.Type {

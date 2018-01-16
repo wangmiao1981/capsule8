@@ -126,8 +126,6 @@ func (ct *exitTest) CreateSubscription(t *testing.T) *api.Subscription {
 }
 
 func (ct *exitTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.ReceivedTelemetryEvent) bool {
-	glog.V(2).Infof("%+v", telemetryEvent)
-
 	switch event := telemetryEvent.Event.Event.(type) {
 	case *api.TelemetryEvent_Container:
 		switch event.Container.Type {

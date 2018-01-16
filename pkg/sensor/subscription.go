@@ -24,6 +24,7 @@ import (
 type subscriptionUnregisterFn func(eventID uint64, sub *subscription)
 
 type subscription struct {
+	eventID    uint64
 	data       chan interface{}
 	unregister subscriptionUnregisterFn
 	filter     *expression.Expression
@@ -52,9 +53,15 @@ func (sm subscriptionMap) subscribe(eventID uint64) *subscription {
 		return s
 	}
 
-	s := &subscription{}
+	s := &subscription{
+		eventID: eventID,
+	}
 	im[dummySubscriptionID] = s
 	return s
+}
+
+func (sm subscriptionMap) unsubscribe(eventID uint64) {
+	delete(sm, eventID)
 }
 
 func (sm subscriptionMap) forEach(f func(uint64, uint64, *subscription)) {
