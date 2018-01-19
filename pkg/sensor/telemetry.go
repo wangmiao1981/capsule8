@@ -149,7 +149,7 @@ func (ts *TelemetryService) Serve() error {
 
 // Stop will stop a running TelemetryService.
 func (ts *TelemetryService) Stop() {
-	ts.server.GracefulStop()
+	ts.server.Stop()
 }
 
 type telemetryServiceServer struct {
