@@ -1,3 +1,26 @@
+## 0.5.0-alpha (Jan 24, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  * `CONTAINER_EVENT_TYPE_UPDATED` is added to the telemetry event proto definition in [#108](https://github.com/capsule8/capsule8/pull/108)
+
+FEATURES:
+
+  * Allow client to specify all or none service failure behaviour ([#112](https://github.com/capsule8/capsule8/pull/112))
+  * Surface process credentials in telemetry events ([#110](https://github.com/capsule8/capsule8/pull/110))
+  * Overhaul container caching and related telemetry events ([#108](https://github.com/capsule8/capsule8/pull/108))
+
+IMPROVEMENTS:
+
+  * Gracefully stop services during all or nothing termination ([#115](https://github.com/capsule8/capsule8/pull/115))
+  * Update naming of fields in Credentials struct to comply with Go naming conventions ([#114](https://github.com/capsule8/capsule8/pull/114))
+  * Don't wait for telemetry clients to finish before stopping ([#109](https://github.com/capsule8/capsule8/pull/109))
+  * Change expression.FieldTypeMap to map[string]int32 ([#107](https://github.com/capsule8/capsule8/pull/107))
+
+BUG FIXES:
+
+  * Ensure that all expected keys for container events are always set ([#113](https://github.com/capsule8/capsule8/pull/113))
+
 ## 0.4.0-alpha (Jan 11, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
