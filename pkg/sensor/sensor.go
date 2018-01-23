@@ -321,6 +321,20 @@ func (s *Sensor) NewEventFromSample(
 		e.ProcessId = processID
 	}
 
+	var cred Cred
+	if s.processCache.ProcessCredentials(pid, &cred) {
+		e.Credentials = &api.Credentials{
+			Uid:   cred.UID,
+			Gid:   cred.Gid,
+			Euid:  cred.Euid,
+			Egid:  cred.Egid,
+			Suid:  cred.Suid,
+			Sgid:  cred.Sgid,
+			Fsuid: cred.Fsuid,
+			Fsgid: cred.Fsgid,
+		}
+	}
+
 	// Add an associated container information
 	if containerInfo, ok := s.processCache.ProcessContainerInfo(pid); ok {
 		e.ContainerId = containerInfo.ID

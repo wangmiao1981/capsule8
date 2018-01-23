@@ -96,6 +96,9 @@ message TelemetryEvent {
 
         // CPU on which the event occurred
         int32 cpu = 201;
+
+	// Credentials for the process associated with the event
+	Credentials credentials = 202;
 }
 
 message ChargenEvent {
