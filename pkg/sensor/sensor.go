@@ -28,7 +28,7 @@ import (
 	api "github.com/capsule8/capsule8/api/v0"
 
 	"github.com/capsule8/capsule8/pkg/config"
-	"github.com/capsule8/capsule8/pkg/container"
+	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/capsule8/capsule8/pkg/stream"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
@@ -57,9 +57,6 @@ type Sensor struct {
 	// Metrics counters for this sensor
 	Metrics MetricsCounters
 
-	// Repeater used for container event subscriptions
-	containerEventRepeater *containerEventRepeater
-
 	// If temporary fs mounts are made at startup, they're stored here.
 	perfEventMountPoint string
 	traceFSMountPoint   string
@@ -68,8 +65,10 @@ type Sensor struct {
 	// caching process information
 	monitor *perf.EventMonitor
 
-	// Per-sensor process cache.
-	processCache ProcessInfoCache
+	// Per-sensor caches and monitors
+	containerCache *containerCache
+	processCache   ProcessInfoCache
+	dockerMonitor  *dockerMonitor
 
 	// Mapping of event ids to data streams (subscriptions)
 	eventMap *safeSubscriptionMap
@@ -95,12 +94,6 @@ func NewSensor() (*Sensor, error) {
 		bootMonotimeNanos: bootMonotimeNanos,
 		eventMap:          newSafeSubscriptionMap(),
 	}
-
-	cer, err := newContainerEventRepeater(s)
-	if err != nil {
-		return nil, err
-	}
-	s.containerEventRepeater = cer
 
 	return s, nil
 }
@@ -151,7 +144,13 @@ func (s *Sensor) Start() error {
 		return err
 	}
 
-	s.processCache = NewProcessInfoCache(s)
+	s.containerCache = newContainerCache(s)
+	s.processCache = newProcessInfoCache(s)
+
+	if len(config.Sensor.DockerContainerDir) > 0 {
+		s.dockerMonitor = newDockerMonitor(s,
+			config.Sensor.DockerContainerDir)
+	}
 
 	// Make sure that all events registered with the sensor's event monitor
 	// are active
@@ -178,18 +177,40 @@ func (s *Sensor) Stop() {
 	}
 }
 
-func (s *Sensor) dispatchSample(eventID uint64, sample interface{}, err error) {
-	if err != nil {
-		glog.Warning(err)
+func (s *Sensor) dispatchSample(eventID uint64, sample perf.EventMonitorSample) {
+	if sample.Err != nil {
+		glog.Warning(sample.Err)
 	}
 
-	if event, ok := sample.(*api.TelemetryEvent); ok && event != nil {
-		eventMap := s.eventMap.getMap()
-		if sub, ok := eventMap[eventID]; ok && sub != nil {
-			if sub.data != nil {
-				sub.data <- event
+	event, ok := sample.DecodedSample.(*api.TelemetryEvent)
+	if !ok || event == nil {
+		return
+	}
+
+	eventMap := s.eventMap.getMap()
+	subscriptions, ok := eventMap[eventID]
+	if !ok {
+		return
+	}
+
+	for _, s := range subscriptions {
+		if s.data == nil {
+			continue
+		}
+		if s.filter != nil {
+			v, err := s.filter.Evaluate(
+				expression.FieldTypeMap(sample.Fields),
+				expression.FieldValueMap(sample.DecodedData))
+			if err != nil {
+				glog.V(1).Infof("Expression evaluation error: %s", err)
+				continue
+			}
+			if !expression.IsValueTrue(v) {
+				continue
 			}
 		}
+		glog.V(2).Infof("Sending %+v", event)
+		s.data <- event
 	}
 }
 
@@ -281,8 +302,10 @@ func (s *Sensor) NewEventFromContainer(containerID string) *api.TelemetryEvent {
 
 // NewEventFromSample creates a new API Event instance using perf_event sample
 // information.
-func (s *Sensor) NewEventFromSample(sample *perf.SampleRecord,
-	data perf.TraceEventSampleData) *api.TelemetryEvent {
+func (s *Sensor) NewEventFromSample(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) *api.TelemetryEvent {
 
 	e := s.NewEvent()
 	e.SensorMonotimeNanos = int64(sample.Time) - s.bootMonotimeNanos
@@ -290,27 +313,20 @@ func (s *Sensor) NewEventFromSample(sample *perf.SampleRecord,
 	// When both the sensor and the process generating the sample are in
 	// containers, the sample.Pid and sample.Tid fields will be zero.
 	// Use "common_pid" from the trace event data instead.
-	e.ProcessPid = data["common_pid"].(int32)
+	e.ProcessPid, _ = data["common_pid"].(int32)
 	e.Cpu = int32(sample.CPU)
 
-	processID, ok := s.processCache.ProcessID(int(e.ProcessPid))
-	if ok {
+	pid := int(e.ProcessPid)
+	if processID, ok := s.processCache.ProcessID(pid); ok {
 		e.ProcessId = processID
 	}
 
-	// Add an associated containerId
-	containerID, ok := s.processCache.ProcessContainerID(int(e.ProcessPid))
-	if ok {
-		// Add the container Id if we have it and then try
-		// using it to look up additional container info
-		e.ContainerId = containerID
-
-		containerInfo := container.GetInfo(containerID)
-		if containerInfo != nil {
-			e.ContainerName = containerInfo.Name
-			e.ImageId = containerInfo.ImageID
-			e.ImageName = containerInfo.ImageName
-		}
+	// Add an associated container information
+	if containerInfo, ok := s.processCache.ProcessContainerInfo(pid); ok {
+		e.ContainerId = containerInfo.ID
+		e.ContainerName = containerInfo.Name
+		e.ImageId = containerInfo.ImageID
+		e.ImageName = containerInfo.ImageName
 	}
 
 	return e
@@ -419,6 +435,7 @@ func (s *Sensor) createEventMonitor() error {
 func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, error) {
 	eventMap := newSubscriptionMap()
 
+	registerContainerEvents(s, eventMap, sub.EventFilter.ContainerEvents)
 	registerFileEvents(s, eventMap, sub.EventFilter.FileEvents)
 	registerKernelEvents(s, eventMap, sub.EventFilter.KernelEvents)
 	registerNetworkEvents(s, eventMap, sub.EventFilter.NetworkEvents)
@@ -432,10 +449,11 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 	ctrl := make(chan interface{})
 	data := make(chan interface{}, config.Sensor.ChannelBufferLength)
 
-	for eventID := range eventMap {
-		eventSub := eventMap[eventID]
-		eventSub.data = data
-	}
+	eventMap.forEach(func(eventID, subscriptionID uint64, s *subscription) {
+		s.data = data
+	})
+	subscriptionID := s.eventMap.subscribe(eventMap)
+	glog.V(2).Infof("Subscription %d registered", subscriptionID)
 
 	go func() {
 		defer close(data)
@@ -443,22 +461,21 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 		for {
 			_, ok := <-ctrl
 			if !ok {
-				glog.V(2).Info("Control channel closed")
+				glog.V(2).Infof("Subscription %d control channel closed",
+					subscriptionID)
 
-				// Remove from .eventMap first so that any
-				// pending events being processed get discarded
-				// as quickly as possible. Then remove the
-				// events from the EventMonitor
-				s.eventMap.remove(eventMap)
-				for eventID := range eventMap {
-					s.monitor.UnregisterEvent(eventID)
-				}
+				s.eventMap.unsubscribe(subscriptionID,
+					func(eventID uint64) {
+						t, ok := s.monitor.RegisteredEventType(eventID)
+						if ok && t != perf.EventTypeExternal {
+							s.monitor.UnregisterEvent(eventID)
+						}
+					})
 				return
 			}
 		}
 	}()
 
-	s.eventMap.update(eventMap)
 	for eventID := range eventMap {
 		s.monitor.Enable(eventID)
 	}
@@ -491,7 +508,8 @@ func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) 
 	eventStream, joiner := stream.NewJoiner()
 	joiner.Off()
 
-	if len(sub.EventFilter.FileEvents) > 0 ||
+	if len(sub.EventFilter.ContainerEvents) > 0 ||
+		len(sub.EventFilter.FileEvents) > 0 ||
 		len(sub.EventFilter.KernelEvents) > 0 ||
 		len(sub.EventFilter.NetworkEvents) > 0 ||
 		len(sub.EventFilter.ProcessEvents) > 0 ||
@@ -505,15 +523,6 @@ func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) 
 		if pes != nil {
 			joiner.Add(pes)
 		}
-	}
-
-	if len(sub.EventFilter.ContainerEvents) > 0 {
-		ces, err := s.containerEventRepeater.newEventStream(sub)
-		if err != nil {
-			joiner.Close()
-			return nil, err
-		}
-		joiner.Add(ces)
 	}
 
 	for _, cf := range sub.EventFilter.ChargenEvents {
@@ -552,12 +561,4 @@ func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) 
 	joiner.On()
 
 	return eventStream, nil
-}
-
-func filterNils(e interface{}) bool {
-	if e != nil {
-		ev := e.(*api.TelemetryEvent)
-		return ev != nil
-	}
-	return false
 }

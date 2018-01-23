@@ -93,7 +93,10 @@ func (c *arrayTaskCache) InsertTask(pid int, t task) {
 
 func (c *arrayTaskCache) SetTaskContainerID(pid int, cID string) {
 	glog.V(10).Infof("SetTaskContainerID(%d) = %s", pid, cID)
-	c.entries[pid].containerID = cID
+	if c.entries[pid].containerID != cID {
+		c.entries[pid].containerID = cID
+		c.entries[pid].containerInfo = nil
+	}
 }
 
 func (c *arrayTaskCache) SetTaskCredentials(pid int, creds cred) {
@@ -147,9 +150,9 @@ func (c *mapTaskCache) SetTaskContainerID(pid int, cID string) {
 
 	c.Lock()
 	defer c.Unlock()
-	t, ok := c.entries[pid]
-	if ok {
+	if t, ok := c.entries[pid]; ok && t.containerID != cID {
 		t.containerID = cID
+		t.containerInfo = nil
 		c.entries[pid] = t
 	}
 }
@@ -185,10 +188,10 @@ type ProcessInfoCache struct {
 	cache  taskCache
 }
 
-// NewProcessInfoCache creates a new process information cache object. An
+// newProcessInfoCache creates a new process information cache object. An
 // existing sensor object is required in order for the process info cache to
 // able to install its probes to monitor the system to maintain the cache.
-func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
+func newProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	once.Do(func() {
 		procFS = sys.HostProcFS()
 		if procFS == nil {
@@ -219,7 +222,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	_, err = sensor.monitor.RegisterKprobe(commitCredsAddress, false,
 		commitCredsArgs, cache.decodeCommitCreds)
 
-	// Attach a probe for task_renamse involving the runc
+	// Attach a probe for task_rename involving the runc
 	// init processes to trigger containerID lookups
 	f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
 	eventName = "task/task_rename"
@@ -302,6 +305,25 @@ func (pc *ProcessInfoCache) ProcessContainerID(pid int) (string, bool) {
 	return "", false
 }
 
+// ProcessContainerInfo returns the container info for a process
+func (pc *ProcessInfoCache) ProcessContainerInfo(pid int) (*ContainerInfo, bool) {
+	var t task
+	for p := pid; pc.cache.LookupTask(p, &t); p = t.ppid {
+		if t.containerInfo != nil {
+			return t.containerInfo, true
+		}
+		if len(t.containerID) > 0 {
+			cc := pc.sensor.containerCache
+			t.containerInfo = cc.lookupContainer(t.containerID, true)
+			if t.containerInfo != nil {
+				return t.containerInfo, true
+			}
+		}
+	}
+
+	return nil, false
+}
+
 // ProcessCommandLine returns the command-line for a process. The command-line
 // is constructed from argv passed to execve(), but is limited to a fixed number
 // of elements of argv; therefore, it may not be complete.
@@ -350,7 +372,8 @@ type task struct {
 	creds cred
 
 	// Unique ID for the container instance
-	containerID string
+	containerID   string
+	containerInfo *ContainerInfo
 }
 
 type cred struct {
@@ -389,7 +412,7 @@ func (pc *ProcessInfoCache) decodeNewTask(
 
 	var tgid int
 
-	const cloneThread = 0x10000
+	const cloneThread = 0x10000 // CLONE_THREAD from the kernel
 	if (cloneFlags & cloneThread) != 0 {
 		tgid = parentPid
 	} else {
@@ -397,16 +420,21 @@ func (pc *ProcessInfoCache) decodeNewTask(
 		tgid = childPid
 	}
 
-	// Inherit containerID from parent
-	containerID, _ := pc.ProcessContainerID(parentPid)
+	// Inherit container information from parent
+	var containerID string
+	containerInfo, _ := pc.ProcessContainerInfo(parentPid)
+	if containerInfo != nil {
+		containerID = containerInfo.ID
+	}
 
 	t := task{
-		pid:         childPid,
-		ppid:        parentPid,
-		tgid:        tgid,
-		cloneFlags:  cloneFlags,
-		command:     command,
-		containerID: containerID,
+		pid:           childPid,
+		ppid:          parentPid,
+		tgid:          tgid,
+		cloneFlags:    cloneFlags,
+		command:       command,
+		containerID:   containerID,
+		containerInfo: containerInfo,
 	}
 
 	pc.cache.InsertTask(t.pid, t)

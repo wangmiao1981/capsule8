@@ -79,8 +79,6 @@ func (st *procStressTest) CreateSubscription(t *testing.T) *api.Subscription {
 }
 
 func (st *procStressTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.ReceivedTelemetryEvent) bool {
-	glog.V(2).Infof("%+v", telemetryEvent)
-
 	switch event := telemetryEvent.Event.Event.(type) {
 	case *api.TelemetryEvent_Container:
 		// Ignore

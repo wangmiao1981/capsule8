@@ -58,8 +58,6 @@ func (tickTest *tickerTest) CreateSubscription(t *testing.T) *api.Subscription {
 }
 
 func (tickTest *tickerTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool {
-	glog.V(2).Infof("%+v", te)
-
 	switch event := te.Event.Event.(type) {
 	case *api.TelemetryEvent_Ticker:
 		if tickTest.count == 0 {

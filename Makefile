@@ -47,8 +47,9 @@ DOCKER_RUN_FLAGS+=
 CLANG?=clang
 
 # Needed to regenerate code from protos
-PROTOC_GEN_GO=${GOPATH}/bin/protoc-gen-go
-PROTOC_GEN_GRPC_GATEWAY=${GOPATH}/bin/protoc-gen-grpc-gateway
+GOBIN?=${GOPATH}/bin
+PROTOC_GEN_GO=${GOBIN}/protoc-gen-go
+PROTOC_GEN_GRPC_GATEWAY=${GOBIN}/protoc-gen-grpc-gateway
 GO_OUT=../
 GRPC_GATEWAY_OUT=../
 PROTO_INC=-I../:third_party/protobuf/src:third_party/googleapis 
@@ -61,6 +62,7 @@ BINS=$(patsubst %,bin/%,$(CMDS)) \
 
 # All source directories that need to be checked, compiled, tested, etc.
 SRC=./cmd/... ./pkg/... ./examples/...
+PKG_SOURCES=$(shell find pkg 2>&1 | grep -E '.*\.go$$')
 
 #
 # Docker flags to use for builder
@@ -200,10 +202,10 @@ dist: static
 #
 # Pattern rules to allow 'make foo' to build ./cmd/foo or ./test/cmd/foo (whichever exists)
 #
-bin/% : cmd/% cmd/%/*.go
+bin/% : cmd/% cmd/%/*.go $(PKG_SOURCES)
 	$(GO_BUILD) $(GO_BUILD_FLAGS) -o $@ ./$<
 
-bin/% : examples/% examples/%/*.go
+bin/% : examples/% examples/%/*.go $(PKG_SOURCES)
 	$(GO_BUILD) $(GO_BUILD_FLAGS) -o $@ ./$<
 
 #

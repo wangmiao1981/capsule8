@@ -73,8 +73,6 @@ func (ct *execTest) CreateSubscription(t *testing.T) *api.Subscription {
 }
 
 func (ct *execTest) HandleTelemetryEvent(t *testing.T, telemetryEvent *api.ReceivedTelemetryEvent) bool {
-	glog.V(2).Infof("%+v", telemetryEvent)
-
 	switch event := telemetryEvent.Event.Event.(type) {
 	case *api.TelemetryEvent_Process:
 		if event.Process.Type == api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC &&

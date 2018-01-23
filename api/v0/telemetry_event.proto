@@ -125,6 +125,7 @@ enum ContainerEventType {
         CONTAINER_EVENT_TYPE_RUNNING   = 2;
         CONTAINER_EVENT_TYPE_EXITED    = 3;
         CONTAINER_EVENT_TYPE_DESTROYED = 4;
+        CONTAINER_EVENT_TYPE_UPDATED   = 5;
 }
 
 // ContainerEvent describes a Docker container or Rkt App lifecycle event
