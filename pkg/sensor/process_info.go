@@ -39,7 +39,11 @@ import (
 
 const (
 	commitCredsAddress = "commit_creds"
-	commitCredsArgs    = "usage=+0(%di):u64 uid=+8(%di):u32 gid=+12(%di):u32"
+	commitCredsArgs    = "usage=+0(%di):u64 " +
+		"uid=+8(%di):u32 gid=+12(%di):u32 " +
+		"suid=+16(%di):u32 sgid=+20(%di):u32 " +
+		"euid=+24(%di):u32 egid=+28(%di):u32 " +
+		"fsuid=+32(%di):u32 fsgid=+36(%di):u32"
 
 	execveArgCount = 6
 
@@ -59,7 +63,7 @@ type taskCache interface {
 	LookupTask(int, *task) bool
 	InsertTask(int, task)
 	SetTaskContainerID(int, string)
-	SetTaskCredentials(int, cred)
+	SetTaskCredentials(int, Cred)
 	SetTaskCommandLine(int, []string)
 }
 
@@ -99,7 +103,7 @@ func (c *arrayTaskCache) SetTaskContainerID(pid int, cID string) {
 	}
 }
 
-func (c *arrayTaskCache) SetTaskCredentials(pid int, creds cred) {
+func (c *arrayTaskCache) SetTaskCredentials(pid int, creds Cred) {
 	glog.V(10).Infof("SetTaskCredentials(%d) = %+v", pid, creds)
 
 	c.entries[pid].creds = creds
@@ -157,7 +161,7 @@ func (c *mapTaskCache) SetTaskContainerID(pid int, cID string) {
 	}
 }
 
-func (c *mapTaskCache) SetTaskCredentials(pid int, creds cred) {
+func (c *mapTaskCache) SetTaskCredentials(pid int, creds Cred) {
 	glog.V(10).Infof("SetTaskCredentials(%d) = %+v", pid, creds)
 
 	c.Lock()
@@ -333,6 +337,14 @@ func (pc *ProcessInfoCache) ProcessCommandLine(pid int) ([]string, bool) {
 	return t.commandLine, ok
 }
 
+// ProcessCredentials returns the uid and gid for a process.
+func (pc *ProcessInfoCache) ProcessCredentials(pid int, c *Cred) bool {
+	var t task
+	ok := pc.cache.LookupTask(pid, &t)
+	*c = t.creds
+	return ok && t.creds.Initialized
+}
+
 //
 // task represents a schedulable task. All Linux tasks are uniquely
 // identified at a given time by their PID, but those PIDs may be
@@ -369,21 +381,42 @@ type task struct {
 
 	// Process credentials (uid, gid). This is kept up-to-date by
 	// recording changes observed via a probe on commit_creds().
-	creds cred
+	creds Cred
 
 	// Unique ID for the container instance
 	containerID   string
 	containerInfo *ContainerInfo
 }
 
-type cred struct {
-	// Set to true when this struct has been initialized. This
-	// helps differentiate from processes running as root (all
-	// cred fields are legitimately set to 0).
-	initialized bool
+// Cred contains process credential information
+type Cred struct {
+	// Initialized is true when this struct has been initialized. This
+	// helps differentiate from processes running as root (all cred fields
+	// are legitimately set to 0).
+	Initialized bool
 
-	// Record uid and gid to have symmetry with eBPF get_current_uid_gid()
-	uid, gid uint32
+	// UID is the real UID
+	UID uint32
+	// Gid is the real GID
+	Gid uint32
+
+	// Euid is the effective UID
+	Euid uint32
+
+	// Egid is the effective GID
+	Egid uint32
+
+	// Suid is the saved UID
+	Suid uint32
+
+	// Sgid is the saved GID
+	Sgid uint32
+
+	// Fsuid is the UID for filesystem operations
+	Fsuid uint32
+
+	// Fsgid is the GID for filesystem operations
+	Fsgid uint32
 }
 
 //
@@ -451,19 +484,20 @@ func (pc *ProcessInfoCache) decodeCommitCreds(
 ) (interface{}, error) {
 	pid := int(data["common_pid"].(int32))
 
-	usage := data["usage"].(uint64)
-
-	if usage == 0 {
+	if usage := data["usage"].(uint64); usage == 0 {
 		glog.Fatal("Received commit_creds with zero usage")
 	}
 
-	uid := data["uid"].(uint32)
-	gid := data["gid"].(uint32)
-
-	c := cred{
-		initialized: true,
-		uid:         uid,
-		gid:         gid,
+	c := Cred{
+		Initialized: true,
+		UID:         data["uid"].(uint32),
+		Gid:         data["gid"].(uint32),
+		Euid:        data["euid"].(uint32),
+		Egid:        data["egid"].(uint32),
+		Suid:        data["suid"].(uint32),
+		Sgid:        data["sgid"].(uint32),
+		Fsuid:       data["fsuid"].(uint32),
+		Fsgid:       data["fsgid"].(uint32),
 	}
 
 	pc.cache.SetTaskCredentials(pid, c)
