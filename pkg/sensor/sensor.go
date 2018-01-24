@@ -325,13 +325,13 @@ func (s *Sensor) NewEventFromSample(
 	if s.processCache.ProcessCredentials(pid, &cred) {
 		e.Credentials = &api.Credentials{
 			Uid:   cred.UID,
-			Gid:   cred.Gid,
-			Euid:  cred.Euid,
-			Egid:  cred.Egid,
-			Suid:  cred.Suid,
-			Sgid:  cred.Sgid,
-			Fsuid: cred.Fsuid,
-			Fsgid: cred.Fsgid,
+			Gid:   cred.GID,
+			Euid:  cred.EUID,
+			Egid:  cred.EGID,
+			Suid:  cred.SUID,
+			Sgid:  cred.SGID,
+			Fsuid: cred.FSUID,
+			Fsgid: cred.FSGID,
 		}
 	}
 

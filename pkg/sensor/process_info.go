@@ -397,26 +397,26 @@ type Cred struct {
 
 	// UID is the real UID
 	UID uint32
-	// Gid is the real GID
-	Gid uint32
+	// GID is the real GID
+	GID uint32
 
-	// Euid is the effective UID
-	Euid uint32
+	// EUID is the effective UID
+	EUID uint32
 
-	// Egid is the effective GID
-	Egid uint32
+	// EGID is the effective GID
+	EGID uint32
 
-	// Suid is the saved UID
-	Suid uint32
+	// SUID is the saved UID
+	SUID uint32
 
-	// Sgid is the saved GID
-	Sgid uint32
+	// SGID is the saved GID
+	SGID uint32
 
-	// Fsuid is the UID for filesystem operations
-	Fsuid uint32
+	// FSUID is the UID for filesystem operations
+	FSUID uint32
 
-	// Fsgid is the GID for filesystem operations
-	Fsgid uint32
+	// FSGID is the GID for filesystem operations
+	FSGID uint32
 }
 
 //
@@ -491,13 +491,13 @@ func (pc *ProcessInfoCache) decodeCommitCreds(
 	c := Cred{
 		Initialized: true,
 		UID:         data["uid"].(uint32),
-		Gid:         data["gid"].(uint32),
-		Euid:        data["euid"].(uint32),
-		Egid:        data["egid"].(uint32),
-		Suid:        data["suid"].(uint32),
-		Sgid:        data["sgid"].(uint32),
-		Fsuid:       data["fsuid"].(uint32),
-		Fsgid:       data["fsgid"].(uint32),
+		GID:         data["gid"].(uint32),
+		EUID:        data["euid"].(uint32),
+		EGID:        data["egid"].(uint32),
+		SUID:        data["suid"].(uint32),
+		SGID:        data["sgid"].(uint32),
+		FSUID:       data["fsuid"].(uint32),
+		FSGID:       data["fsgid"].(uint32),
 	}
 
 	pc.cache.SetTaskCredentials(pid, c)
