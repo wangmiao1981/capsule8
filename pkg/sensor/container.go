@@ -207,24 +207,25 @@ func (cc *containerCache) enqueueContainerEvent(
 	sampleID perf.SampleID,
 	info *ContainerInfo,
 ) error {
+	ws := unix.WaitStatus(info.ExitCode)
 	data := map[string]interface{}{
-		"container_id": info.ID,
-		"name":         info.Name,
-		"image_id":     info.ImageID,
-		"image_name":   info.ImageName,
-		"host_pid":     int32(info.Pid),
-		"exit_code":    int32(info.ExitCode),
+		"container_id":     info.ID,
+		"name":             info.Name,
+		"image_id":         info.ImageID,
+		"image_name":       info.ImageName,
+		"host_pid":         int32(info.Pid),
+		"exit_code":        int32(info.ExitCode),
+		"exit_status":      uint32(0),
+		"exit_signal":      uint32(0),
+		"exit_core_dumped": ws.CoreDump(),
 	}
 
-	ws := unix.WaitStatus(info.ExitCode)
 	if ws.Exited() {
 		data["exit_status"] = uint32(ws.ExitStatus())
-		data["exit_signal"] = uint32(0)
-	} else if ws.Signaled() {
-		data["exit_status"] = uint32(0)
+	}
+	if ws.Signaled() {
 		data["exit_signal"] = uint32(ws.Signal())
 	}
-	data["exit_core_dumped"] = ws.CoreDump()
 
 	return cc.sensor.monitor.EnqueueExternalSample(eventID, sampleID, data)
 }
