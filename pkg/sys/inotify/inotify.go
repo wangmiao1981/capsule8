@@ -95,7 +95,7 @@ func (is *Instance) addWatch(path string, mask uint32) error {
 		is.path[path] = watch
 	}
 
-	return nil
+	return err
 }
 
 func (is *Instance) add(path string, mask uint32, recursive bool) error {
@@ -127,7 +127,7 @@ func (is *Instance) add(path string, mask uint32, recursive bool) error {
 		if recursive == false {
 			// Added a non-recursive watch on a single file, we're done.
 			return filepath.SkipDir
-		} else if err != unix.ENOTDIR {
+		} else if err != unix.ENOENT {
 			// We ignore ENOENT on recursive watches since we added IN_ONLYDIR
 			return err
 		}
@@ -346,22 +346,26 @@ func (is *Instance) pollLoop() error {
 		if pollFds[1].Revents&unix.POLLIN != 0 {
 			n, err = unix.Read(int(pollFds[1].Fd), inotifyBuffer)
 			if err != nil {
-				return err
-			}
-
-			err = is.handleInotifyBuffer(inotifyBuffer[:n])
-			if err != nil {
-				return err
+				if err != unix.EINTR {
+					return err
+				}
+			} else if n > 0 {
+				err = is.handleInotifyBuffer(inotifyBuffer[:n])
+				if err != nil {
+					return err
+				}
 			}
 		} else if pollFds[0].Revents&unix.POLLIN != 0 {
 			n, err = unix.Read(int(pollFds[0].Fd), controlBuffer)
 			if err != nil {
-				return err
-			}
-
-			err = is.handleControlBuffer(controlBuffer[:n])
-			if err != nil {
-				return err
+				if err != unix.EINTR {
+					return err
+				}
+			} else if n > 0 {
+				err = is.handleControlBuffer(controlBuffer[:n])
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -456,7 +460,7 @@ func NewInstance() (*Instance, error) {
 		ctrl: ctrl,
 	}
 
-	err = unix.Pipe2(is.pipe[:], unix.O_DIRECT|unix.O_NONBLOCK)
+	err = unix.Pipe(is.pipe[:])
 	if err != nil {
 		return nil, err
 	}
@@ -470,6 +474,15 @@ func NewInstance() (*Instance, error) {
 		err = unix.Close(is.fd)
 		if err != nil {
 			glog.Infof("Error closing inotify fd: %v", err)
+		}
+
+		err = unix.Close(is.pipe[1])
+		if err != nil {
+			glog.Infof("Error closing inotify pipe write-side: %v", err)
+		}
+		err = unix.Close(is.pipe[0])
+		if err != nil {
+			glog.Infof("Error closing inotify pipe read-side: %v", err)
 		}
 
 		close(is.errc)
