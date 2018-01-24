@@ -104,8 +104,6 @@ func (sm *ServiceManager) Run() {
 			glog.V(1).Infof("Stopping service %s", service.Name())
 			service.Stop()
 		}
-
-		sm.stopped = true
 	}()
 
 	glog.V(1).Info("Starting services ...")
@@ -138,5 +136,7 @@ func (sm *ServiceManager) Stop() {
 	// the Server is running
 	if !sm.stopped {
 		close(sm.stopChan)
+
+		sm.stopped = true
 	}
 }
