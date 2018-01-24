@@ -27,9 +27,9 @@ import (
 type ServiceManagerOption func(*serviceManagerOptions)
 
 // WithAllOrNothing specifies whether all services should exit upon a single service failure
-func WithAllOrNothing(allOrNothing bool) ServiceManagerOption {
+func WithAllOrNothing() ServiceManagerOption {
 	return func(o *serviceManagerOptions) {
-		o.allOrNothing = allOrNothing
+		o.allOrNothing = true
 	}
 }
 
@@ -116,10 +116,9 @@ func (sm *ServiceManager) Run() {
 			glog.V(1).Infof("Starting service %s", service.Name())
 			err := service.Serve()
 			if sm.options.allOrNothing {
-				glog.Fatalf("%s Serve(): %v", service.Name(), err)
-			} else {
-				glog.V(1).Infof("%s Serve(): %v", service.Name(), err)
+				sm.Stop()
 			}
+			glog.V(1).Infof("%s Serve(): %v", service.Name(), err)
 			wg.Done()
 		}(service)
 	}
