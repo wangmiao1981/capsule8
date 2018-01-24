@@ -23,6 +23,20 @@ import (
 	"github.com/golang/glog"
 )
 
+// ServiceManagerOption represents options passed into the service manager constructor
+type ServiceManagerOption func(*serviceManagerOptions)
+
+// WithAllOrNothing specifies whether all services should exit upon a single service failure
+func WithAllOrNothing(allOrNothing bool) ServiceManagerOption {
+	return func(o *serviceManagerOptions) {
+		o.allOrNothing = allOrNothing
+	}
+}
+
+type serviceManagerOptions struct {
+	allOrNothing bool
+}
+
 // Service is a service that is registered with and run by a ServiceManager
 type Service interface {
 	Name() string
@@ -34,6 +48,10 @@ type Service interface {
 type ServiceManager struct {
 	sync.Mutex
 
+	options *serviceManagerOptions
+
+	allOrNothing bool
+
 	services []Service
 	stopped  bool
 
@@ -42,8 +60,14 @@ type ServiceManager struct {
 }
 
 // NewServiceManager creates a new ServiceManager instance.
-func NewServiceManager() *ServiceManager {
-	return &ServiceManager{}
+func NewServiceManager(options ...ServiceManagerOption) *ServiceManager {
+	opts := &serviceManagerOptions{}
+	for _, option := range options {
+		option(opts)
+	}
+	return &ServiceManager{
+		options: opts,
+	}
 }
 
 // RegisterService registers a Service for management with a ServiceManager.
@@ -91,7 +115,11 @@ func (sm *ServiceManager) Run() {
 		go func(service Service) {
 			glog.V(1).Infof("Starting service %s", service.Name())
 			err := service.Serve()
-			glog.V(1).Infof("%s Serve(): %v", service.Name(), err)
+			if sm.options.allOrNothing {
+				glog.Fatalf("%s Serve(): %v", service.Name(), err)
+			} else {
+				glog.V(1).Infof("%s Serve(): %v", service.Name(), err)
+			}
 			wg.Done()
 		}(service)
 	}
