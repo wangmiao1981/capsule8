@@ -59,13 +59,13 @@ type Instance struct {
 	fd          int
 	elem        chan interface{}
 	errc        chan error
-	stop        chan interface{}
 	watch       map[int]*watch
 	path        map[string]*watch
 	eventStream *stream.Stream
 	pipe        [2]int
 	ctrl        chan interface{}
 	triggers    []trigger
+	finished    bool
 }
 
 type watch struct {
@@ -208,6 +208,8 @@ type inotifyRemoveTrigger struct {
 	pattern string
 }
 
+type inotifyFinish struct{}
+
 //
 // Handle a control message notification message sent over the pipe
 //
@@ -238,6 +240,9 @@ func (is *Instance) handleControlBuffer(b []byte) error {
 		msg := msg.(*inotifyRemoveTrigger)
 		err := is.removeTrigger(msg.pattern)
 		msg.reply <- err
+
+	case *inotifyFinish:
+		is.finished = true
 
 	default:
 		panic(fmt.Sprintf("Unknown control message type: %T", msg))
@@ -329,7 +334,7 @@ func (is *Instance) pollLoop() error {
 	pollFds[1].Fd = int32(is.fd)
 	pollFds[1].Events = unix.POLLIN
 
-	for {
+	for !is.finished {
 		n, err := unix.Poll(pollFds, pollTimeoutMillis)
 		if err != nil && err != unix.EINTR {
 			return err
@@ -369,6 +374,8 @@ func (is *Instance) pollLoop() error {
 			}
 		}
 	}
+
+	return nil
 }
 
 // -----------------------------------------------------------------------------
@@ -450,14 +457,14 @@ func NewInstance() (*Instance, error) {
 		fd:    fd,
 		elem:  elem,
 		errc:  make(chan error, 1),
-		stop:  stop,
 		watch: make(map[int]*watch),
 		path:  make(map[string]*watch),
 		eventStream: &stream.Stream{
 			Ctrl: stop,
 			Data: elem,
 		},
-		ctrl: ctrl,
+		ctrl:     ctrl,
+		finished: false,
 	}
 
 	err = unix.Pipe(is.pipe[:])
@@ -485,6 +492,7 @@ func NewInstance() (*Instance, error) {
 			glog.Infof("Error closing inotify pipe read-side: %v", err)
 		}
 
+		is.eventStream.Close()
 		close(is.errc)
 		close(is.elem)
 	}()
@@ -527,5 +535,10 @@ func (is *Instance) RemoveWatch(path string) error {
 // Close the inotify instance and allow the kernel to free its associated
 // resources. All associated watches are automatically freed.
 func (is *Instance) Close() {
-	close(is.stop)
+	// Wake the pollLoop
+	buf := [1]byte{0}
+	unix.Write(is.pipe[1], buf[:])
+
+	// Send the "finish" message
+	is.ctrl <- &inotifyFinish{}
 }

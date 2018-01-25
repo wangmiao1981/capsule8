@@ -282,3 +282,15 @@ func TestTrigger(t *testing.T) {
 	case <-done:
 	}
 }
+
+// TestStressInotifyInstances checks inotify.Instance for file descriptor leaks
+func TestStressInotifyInstances(t *testing.T) {
+	for i := 0; i < 8000; i++ {
+		in, err := NewInstance()
+		if err != nil {
+			t.Error(err)
+			break
+		}
+		in.Close()
+	}
+}
