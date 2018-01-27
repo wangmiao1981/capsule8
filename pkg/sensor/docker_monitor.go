@@ -32,8 +32,7 @@ import (
 // Docker container configuration file format V2
 // ----------------------------------------------------------------------------
 
-// DockerConfigState is a structure representing the state of a container.
-type DockerConfigState struct {
+type dockerConfigState struct {
 	Running           bool      `json:"Running"`
 	Paused            bool      `json:"Paused"`
 	Restarting        bool      `json:"Restarting"`
@@ -47,33 +46,30 @@ type DockerConfigState struct {
 	ExitCode          int       `json:"ExitCode"`
 }
 
-// DockerConfigConfig is a structure representing a Docker container's
-// configuration.
-type DockerConfigConfig struct {
+type dockerConfigConfig struct {
 	// XXX: Fill in as needed ...
 	Image string `json:"Image"`
 	// XXX: ...
 }
 
-// DockerConfigV2 is a structure representing a Docker container.
-type DockerConfigV2 struct {
+type dockerConfigV2 struct {
 	// XXX: Fill in as needed ...
 	ID     string             `json:"ID"`
 	Name   string             `json:"Name"`
 	Image  string             `json:"Image"`
-	State  DockerConfigState  `json:"State"`
-	Config DockerConfigConfig `json:"Config"`
+	State  dockerConfigState  `json:"State"`
+	Config dockerConfigConfig `json:"Config"`
 	// XXX: ...
 }
 
 const (
-	renameKprobeSymbol    = "sys_renameat"
-	renameKprobeFetchargs = "newname=+0(%cx):string"
-	renameKprobeFilter    = "newname ~ */config.v2.json"
+	dockerRenameKprobeSymbol    = "sys_renameat"
+	dockerRenameKprobeFetchargs = "newname=+0(%cx):string"
+	dockerRenameKprobeFilter    = "newname ~ */config.v2.json"
 
-	unlinkKprobeSymbol    = "sys_unlinkat"
-	unlinkKprobeFetchargs = "pathname=+0(%si):string"
-	unlinkKprobeFilter    = "pathname ~ */config.v2.json"
+	dockerUnlinkKprobeSymbol    = "sys_unlinkat"
+	dockerUnlinkKprobeFetchargs = "pathname=+0(%si):string"
+	dockerUnlinkKprobeFilter    = "pathname ~ */config.v2.json"
 )
 
 type dockerDeferredActionFn func(sampleID perf.SampleID, filename string)
@@ -100,7 +96,7 @@ type dockerMonitor struct {
 func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 	d, err := os.Open(containerDir)
 	if err != nil {
-		glog.V(1).Infof("Docker monitoring of %s disabled: %s",
+		glog.Infof("Docker monitoring of %s disabled: %s",
 			containerDir, err)
 		return nil
 	}
@@ -116,22 +112,22 @@ func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 	// right away. Otherwise there'll be race conditions as we scan the
 	// filesystem for existing containers
 
-	_, err = sensor.monitor.RegisterKprobe(renameKprobeSymbol, false,
-		renameKprobeFetchargs, dm.decodeRename,
-		perf.WithFilter(renameKprobeFilter),
+	_, err = sensor.monitor.RegisterKprobe(dockerRenameKprobeSymbol, false,
+		dockerRenameKprobeFetchargs, dm.decodeRename,
+		perf.WithFilter(dockerRenameKprobeFilter),
 		perf.WithEventEnabled())
 	if err != nil {
 		glog.Fatalf("Could not register Docker monitor %s kprobe: %s",
-			renameKprobeSymbol, err)
+			dockerRenameKprobeSymbol, err)
 	}
 
-	_, err = sensor.monitor.RegisterKprobe(unlinkKprobeSymbol, false,
-		unlinkKprobeFetchargs, dm.decodeUnlink,
-		perf.WithFilter(unlinkKprobeFilter),
+	_, err = sensor.monitor.RegisterKprobe(dockerUnlinkKprobeSymbol, false,
+		dockerUnlinkKprobeFetchargs, dm.decodeUnlink,
+		perf.WithFilter(dockerUnlinkKprobeFilter),
 		perf.WithEventEnabled())
 	if err != nil {
 		glog.Fatalf("Could not register Docker monitor %s kprobe: %s",
-			unlinkKprobeSymbol, err)
+			dockerUnlinkKprobeSymbol, err)
 	}
 
 	// Scan the filesystem looking for existing containers
@@ -143,7 +139,7 @@ func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 		configFilename := filepath.Join(containerDir, name, "config.v2.json")
 		err = dm.processDockerConfig(perf.SampleID{}, configFilename)
 		if err == nil {
-			glog.V(2).Infof("Found existing container %s", name)
+			glog.V(2).Infof("{DOCKER} Found existing container %s", name)
 		}
 	}
 
@@ -183,7 +179,7 @@ func (dm *dockerMonitor) processDockerConfig(
 		return nil
 	}
 
-	var config DockerConfigV2
+	var config dockerConfigV2
 	err = json.Unmarshal(configJSON, &config)
 	if err != nil {
 		glog.V(1).Infof("Could not unmarshal %s: %s", configFilename, err)
@@ -220,7 +216,7 @@ func (dm *dockerMonitor) processDockerConfig(
 	}
 
 	data["State"] = newState
-	containerInfo.Update(sampleID, data)
+	containerInfo.Update(ContainerRuntimeDocker, sampleID, data)
 
 	return nil
 }
@@ -237,9 +233,9 @@ func (dm *dockerMonitor) processUnlinkAction(
 	filename string,
 ) {
 	parts := strings.Split(filename, "/")
-	if len(parts) > 2 {
+	if len(parts) >= 2 {
 		containerID := parts[len(parts)-2]
-		dm.sensor.containerCache.deleteContainer(containerID, sampleID)
+		dm.sensor.containerCache.deleteContainer(containerID, ContainerRuntimeDocker, sampleID)
 	}
 }
 

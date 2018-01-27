@@ -61,7 +61,9 @@ type containerCache struct {
 type ContainerState uint
 
 const (
-	_ ContainerState = iota
+	// ContainerStateUnknown indicates that the container is in an unknown
+	// state.
+	ContainerStateUnknown ContainerState = iota
 
 	// ContainerStateCreated indicates the container exists, but is not
 	// running.
@@ -94,6 +96,19 @@ var ContainerStateNames = map[ContainerState]string{
 	ContainerStateExited:     "exited",
 }
 
+// ContainerRuntime represents the runtime used to manager a container
+type ContainerRuntime uint
+
+const (
+	// ContainerRuntimeUnknown means the container runtime managing the
+	// container is unknown. Information about the container comes from
+	// runc, the kernel, or other generic sources.
+	ContainerRuntimeUnknown ContainerRuntime = iota
+
+	// ContainerRuntimeDocker means the container is managed by Docker.
+	ContainerRuntimeDocker
+)
+
 // ContainerInfo records interesting information known about a container.
 type ContainerInfo struct {
 	cache *containerCache // the cache to which this info belongs
@@ -106,7 +121,8 @@ type ContainerInfo struct {
 	Pid      int
 	ExitCode int
 
-	State ContainerState
+	Runtime ContainerRuntime
+	State   ContainerState
 
 	JSONConfig string
 	OCIConfig  string
@@ -167,11 +183,19 @@ func newContainerCache(sensor *Sensor) *containerCache {
 	return cache
 }
 
-func (cc *containerCache) deleteContainer(containerID string, sampleID perf.SampleID) {
+func (cc *containerCache) deleteContainer(
+	containerID string,
+	runtime ContainerRuntime,
+	sampleID perf.SampleID,
+) {
 	cc.Lock()
 	info, ok := cc.cache[containerID]
 	if ok {
-		delete(cc.cache, containerID)
+		if runtime == info.Runtime {
+			delete(cc.cache, containerID)
+		} else {
+			ok = false
+		}
 	}
 	cc.Unlock()
 
@@ -184,8 +208,9 @@ func (cc *containerCache) deleteContainer(containerID string, sampleID perf.Samp
 
 func (cc *containerCache) newContainerInfo(containerID string) *ContainerInfo {
 	return &ContainerInfo{
-		cache: cc,
-		ID:    containerID,
+		cache:   cc,
+		ID:      containerID,
+		Runtime: ContainerRuntimeUnknown,
 	}
 }
 
@@ -304,10 +329,14 @@ func (cc *containerCache) decodeContainerUpdatedEvent(
 // Update updates the data cached for a container with new information. Some
 // new information may trigger telemetry events to fire.
 func (info *ContainerInfo) Update(
+	runtime ContainerRuntime,
 	sampleID perf.SampleID,
 	data map[string]interface{},
-
 ) {
+	if info.Runtime == ContainerRuntimeUnknown {
+		info.Runtime = runtime
+	}
+
 	oldState := info.State
 	dataChanged := false
 
@@ -330,6 +359,10 @@ func (info *ContainerInfo) Update(
 		if s.Field(i).Interface() != v {
 			if f.Name != "State" {
 				dataChanged = true
+			} else if info.Runtime != runtime {
+				// Only allow state changes from the runtime
+				// known to be managing the container.
+				continue
 			}
 			s.Field(i).Set(reflect.ValueOf(v))
 		}
