@@ -9,8 +9,18 @@ jobs:
       - image: circleci/golang
     working_directory: /go/src/github.com/capsule8/capsule8
     steps:
+      - run:
+          name: Configure git
+          command: |
+            git config --global url."https://github.com/".insteadOf git@github.com:
+            git config --global url."https://".insteadOf git://
+
       - checkout
-      
+ 
+      - run:
+          name: Checkout submodules
+          command: git submodule update --init --recursive --remote 
+     
       # Install dependencies here b/c circleci requires custom build containers
       # to be in a public registry.
       - run:
@@ -35,11 +45,11 @@ jobs:
       - setup_remote_docker
       - run:
           name: Run sensor container in background
-          command: DOCKER="sudo docker" make run_sensor_detach
+          command: make run_sensor_detach
       - run:
           name: Run functional tests
-          command: DOCKER="sudo docker" make run_functional_test
+          command: make run_functional_test
       - run:
           name: Stop sensor container if running
-          command: sudo docker stop capsule8-sensor || true
+          command: docker stop capsule8-sensor || true
           when: always
