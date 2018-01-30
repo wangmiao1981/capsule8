@@ -22,6 +22,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// EventGroup represents an event group created through perf_event_open(2)
 type EventGroup struct {
 	eventAttrs []*EventAttr
 	options    eventMonitorOptions
@@ -34,6 +35,7 @@ type EventGroup struct {
 	onSample       func(Sample)
 }
 
+// NewEventGroup creates a new event group described by the given attributes
 func NewEventGroup(eventAttrs []*EventAttr, options ...EventMonitorOption) (*EventGroup, error) {
 	eg := EventGroup{}
 	eg.eventAttrs = eventAttrs
@@ -45,6 +47,7 @@ func NewEventGroup(eventAttrs []*EventAttr, options ...EventMonitorOption) (*Eve
 	return &eg, nil
 }
 
+// Open opens the event group on all CPUs.
 func (eg *EventGroup) Open() error {
 	ncpu := runtime.NumCPU()
 
@@ -93,6 +96,8 @@ func (eg *EventGroup) Open() error {
 	return nil
 }
 
+// Run enables all of the events in the event group and begins
+// collecting samples from them. It only returns on an error.
 func (eg *EventGroup) Run(onSample func(Sample)) error {
 	eg.onSample = onSample
 

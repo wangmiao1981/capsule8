@@ -27,7 +27,7 @@ const (
 	// of this many cache loads, the cache miss rate is calculated
 	// and examined. This value tunes the trade-off between CPU
 	// load and detection accuracy.
-	LLCLoadSampleSize = 10000
+	llcLoadSampleSize = 10000
 
 	// Alarm thresholds as cache miss rates (between 0 and 1).
 	// These values tune the trade-off between false negatives and
@@ -63,7 +63,7 @@ func main() {
 	//
 	// Create our event group to read LL cache accesses and misses
 	//
-	// We ask the kernel to sample every LLCLoadSampleSize LLC
+	// We ask the kernel to sample every llcLoadSampleSize LLC
 	// loads. During each sample, the LLC load misses are also
 	// recorded, as well as CPU number, PID/TID, and sample time.
 	//
@@ -77,7 +77,7 @@ func main() {
 			perf.PERF_SAMPLE_TID | perf.PERF_SAMPLE_READ | perf.PERF_SAMPLE_TIME,
 		ReadFormat:   perf.PERF_FORMAT_GROUP | perf.PERF_FORMAT_ID,
 		Pinned:       true,
-		SamplePeriod: LLCLoadSampleSize,
+		SamplePeriod: llcLoadSampleSize,
 		WakeupEvents: 1,
 	}
 	eventGroup = append(eventGroup, ea)

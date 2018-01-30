@@ -37,10 +37,10 @@ BenchmarkContainerCacheMissParallel-8   	  300000	      5789 ns/op
 const arrayTaskCacheSize = 32768
 
 var values = []task{
-	{1, 2, 3, 0x120011, "foo", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
-	{1, 2, 3, 0x120011, "bar", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
-	{1, 2, 3, 0x120011, "baz", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
-	{1, 2, 3, 0x120011, "qux", nil, cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
+	{1, 2, 3, 0x120011, "foo", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
+	{1, 2, 3, 0x120011, "bar", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
+	{1, 2, 3, 0x120011, "baz", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
+	{1, 2, 3, 0x120011, "qux", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
 }
 
 func TestCaches(t *testing.T) {
