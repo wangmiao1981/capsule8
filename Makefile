@@ -27,7 +27,7 @@ GO_BUILD_FLAGS+=-ldflags "-X $(PKG)/pkg/version.Version=$(VERSION) -X $(PKG)/pkg
 GO_FMT?=go fmt
 GO_FMT_FLAGS+=
 
-GO_LINT?=golint
+GO_LINT?=golint -set_exit_status
 GO_LINTFLAGS+=
 
 # allow GO_TEST to be set on invocation of make to customize behavior
