@@ -78,7 +78,7 @@ func rewriteFileEventFilter(fef *api.FileEventFilter) {
 	if fef.CreateModeMask != nil {
 		newExpr := expression.BitwiseAnd(
 			expression.Identifier("mode"),
-			expression.Value(fef.OpenFlagsMask.Value))
+			expression.Value(fef.CreateModeMask.Value))
 		fef.FilterExpression = expression.LogicalAnd(
 			newExpr, fef.FilterExpression)
 		fef.CreateModeMask = nil
