@@ -7,6 +7,8 @@ contains the open-source components of the Capsule8 platform,
 including the Sensor, example API client code, and command-line
 interface.
 
+[![CircleCI](https://circleci.com/gh/capsule8/capsule8/tree/master.svg?style=svg)](https://circleci.com/gh/capsule8/capsule8/tree/master)
+
 ## Status
 
 Capsule8 is current in alpha and under active development. The gRPC
