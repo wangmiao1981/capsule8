@@ -69,6 +69,7 @@ type Sensor struct {
 	containerCache *containerCache
 	processCache   ProcessInfoCache
 	dockerMonitor  *dockerMonitor
+	ociMonitor     *ociMonitor
 
 	// Mapping of event ids to data streams (subscriptions)
 	eventMap *safeSubscriptionMap
@@ -150,6 +151,9 @@ func (s *Sensor) Start() error {
 	if len(config.Sensor.DockerContainerDir) > 0 {
 		s.dockerMonitor = newDockerMonitor(s,
 			config.Sensor.DockerContainerDir)
+	}
+	if len(config.Sensor.OciContainerDir) > 0 {
+		s.ociMonitor = newOciMonitor(s, config.Sensor.OciContainerDir)
 	}
 
 	// Make sure that all events registered with the sensor's event monitor

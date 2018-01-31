@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -147,6 +148,7 @@ type traceEventDecoderMap struct {
 	sync.Mutex              // used only by writers
 	active     atomic.Value // *decoderMap
 	tracingDir string
+	pid        int32
 }
 
 func (m *traceEventDecoderMap) getDecoderMap() *decoderMap {
@@ -160,6 +162,7 @@ func (m *traceEventDecoderMap) getDecoderMap() *decoderMap {
 func newTraceEventDecoderMap(tracingDir string) *traceEventDecoderMap {
 	return &traceEventDecoderMap{
 		tracingDir: tracingDir,
+		pid:        int32(os.Getpid()),
 	}
 }
 
@@ -277,6 +280,10 @@ func (m *traceEventDecoderMap) DecodeSample(sample *SampleRecord) (TraceEventSam
 	data, err := decoder.decodeRawData(sample.RawData)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if pid, ok := data["common_pid"].(int32); ok && pid == m.pid {
+		return nil, nil, nil
 	}
 
 	decodedSample, err := decoder.decoderfn(sample, data)
