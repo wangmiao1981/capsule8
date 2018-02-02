@@ -61,8 +61,10 @@ var (
 
 type taskCache interface {
 	LookupTask(int, *task) bool
+	LookupLeader(int) (task, bool)
 	InsertTask(int, task)
 	SetTaskContainerID(int, string)
+	SetTaskContainerInfo(int, *ContainerInfo)
 	SetTaskCredentials(int, Cred)
 	SetTaskCommandLine(int, []string)
 }
@@ -90,6 +92,16 @@ func (c *arrayTaskCache) LookupTask(pid int, t *task) bool {
 	return ok
 }
 
+func (c *arrayTaskCache) LookupLeader(pid int) (task, bool) {
+	var t task
+
+	for p := pid; c.LookupTask(p, &t) && t.pid != t.tgid; p = t.ppid {
+		// Do nothing
+	}
+
+	return t, t.pid == t.tgid
+}
+
 func (c *arrayTaskCache) InsertTask(pid int, t task) {
 	glog.V(10).Infof("InsertTask(%d, %+v)", pid, t)
 	c.entries[pid] = t
@@ -100,6 +112,14 @@ func (c *arrayTaskCache) SetTaskContainerID(pid int, cID string) {
 	if c.entries[pid].containerID != cID {
 		c.entries[pid].containerID = cID
 		c.entries[pid].containerInfo = nil
+	}
+}
+
+func (c *arrayTaskCache) SetTaskContainerInfo(pid int, info *ContainerInfo) {
+	glog.V(10).Infof("SetTaskContainerInfo(ID(%d) = %+v", pid, info)
+	if c.entries[pid].containerInfo != info {
+		c.entries[pid].containerID = info.ID
+		c.entries[pid].containerInfo = info
 	}
 }
 
@@ -125,11 +145,9 @@ func newMapTaskCache() *mapTaskCache {
 	}
 }
 
-func (c *mapTaskCache) LookupTask(pid int, t *task) (ok bool) {
-	c.Lock()
-	defer c.Unlock()
-
+func (c *mapTaskCache) lookupTaskUnlocked(pid int, t *task) (ok bool) {
 	*t, ok = c.entries[pid]
+	ok = ok && t.tgid != 0
 
 	if ok {
 		glog.V(10).Infof("LookupTask(%d) -> %+v", pid, t)
@@ -138,6 +156,25 @@ func (c *mapTaskCache) LookupTask(pid int, t *task) (ok bool) {
 	}
 
 	return ok
+}
+
+func (c *mapTaskCache) LookupTask(pid int, t *task) bool {
+	c.Lock()
+	defer c.Unlock()
+	return c.lookupTaskUnlocked(pid, t)
+}
+
+func (c *mapTaskCache) LookupLeader(pid int) (task, bool) {
+	c.Lock()
+	defer c.Unlock()
+
+	var t task
+
+	for p := pid; c.lookupTaskUnlocked(p, &t) && t.pid != t.tgid; p = t.ppid {
+		// Do nothing
+	}
+
+	return t, t.pid == t.tgid
 }
 
 func (c *mapTaskCache) InsertTask(pid int, t task) {
@@ -157,6 +194,18 @@ func (c *mapTaskCache) SetTaskContainerID(pid int, cID string) {
 	if t, ok := c.entries[pid]; ok && t.containerID != cID {
 		t.containerID = cID
 		t.containerInfo = nil
+		c.entries[pid] = t
+	}
+}
+
+func (c *mapTaskCache) SetTaskContainerInfo(pid int, info *ContainerInfo) {
+	glog.V(10).Infof("SetTaskContainerInfo(%d) = %+v", pid, info)
+
+	c.Lock()
+	defer c.Unlock()
+	if t, ok := c.entries[pid]; ok && t.containerInfo != info {
+		t.containerID = info.ID
+		t.containerInfo = info
 		c.entries[pid] = t
 	}
 }
@@ -275,13 +324,7 @@ func makeExecveFetchArgs(reg string) string {
 
 // lookupLeader finds the task info for the thread group leader of the given pid
 func (pc *ProcessInfoCache) lookupLeader(pid int) (task, bool) {
-	var t task
-
-	for p := pid; pc.cache.LookupTask(p, &t) && t.pid != t.tgid; p = t.ppid {
-		// Do nothing
-	}
-
-	return t, t.pid == t.tgid
+	return pc.cache.LookupLeader(pid)
 }
 
 // ProcessID returns the unique ID for the thread group of the process
@@ -299,28 +342,26 @@ func (pc *ProcessInfoCache) ProcessID(pid int) (string, bool) {
 // ProcessContainerID returns the container ID that the process
 // indicated by the given host PID.
 func (pc *ProcessInfoCache) ProcessContainerID(pid int) (string, bool) {
-	var t task
-	for p := pid; pc.cache.LookupTask(p, &t); p = t.ppid {
-		if len(t.containerID) > 0 {
-			return t.containerID, true
-		}
+	t, ok := pc.cache.LookupLeader(pid)
+	if ok && len(t.containerID) > 0 {
+		return t.containerID, true
 	}
-
 	return "", false
 }
 
 // ProcessContainerInfo returns the container info for a process
 func (pc *ProcessInfoCache) ProcessContainerInfo(pid int) (*ContainerInfo, bool) {
-	var t task
-	for p := pid; pc.cache.LookupTask(p, &t); p = t.ppid {
+	t, ok := pc.cache.LookupLeader(pid)
+	if ok {
 		if t.containerInfo != nil {
 			return t.containerInfo, true
 		}
 		if len(t.containerID) > 0 {
 			cc := pc.sensor.containerCache
-			t.containerInfo = cc.lookupContainer(t.containerID, true)
-			if t.containerInfo != nil {
-				return t.containerInfo, true
+			info := cc.lookupContainer(t.containerID, true)
+			if info != nil {
+				pc.cache.SetTaskContainerInfo(t.pid, info)
+				return info, true
 			}
 		}
 	}

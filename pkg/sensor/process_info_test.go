@@ -15,6 +15,7 @@
 package sensor
 
 import (
+	"math/rand"
 	"os"
 	"testing"
 )
@@ -73,6 +74,126 @@ func TestCaches(t *testing.T) {
 					values[i%4].containerID, i, cid)
 			}
 
+		}
+	}
+}
+
+func randomTgid(pidMap map[int]int) int {
+	var tgids []int
+
+	for p := range pidMap {
+		if pidMap[p] == p {
+			tgids = append(tgids, p)
+		}
+	}
+
+	return tgids[rand.Intn(len(tgids))]
+}
+
+func nextPid(pidMap map[int]int, maxPid int, lastPid *int) {
+	lp := *lastPid
+
+	for {
+		// Advance last pid
+		*lastPid = (*lastPid + 1) % maxPid
+		if *lastPid == 0 {
+			// pid 0 is illegal
+			*lastPid = 1
+		}
+
+		if *lastPid == lp {
+			if lp == 1 {
+				panic("Can't delete pid 1")
+			}
+
+			for p := range pidMap {
+				if pidMap[p] == *lastPid {
+					delete(pidMap, *lastPid)
+				}
+			}
+
+			return
+		}
+
+		_, found := pidMap[*lastPid]
+		if !found {
+			return
+		}
+	}
+}
+
+func TestCacheCycle(t *testing.T) {
+	maxPid := 128
+	cache := newArrayTaskCache(uint(maxPid))
+
+	// pidMap is a map of pids to tgid
+	pidMap := make(map[int]int)
+
+	// Create init process
+	lastPid := 1
+	pidMap[lastPid] = lastPid
+
+	initTask := task{
+		pid:  lastPid,
+		ppid: 0,
+		tgid: lastPid,
+	}
+
+	cache.InsertTask(lastPid, initTask)
+
+	for i := 0; i < 10000; i++ {
+		// Choose a random current process
+		pid := randomTgid(pidMap)
+
+		r := rand.Intn(100)
+		if r < 10 {
+			// Fork a new child process
+
+			// Choose a random unused pid
+			nextPid(pidMap, maxPid, &lastPid)
+
+			// Add to pidMap with tgid == self
+			pidMap[lastPid] = lastPid
+
+			newTask := task{
+				pid:  lastPid,
+				ppid: pid,
+				tgid: lastPid,
+			}
+
+			cache.InsertTask(lastPid, newTask)
+		} else if r < 20 {
+			// Terminate tgid
+			if pid != 1 {
+				// Delete tgid and all of its threads
+				for p := range pidMap {
+					if pidMap[p] == pid {
+						delete(pidMap, p)
+					}
+				}
+			}
+
+		} else if pid != 1 {
+			// Clone a new thread
+			nextPid(pidMap, maxPid, &lastPid)
+
+			// Add to pidMap with tgid == parent pid
+			pidMap[lastPid] = pid
+
+			newTask := task{
+				pid:  lastPid,
+				ppid: pid,
+				tgid: pid,
+			}
+
+			cache.InsertTask(lastPid, newTask)
+		}
+
+		// Make sure that we can traverse process ancestry for every
+		// pid. If this enters an infinite loop, then we somehow got a
+		// cycle.
+		for i := range pidMap {
+			cache.LookupLeader(i)
 		}
 	}
 }
