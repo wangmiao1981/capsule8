@@ -95,11 +95,12 @@ func (c *arrayTaskCache) LookupTask(pid int, t *task) bool {
 func (c *arrayTaskCache) LookupLeader(pid int) (task, bool) {
 	var t task
 
-	for p := pid; c.LookupTask(p, &t) && t.pid != t.tgid; p = t.ppid {
-		// Do nothing
+	if c.LookupTask(pid, &t) &&
+		(pid == t.tgid || c.LookupTask(t.tgid, &t)) {
+		return t, true
 	}
 
-	return t, t.pid == t.tgid
+	return task{}, false
 }
 
 func (c *arrayTaskCache) InsertTask(pid int, t task) {
@@ -170,11 +171,12 @@ func (c *mapTaskCache) LookupLeader(pid int) (task, bool) {
 
 	var t task
 
-	for p := pid; c.lookupTaskUnlocked(p, &t) && t.pid != t.tgid; p = t.ppid {
-		// Do nothing
+	if c.lookupTaskUnlocked(pid, &t) &&
+		(pid == t.tgid || c.lookupTaskUnlocked(t.tgid, &t)) {
+		return t, true
 	}
 
-	return t, t.pid == t.tgid
+	return task{}, false
 }
 
 func (c *mapTaskCache) InsertTask(pid int, t task) {
