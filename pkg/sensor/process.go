@@ -49,9 +49,8 @@ func (f *processFilter) decodeSchedProcessFork(sample *perf.SampleRecord, data p
 		},
 	}
 
-	childID, ok := f.sensor.processCache.ProcessID(int(childPid))
-	if ok {
-		ev.GetProcess().ForkChildId = childID
+	if _, l, _ := f.sensor.processCache.LookupTaskAndLeader(int(childPid)); l != nil {
+		ev.GetProcess().ForkChildId = l.ProcessID()
 	}
 
 	return ev, nil
@@ -63,9 +62,12 @@ func (f *processFilter) decodeSchedProcessExec(sample *perf.SampleRecord, data p
 
 	// Get the command-line from the process info cache. If it's not there
 	// for whatever reason, fallback to using procfs
-	commandLine, _ := f.sensor.processCache.ProcessCommandLine(int(hostPid))
-	if commandLine == nil || len(commandLine) == 0 {
+	var commandLine []string
+	_, l, _ := f.sensor.processCache.LookupTaskAndLeader(int(hostPid))
+	if l == nil || l.CommandLine == nil || len(l.CommandLine) == 0 {
 		commandLine = sys.HostProcFS().CommandLine(int(hostPid))
+	} else {
+		commandLine = l.CommandLine
 	}
 
 	ev := f.sensor.NewEventFromSample(sample, data)

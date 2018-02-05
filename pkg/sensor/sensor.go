@@ -310,7 +310,6 @@ func (s *Sensor) NewEventFromSample(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
 ) *api.TelemetryEvent {
-
 	e := s.NewEvent()
 	e.SensorMonotimeNanos = int64(sample.Time) - s.bootMonotimeNanos
 
@@ -321,30 +320,27 @@ func (s *Sensor) NewEventFromSample(
 	e.Cpu = int32(sample.CPU)
 
 	pid := int(e.ProcessPid)
-	if processID, ok := s.processCache.ProcessID(pid); ok {
-		e.ProcessId = processID
-	}
-
-	var cred Cred
-	if s.processCache.ProcessCredentials(pid, &cred) {
-		e.Credentials = &api.Credentials{
-			Uid:   cred.UID,
-			Gid:   cred.GID,
-			Euid:  cred.EUID,
-			Egid:  cred.EGID,
-			Suid:  cred.SUID,
-			Sgid:  cred.SGID,
-			Fsuid: cred.FSUID,
-			Fsgid: cred.FSGID,
+	if task, leader, ok := s.processCache.LookupTaskAndLeader(pid); ok {
+		e.ProcessId = leader.ProcessID()
+		if c := task.Creds; c != nil {
+			e.Credentials = &api.Credentials{
+				Uid:   c.UID,
+				Gid:   c.GID,
+				Euid:  c.EUID,
+				Egid:  c.EGID,
+				Suid:  c.SUID,
+				Sgid:  c.SGID,
+				Fsuid: c.FSUID,
+				Fsgid: c.FSGID,
+			}
 		}
-	}
 
-	// Add an associated container information
-	if containerInfo, ok := s.processCache.ProcessContainerInfo(pid); ok {
-		e.ContainerId = containerInfo.ID
-		e.ContainerName = containerInfo.Name
-		e.ImageId = containerInfo.ImageID
-		e.ImageName = containerInfo.ImageName
+		if i := s.processCache.LookupTaskContainerInfo(leader); i != nil {
+			e.ContainerId = i.ID
+			e.ContainerName = i.Name
+			e.ImageId = i.ImageID
+			e.ImageName = i.ImageName
+		}
 	}
 
 	return e

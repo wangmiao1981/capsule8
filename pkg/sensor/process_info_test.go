@@ -36,42 +36,40 @@ BenchmarkContainerCacheMissParallel-8   	  300000	      5789 ns/op
 */
 
 const arrayTaskCacheSize = 32768
+const mapTaskCacheSize = 32768
 
-var values = []task{
-	{1, 2, 3, 0x120011, "foo", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
-	{1, 2, 3, 0x120011, "bar", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
-	{1, 2, 3, 0x120011, "baz", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
-	{1, 2, 3, 0x120011, "qux", nil, Cred{}, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil},
+var values = []Task{
+	{1, 2, 3, "foo", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, ""},
+	{1, 2, 3, "bar", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, ""},
+	{1, 2, 3, "baz", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, ""},
+	{1, 2, 3, "qux", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, ""},
 }
 
 func TestCaches(t *testing.T) {
 
 	arrayCache := newArrayTaskCache(arrayTaskCacheSize)
-	mapCache := newMapTaskCache()
+	mapCache := newMapTaskCache(mapTaskCacheSize)
 
-	for i := 0; i < arrayTaskCacheSize; i++ {
-		arrayCache.InsertTask(i, values[i%4])
-		mapCache.InsertTask(i, values[i%4])
+	for i := 0; i < arrayTaskCacheSize-1; i++ {
+		arrayCache.InsertTask(i+1, &values[i%4])
+		mapCache.InsertTask(i+1, &values[i%4])
 	}
 
-	for i := arrayTaskCacheSize - 1; i >= 0; i-- {
-		var tk task
-		if arrayCache.LookupTask(i, &tk) {
-			cid := tk.containerID
-
-			if cid != values[i%4].containerID {
+	for i := arrayTaskCacheSize - 2; i >= 0; i-- {
+		if tk, ok := arrayCache.LookupTask(i + 1); ok {
+			cid := tk.ContainerID
+			if cid != values[i%4].ContainerID {
 				t.Fatalf("Expected %s for pid %d, got %s",
-					values[i%4].containerID, i, cid)
+					values[i%4].ContainerID, i, cid)
 			}
 
 		}
 
-		if mapCache.LookupTask(i, &tk) {
-			cid := tk.containerID
-
-			if cid != values[i%4].containerID {
+		if tk, ok := mapCache.LookupTask(i + 1); ok {
+			cid := tk.ContainerID
+			if cid != values[i%4].ContainerID {
 				t.Fatalf("Expected %s for pid %d, got %s",
-					values[i%4].containerID, i, cid)
+					values[i%4].ContainerID, i, cid)
 			}
 
 		}
@@ -133,12 +131,11 @@ func TestCacheCycle(t *testing.T) {
 	lastPid := 1
 	pidMap[lastPid] = lastPid
 
-	initTask := task{
-		pid:  lastPid,
-		ppid: 0,
-		tgid: lastPid,
+	initTask := &Task{
+		PID:  lastPid,
+		PPID: 0,
+		TGID: lastPid,
 	}
-
 	cache.InsertTask(lastPid, initTask)
 
 	for i := 0; i < 10000; i++ {
@@ -155,12 +152,11 @@ func TestCacheCycle(t *testing.T) {
 			// Add to pidMap with tgid == self
 			pidMap[lastPid] = lastPid
 
-			newTask := task{
-				pid:  lastPid,
-				ppid: pid,
-				tgid: lastPid,
+			newTask := &Task{
+				PID:  lastPid,
+				PPID: pid,
+				TGID: lastPid,
 			}
-
 			cache.InsertTask(lastPid, newTask)
 		} else if r < 20 {
 			// Terminate tgid
@@ -180,12 +176,11 @@ func TestCacheCycle(t *testing.T) {
 			// Add to pidMap with tgid == parent pid
 			pidMap[lastPid] = pid
 
-			newTask := task{
-				pid:  lastPid,
-				ppid: pid,
-				tgid: pid,
+			newTask := &Task{
+				PID:  lastPid,
+				PPID: pid,
+				TGID: pid,
 			}
-
 			cache.InsertTask(lastPid, newTask)
 		}
 
@@ -193,34 +188,32 @@ func TestCacheCycle(t *testing.T) {
 		// pid. If this enters an infinite loop, then we somehow got a
 		// cycle.
 		for i := range pidMap {
-			cache.LookupLeader(i)
+			cache.LookupTaskAndLeader(i)
 		}
 	}
 }
 
 func BenchmarkArrayCache(b *testing.B) {
 	cache := newArrayTaskCache(arrayTaskCacheSize)
-	var tk task
 
 	for i := 0; i < b.N; i++ {
-		cache.InsertTask((i % arrayTaskCacheSize), values[i%4])
+		cache.InsertTask((i%arrayTaskCacheSize)+1, &values[i%4])
 	}
 
 	for i := 0; i < b.N; i++ {
-		_ = cache.LookupTask((i % arrayTaskCacheSize), &tk)
+		_, _ = cache.LookupTask((i % arrayTaskCacheSize) + 1)
 	}
 }
 
 func BenchmarkMapCache(b *testing.B) {
-	cache := newMapTaskCache()
-	var tk task
+	cache := newMapTaskCache(mapTaskCacheSize)
 
 	for i := 0; i < b.N; i++ {
-		cache.InsertTask((i % arrayTaskCacheSize), values[i%4])
+		cache.InsertTask((i%arrayTaskCacheSize)+1, &values[i%4])
 	}
 
 	for i := 0; i < b.N; i++ {
-		_ = cache.LookupTask((i % arrayTaskCacheSize), &tk)
+		_, _ = cache.LookupTask((i % arrayTaskCacheSize) + 1)
 	}
 }
 
@@ -230,39 +223,35 @@ func BenchmarkArrayCacheParallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			cache.InsertTask((i % arrayTaskCacheSize), values[i%4])
+			cache.InsertTask((i%arrayTaskCacheSize)+1, &values[i%4])
 			i++
 		}
 	})
 
 	b.RunParallel(func(pb *testing.PB) {
-		var tk task
-
 		i := 0
 		for pb.Next() {
-			_ = cache.LookupTask((i % arrayTaskCacheSize), &tk)
+			_, _ = cache.LookupTask((i % arrayTaskCacheSize) + 1)
 			i++
 		}
 	})
 }
 
 func BenchmarkMapCacheParallel(b *testing.B) {
-	cache := newMapTaskCache()
+	cache := newMapTaskCache(mapTaskCacheSize)
 
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			cache.InsertTask((i % arrayTaskCacheSize), values[i%4])
+			cache.InsertTask((i%arrayTaskCacheSize)+1, &values[i%4])
 			i++
 		}
 	})
 
 	b.RunParallel(func(pb *testing.PB) {
-		var tk task
-
 		i := 0
 		for pb.Next() {
-			_ = cache.LookupTask((i % arrayTaskCacheSize), &tk)
+			_, _ = cache.LookupTask((i % arrayTaskCacheSize) + 1)
 			i++
 		}
 	})
