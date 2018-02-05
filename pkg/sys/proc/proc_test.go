@@ -15,6 +15,8 @@
 package proc
 
 import (
+	"bytes"
+	"fmt"
 	"testing"
 )
 
@@ -104,6 +106,173 @@ func TestStatParse(t *testing.T) {
 		}
 		if ps.StartStack() != td.startStack {
 			t.Errorf("For proc.(*ProcessStatus)StartStack(), want %d, got %d\n", td.startStack, ps.StartStack())
+		}
+	}
+}
+
+var statusTests = []struct {
+	statusFile string
+	TGID, PID  int
+	UID        []int
+	GID        []int
+	Name       string
+}{
+	{
+		statusFile: `Name:	systemd
+State:	S (sleeping)
+Tgid:	1
+Ngid:	0
+Pid:	1
+PPid:	0
+TracerPid:	0
+Uid:	0	0	0	0
+Gid:	0	0	0	0
+FDSize:	64
+Groups:
+NStgid:	1
+NSpid:	1
+NSpgid:	1
+NSsid:	1
+VmPeak:	   38928 kB
+VmSize:	   37844 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	    5972 kB
+VmRSS:	    5832 kB
+VmData:	    1596 kB
+VmStk:	     132 kB
+VmExe:	    1392 kB
+VmLib:	    3664 kB
+VmPTE:	      92 kB
+VmPMD:	      12 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+Threads:	1
+SigQ:	0/15593
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	7be3c0fe28014a03
+SigIgn:	0000000000001000
+SigCgt:	00000001800004ec
+CapInh:	0000000000000000
+CapPrm:	0000003fffffffff
+CapEff:	0000003fffffffff
+CapBnd:	0000003fffffffff
+CapAmb:	0000000000000000
+Seccomp:	0
+Cpus_allowed:	ffffffff,ffffffff,ffffffff,ffffffff
+Cpus_allowed_list:	0-127
+Mems_allowed:	00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	10752
+nonvoluntary_ctxt_switches:	657`,
+		TGID: 1,
+		PID:  1,
+		UID:  []int{0, 0, 0, 0},
+		GID:  []int{0, 0, 0, 0},
+		Name: "systemd",
+	},
+	{
+		statusFile: `Name:	vmhgfs-fuse
+State:	S (sleeping)
+Tgid:	426
+Ngid:	0
+Pid:	116220
+PPid:	1
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	64
+Groups:
+NStgid:	426
+NSpid:	116220
+NSpgid:	426
+NSsid:	426
+VmPeak:	 2167408 kB
+VmSize:	 1987136 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	   62524 kB
+VmRSS:	   60748 kB
+VmData:	 1970764 kB
+VmStk:	     132 kB
+VmExe:	      76 kB
+VmLib:	    3744 kB
+VmPTE:	     296 kB
+VmPMD:	      20 kB
+VmSwap:	       0 kB
+HugetlbPages:	       0 kB
+Threads:	12
+SigQ:	0/15593
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000004007
+SigIgn:	0000000000001000
+SigCgt:	0000000180004003
+CapInh:	0000000000000000
+CapPrm:	0000003fffffffff
+CapEff:	0000003fffffffff
+CapBnd:	0000003fffffffff
+CapAmb:	0000000000000000
+Seccomp:	0
+Cpus_allowed:	ffffffff,ffffffff,ffffffff,ffffffff
+Cpus_allowed_list:	0-127
+Mems_allowed:	00000000,00000001
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	89
+nonvoluntary_ctxt_switches:	1`,
+		TGID: 426,
+		PID:  116220,
+		Name: "vmhgfs-fuse",
+		UID:  []int{1000, 1000, 1000, 1000},
+		GID:  []int{1000, 1000, 1000, 1000},
+	},
+}
+
+// TestStatusParse tests the parsing of /proc/PID/status files.
+func TestStatusParse(t *testing.T) {
+	for n, x := range statusTests {
+		var s struct {
+			Name string `Name`
+			PID  int    `Pid`
+			TGID int    `Tgid`
+			UID  []int  `Uid`
+			GID  []int  `Gid`
+		}
+		err := parseProcessStatus(bytes.NewReader([]byte(x.statusFile)),
+			x.TGID, x.PID, &s)
+		fmt.Printf("parsed data: %+v\n", s)
+		if err != nil {
+			t.Error(err)
+		}
+		if s.TGID != x.TGID {
+			t.Errorf("TGIDs do not match in test %d (%d vs. %d)", n, s.TGID, x.TGID)
+		}
+		if s.PID != x.PID {
+			t.Errorf("PIDs do not match in test %d (%d vs. %d)", n, s.PID, x.PID)
+		}
+		if s.Name != x.Name {
+			t.Errorf("Names do not match in test %d (%q vs. %q)", n, s.Name, x.Name)
+		}
+		if len(s.UID) != len(x.UID) {
+			t.Errorf("UID length mismatch in test %d (%d vs. %d)", n, len(s.UID), len(x.UID))
+		} else {
+			for i := range x.UID {
+				if s.UID[i] != x.UID[i] {
+					t.Errorf("UID[%d] mismatch in test %d (%d vs. %d)",
+						i, n, s.UID[i], x.UID[i])
+				}
+			}
+		}
+		if len(s.GID) != len(x.GID) {
+			t.Errorf("GID length mismatch in test %d (%d vs. %d)", n, len(s.GID), len(x.GID))
+		} else {
+			for i := range x.GID {
+				if s.GID[i] != x.GID[i] {
+					t.Errorf("GID[%d] mismatch in test %d (%d vs. %d)",
+						i, n, s.GID[i], x.GID[i])
+				}
+			}
 		}
 	}
 }

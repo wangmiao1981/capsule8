@@ -25,7 +25,9 @@ package sensor
 
 import (
 	"fmt"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -336,9 +338,16 @@ func (c *mapTaskCache) DeleteTask(pid int) {
 // ProcessInfoCache is an object that caches process information. It is
 // maintained automatically via an existing sensor object.
 type ProcessInfoCache struct {
+	cache taskCache
+
 	sensor *Sensor
-	cache  taskCache
+
+	scanningLock  sync.Mutex
+	scanning      bool
+	scanningQueue []scannerDeferredAction
 }
+
+type scannerDeferredAction func()
 
 // newProcessInfoCache creates a new process information cache object. An
 // existing sensor object is required in order for the process info cache to
@@ -352,7 +361,8 @@ func newProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	})
 
 	cache := ProcessInfoCache{
-		sensor: sensor,
+		sensor:   sensor,
+		scanning: true,
 	}
 
 	maxPid := proc.MaxPid()
@@ -365,21 +375,25 @@ func newProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	// Register with the sensor's global event monitor...
 	eventName := "task/task_newtask"
 	_, err := sensor.monitor.RegisterTracepoint(eventName,
-		cache.decodeNewTask)
+		cache.decodeNewTask,
+		perf.WithEventEnabled())
 	if err != nil {
 		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
 	}
 
 	// Attach kprobe on commit_creds to capture task privileges
 	_, err = sensor.monitor.RegisterKprobe(commitCredsAddress, false,
-		commitCredsArgs, cache.decodeCommitCreds)
+		commitCredsArgs, cache.decodeCommitCreds,
+		perf.WithEventEnabled())
 
 	// Attach a probe for task_rename involving the runc
 	// init processes to trigger containerID lookups
 	f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
 	eventName = "task/task_rename"
 	_, err = sensor.monitor.RegisterTracepoint(eventName,
-		cache.decodeRuncTaskRename, perf.WithFilter(f))
+		cache.decodeRuncTaskRename,
+		perf.WithFilter(f),
+		perf.WithEventEnabled())
 	if err != nil {
 		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
 	}
@@ -390,25 +404,54 @@ func newProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	// if that succeeds, it's the only one we need. Otherwise, we need a
 	// bunch of others to try to hit everything. We may end up getting
 	// duplicate events, which is ok.
-	_, err = sensor.monitor.RegisterKprobe(doExecveatCommonAddress, false,
-		makeExecveFetchArgs("dx"), cache.decodeExecve)
+	_, err = sensor.monitor.RegisterKprobe(
+		doExecveatCommonAddress, false,
+		makeExecveFetchArgs("dx"), cache.decodeExecve,
+		perf.WithEventEnabled())
 	if err != nil {
-		_, err = sensor.monitor.RegisterKprobe(sysExecveAddress, false,
-			makeExecveFetchArgs("si"), cache.decodeExecve)
+		_, err = sensor.monitor.RegisterKprobe(
+			sysExecveAddress, false,
+			makeExecveFetchArgs("si"), cache.decodeExecve,
+			perf.WithEventEnabled())
 		if err != nil {
 			glog.Fatalf("Couldn't register event %s: %s",
 				sysExecveAddress, err)
 		}
-		_, _ = sensor.monitor.RegisterKprobe(doExecveAddress, false,
-			makeExecveFetchArgs("si"), cache.decodeExecve)
+		_, _ = sensor.monitor.RegisterKprobe(
+			doExecveAddress, false,
+			makeExecveFetchArgs("si"), cache.decodeExecve,
+			perf.WithEventEnabled())
 
-		_, err = sensor.monitor.RegisterKprobe(sysExecveatAddress, false,
-			makeExecveFetchArgs("dx"), cache.decodeExecve)
+		_, err = sensor.monitor.RegisterKprobe(
+			sysExecveatAddress, false,
+			makeExecveFetchArgs("dx"), cache.decodeExecve,
+			perf.WithEventEnabled())
 		if err == nil {
-			_, _ = sensor.monitor.RegisterKprobe(doExecveatAddress, false,
-				makeExecveFetchArgs("dx"), cache.decodeExecve)
+			_, _ = sensor.monitor.RegisterKprobe(
+				doExecveatAddress, false,
+				makeExecveFetchArgs("dx"), cache.decodeExecve,
+				perf.WithEventEnabled())
 		}
 	}
+
+	// Scan the proc filesystem to learn about all existing tasks.
+	err = cache.scanProcFilesystem()
+	if err != nil {
+		glog.Fatal(err)
+	}
+
+	cache.scanningLock.Lock()
+	for len(cache.scanningQueue) > 0 {
+		queue := cache.scanningQueue
+		cache.scanningQueue = nil
+		cache.scanningLock.Unlock()
+		for _, f := range queue {
+			f()
+		}
+		cache.scanningLock.Lock()
+	}
+	cache.scanning = false
+	cache.scanningLock.Unlock()
 
 	return cache
 }
@@ -419,6 +462,106 @@ func makeExecveFetchArgs(reg string) string {
 		parts[i] = fmt.Sprintf("argv%d=+0(+%d(%%%s)):string", i, i*8, reg)
 	}
 	return strings.Join(parts, " ")
+}
+
+func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
+	var s struct {
+		Name string   `Name`
+		PID  int      `Pid`
+		PPID int      `PPid`
+		TGID int      `Tgid`
+		UID  []uint32 `Uid`
+		GID  []uint32 `Gid`
+	}
+	err := procFS.ReadProcessStatus(tgid, pid, &s)
+	if err != nil {
+		return fmt.Errorf("Couldn't read pid %d status: %s",
+			pid, err)
+	}
+
+	containerID, err := procFS.ContainerID(tgid)
+	if err != nil {
+		return fmt.Errorf("Couldn't get containerID for tgid %d: %s",
+			pid, err)
+	}
+
+	t := Task{
+		PID:         s.PID,
+		TGID:        s.TGID,
+		PPID:        s.PPID,
+		Command:     s.Name,
+		CommandLine: procFS.CommandLine(tgid),
+		ContainerID: containerID,
+		Creds: &Cred{
+			UID:   s.UID[0],
+			EUID:  s.UID[1],
+			SUID:  s.UID[2],
+			FSUID: s.UID[3],
+			GID:   s.GID[0],
+			EGID:  s.GID[1],
+			SGID:  s.GID[2],
+			FSGID: s.GID[3],
+		},
+	}
+
+	pc.cache.InsertTask(t.PID, &t)
+	return nil
+}
+
+func (pc *ProcessInfoCache) scanProcFilesystem() error {
+	d, err := os.Open(procFS.MountPoint)
+	if err != nil {
+		return fmt.Errorf("Cannot open %s: %s", procFS.MountPoint, err)
+	}
+	procNames, err := d.Readdirnames(0)
+	if err != nil {
+		return fmt.Errorf("Cannot read directory names from %s: %s",
+			procFS.MountPoint, err)
+	}
+	d.Close()
+
+	for _, procName := range procNames {
+		i, err := strconv.ParseInt(procName, 10, 32)
+		if err != nil {
+			continue
+		}
+		tgid := int(i)
+
+		err = pc.cacheTaskFromProc(tgid, tgid)
+		if err != nil {
+			return err
+		}
+
+		taskPath := fmt.Sprintf("%s/%d/task", procFS.MountPoint, tgid)
+		d, err = os.Open(taskPath)
+		if err != nil {
+			return fmt.Errorf("Cannot open %s: %s", taskPath, err)
+		}
+		taskNames, err := d.Readdirnames(0)
+		if err != nil {
+			return fmt.Errorf("Cannot read tasks from %s: %s",
+				taskPath, err)
+		}
+		d.Close()
+
+		for _, taskName := range taskNames {
+			i, err = strconv.ParseInt(taskName, 10, 32)
+			if err != nil {
+				continue
+			}
+			pid := int(i)
+			if tgid == pid {
+				continue
+			}
+
+			err = pc.cacheTaskFromProc(tgid, pid)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // LookupTask finds the task information for the given PID.
@@ -448,6 +591,20 @@ func (pc *ProcessInfoCache) LookupTaskContainerInfo(t *Task) *ContainerInfo {
 	}
 
 	return nil
+}
+
+func (pc *ProcessInfoCache) maybeDeferAction(f func()) {
+	if pc.scanning {
+		pc.scanningLock.Lock()
+		if pc.scanning {
+			pc.scanningQueue = append(pc.scanningQueue, f)
+			pc.scanningLock.Unlock()
+			return
+		}
+		pc.scanningLock.Unlock()
+	}
+
+	f()
 }
 
 //
@@ -492,7 +649,9 @@ func (pc *ProcessInfoCache) decodeNewTask(
 		childTask.TGID = childPid
 	}
 
-	pc.cache.InsertTask(childPid, &childTask)
+	pc.maybeDeferAction(func() {
+		pc.cache.InsertTask(childPid, &childTask)
+	})
 
 	return nil, nil
 }
@@ -523,9 +682,11 @@ func (pc *ProcessInfoCache) decodeCommitCreds(
 		},
 	}
 
-	if t, ok := pc.LookupTask(pid); ok {
-		t.Update(changes)
-	}
+	pc.maybeDeferAction(func() {
+		if t, ok := pc.LookupTask(pid); ok {
+			t.Update(changes)
+		}
+	})
 
 	return nil, nil
 }
@@ -540,35 +701,37 @@ func (pc *ProcessInfoCache) decodeRuncTaskRename(
 ) (interface{}, error) {
 	pid := int(data["pid"].(int32))
 
-	glog.V(10).Infof("decodeRuncTaskRename: pid = %d", pid)
+	pc.maybeDeferAction(func() {
+		glog.V(10).Infof("decodeRuncTaskRename: pid = %d", pid)
 
-	t, ok := pc.LookupTask(pid)
-	if !ok {
-		return nil, nil
-	}
-
-	if len(t.ContainerID) == 0 {
-		containerID, err := procFS.ContainerID(pid)
-		glog.V(10).Infof("containerID(%d) = %s", pid, containerID)
-		if err == nil && len(containerID) > 0 {
-			changes := map[string]interface{}{
-				"ContainerID": containerID,
-			}
-			t.Update(changes)
+		t, ok := pc.LookupTask(pid)
+		if !ok {
+			return
 		}
-	} else if parent, parentok := pc.LookupTask(t.PPID); parentok {
-		if len(parent.ContainerID) == 0 {
-			containerID, err := procFS.ContainerID(parent.PID)
+
+		if len(t.ContainerID) == 0 {
+			containerID, err := procFS.ContainerID(pid)
 			glog.V(10).Infof("containerID(%d) = %s", pid, containerID)
 			if err == nil && len(containerID) > 0 {
 				changes := map[string]interface{}{
 					"ContainerID": containerID,
 				}
-				parent.Update(changes)
+				t.Update(changes)
 			}
+		} else if parent, parentok := pc.LookupTask(t.PPID); parentok {
+			if len(parent.ContainerID) == 0 {
+				containerID, err := procFS.ContainerID(parent.PID)
+				glog.V(10).Infof("containerID(%d) = %s", pid, containerID)
+				if err == nil && len(containerID) > 0 {
+					changes := map[string]interface{}{
+						"ContainerID": containerID,
+					}
+					parent.Update(changes)
+				}
 
+			}
 		}
-	}
+	})
 
 	return nil, nil
 }
@@ -592,9 +755,11 @@ func (pc *ProcessInfoCache) decodeExecve(
 	changes := map[string]interface{}{
 		"CommandLine": commandLine,
 	}
-	if t, ok := pc.LookupTask(pid); ok {
-		t.Update(changes)
-	}
+	pc.maybeDeferAction(func() {
+		if t, ok := pc.LookupTask(pid); ok {
+			t.Update(changes)
+		}
+	})
 
 	return nil, nil
 }
