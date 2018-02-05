@@ -44,8 +44,9 @@ type ociConfig struct {
 }
 
 const (
-	ociSysOpenTracepointSymbol = "fs/do_sys_open"
-	ociSysOpenTracepointFilter = "(flags & 1 || flags & 2) && filename ~ */config.json"
+	ociSysOpenKprobeSymbol    = "do_sys_open"
+	ociSysOpenKprobeFetchargs = "filename=+0(%si):string flags=%dx:s32"
+	ociSysOpenKprobeFilter    = "(flags & 1 || flags & 2) && filename ~ */config.json"
 
 	// It would be nice if we could also pull out file->dentry->d_parent->d_name
 	// here to get the parent filename, but testing yields no useful
@@ -103,13 +104,13 @@ func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
 	// right away. Otherwise there'll be race conditions as we scan
 	// the filesystem for existing containers.
 
-	_, err = sensor.monitor.RegisterTracepoint(ociSysOpenTracepointSymbol,
-		om.decodeSysOpen,
-		perf.WithFilter(ociSysOpenTracepointFilter),
+	_, err = sensor.monitor.RegisterKprobe(ociSysOpenKprobeSymbol, false,
+		ociSysOpenKprobeFetchargs, om.decodeSysOpen,
+		perf.WithFilter(ociSysOpenKprobeFilter),
 		perf.WithEventEnabled())
 	if err != nil {
-		glog.Fatalf("Could not register OCI monitor %s tracepoint: %s",
-			ociSysOpenTracepointSymbol, err)
+		glog.Fatalf("Could not register OCI monitor %s kprobe: %s",
+			ociSysOpenKprobeSymbol, err)
 	}
 	_, err = sensor.monitor.RegisterKprobe(ociImaFileFreeKprobeSymbol, false,
 		ociImaFileFreeKprobeFetchargs, om.decodeImaFileFree,
