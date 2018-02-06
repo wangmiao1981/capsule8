@@ -27,7 +27,8 @@ message TelemetryEvent {
         // reused values of the pid below.
         string process_id = 2;
 
-        // Unix pid of the process associated with the event
+        // Kernel's PID of the task associated with the event. This
+        // corresponds the userland's TID.
         int32 process_pid = 3;
 
         // Container identifier associated with the event
@@ -93,12 +94,18 @@ message TelemetryEvent {
         // Unix tid of the process thread associated with event
         // Deprecated since pid really is the tid.
         // int32 process_tid = 200;
+        reserved "process_tid";
+        reserved 200;
 
         // CPU on which the event occurred
         int32 cpu = 201;
 
-	// Credentials for the process associated with the event
-	Credentials credentials = 202;
+        // Credentials for the process associated with the event
+        Credentials credentials = 202;
+
+        // Kernel's TGID of the task associated with the event. This
+        // corresponds the userland's PID.
+        int32 process_tgid = 203;
 }
 
 message ChargenEvent {
