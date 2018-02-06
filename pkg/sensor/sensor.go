@@ -67,7 +67,7 @@ type Sensor struct {
 
 	// Per-sensor caches and monitors
 	containerCache *containerCache
-	processCache   ProcessInfoCache
+	ProcessCache   ProcessInfoCache
 	dockerMonitor  *dockerMonitor
 	ociMonitor     *ociMonitor
 
@@ -146,7 +146,7 @@ func (s *Sensor) Start() error {
 	}
 
 	s.containerCache = newContainerCache(s)
-	s.processCache = newProcessInfoCache(s)
+	s.ProcessCache = newProcessInfoCache(s)
 
 	if len(config.Sensor.DockerContainerDir) > 0 {
 		s.dockerMonitor = newDockerMonitor(s,
@@ -320,7 +320,7 @@ func (s *Sensor) NewEventFromSample(
 	e.Cpu = int32(sample.CPU)
 
 	pid := int(e.ProcessPid)
-	if task, leader, ok := s.processCache.LookupTaskAndLeader(pid); ok {
+	if task, leader, ok := s.ProcessCache.LookupTaskAndLeader(pid); ok {
 		e.ProcessId = leader.ProcessID()
 		if c := task.Creds; c != nil {
 			e.Credentials = &api.Credentials{
@@ -335,7 +335,7 @@ func (s *Sensor) NewEventFromSample(
 			}
 		}
 
-		if i := s.processCache.LookupTaskContainerInfo(leader); i != nil {
+		if i := s.ProcessCache.LookupTaskContainerInfo(leader); i != nil {
 			e.ContainerId = i.ID
 			e.ContainerName = i.Name
 			e.ImageId = i.ImageID
