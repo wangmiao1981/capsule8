@@ -64,14 +64,7 @@ const (
 	ociUnlinkKprobeFilter    = "pathname ~ */config.json"
 )
 
-type ociDeferredActionFn func(sampleID perf.SampleID, pid int, filename string)
-
-type ociDeferredAction struct {
-	action   ociDeferredActionFn
-	sampleID perf.SampleID
-	pid      int
-	filename string
-}
+type ociDeferredAction func()
 
 type ociMonitor struct {
 	sensor       *Sensor
@@ -149,7 +142,7 @@ func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
 		om.scanningQueue = nil
 		om.scanningLock.Unlock()
 		for _, f := range queue {
-			f.action(f.sampleID, f.pid, f.filename)
+			f()
 		}
 		om.scanningLock.Lock()
 	}
@@ -172,7 +165,7 @@ func (om *ociMonitor) processConfigJSON(
 	paths := strings.Split(configFilename, "/")
 	containerID := paths[len(paths)-2]
 
-	containerInfo := om.sensor.containerCache.lookupContainer(
+	containerInfo := om.sensor.ContainerCache.LookupContainer(
 		containerID, false)
 	if containerInfo != nil && containerInfo.OCIConfig == JSONString {
 		// No change; do nothing more
@@ -189,7 +182,7 @@ func (om *ociMonitor) processConfigJSON(
 	data := make(map[string]interface{})
 	// Update the cache with the newly loaded information
 	if containerInfo == nil {
-		containerInfo = om.sensor.containerCache.lookupContainer(
+		containerInfo = om.sensor.ContainerCache.LookupContainer(
 			containerID, true)
 	}
 	data["OCIConfig"] = JSONString
@@ -202,49 +195,18 @@ func (om *ociMonitor) processConfigJSON(
 	return nil
 }
 
-func (om *ociMonitor) processOpenAction(
-	sampleID perf.SampleID,
-	pid int,
-	filename string,
-) {
-	om.configOpens[pid] = append(om.configOpens[pid], filename)
-}
-
-func (om *ociMonitor) processCloseAction(
-	sampleID perf.SampleID,
-	pid int,
-	filename string,
-) {
-	opens := om.configOpens[pid]
-	if len(opens) == 0 {
-		return
-	}
-	filename = opens[len(opens)-1]
-	if len(opens) == 1 {
-		delete(om.configOpens, pid)
-	} else {
-		opens = opens[:len(opens)-1]
-		om.configOpens[pid] = opens
+func (om *ociMonitor) maybeDeferAction(f func()) {
+	if om.scanning {
+		om.scanningLock.Lock()
+		if om.scanning {
+			om.scanningQueue = append(om.scanningQueue, f)
+			om.scanningLock.Unlock()
+			return
+		}
+		om.scanningLock.Unlock()
 	}
 
-	if !strings.HasPrefix(filename, om.containerDir) {
-		return
-	}
-
-	om.processConfigJSON(sampleID, filename)
-}
-
-func (om *ociMonitor) processUnlinkAction(
-	sampleID perf.SampleID,
-	pid int,
-	filename string,
-) {
-	parts := strings.Split(filename, "/")
-	if len(parts) >= 2 {
-		containerID := parts[len(parts)-2]
-		om.sensor.containerCache.deleteContainer(containerID,
-			ContainerRuntimeUnknown, sampleID)
-	}
+	f()
 }
 
 func (om *ociMonitor) decodeSysOpen(
@@ -254,30 +216,10 @@ func (om *ociMonitor) decodeSysOpen(
 	pid := int(data["common_pid"].(int32))
 	configFilename := data["filename"].(string)
 
-	sampleID := perf.SampleID{
-		Time: sample.Time,
-		PID:  sample.Pid,
-		TID:  sample.Tid,
-		CPU:  sample.CPU,
-	}
+	om.maybeDeferAction(func() {
+		om.configOpens[pid] = append(om.configOpens[pid], configFilename)
+	})
 
-	if om.scanning {
-		om.scanningLock.Lock()
-		if om.scanning {
-			om.scanningQueue = append(om.scanningQueue,
-				ociDeferredAction{
-					action:   om.processOpenAction,
-					sampleID: sampleID,
-					pid:      pid,
-					filename: configFilename,
-				})
-			om.scanningLock.Unlock()
-			return nil, nil
-		}
-		om.scanningLock.Unlock()
-	}
-
-	om.processOpenAction(sampleID, pid, configFilename)
 	return nil, nil
 }
 
@@ -286,7 +228,6 @@ func (om *ociMonitor) decodeImaFileFree(
 	data perf.TraceEventSampleData,
 ) (interface{}, error) {
 	pid := int(data["common_pid"].(int32))
-	configFilename := data["filename"].(string)
 
 	sampleID := perf.SampleID{
 		Time: sample.Time,
@@ -295,23 +236,26 @@ func (om *ociMonitor) decodeImaFileFree(
 		CPU:  sample.CPU,
 	}
 
-	if om.scanning {
-		om.scanningLock.Lock()
-		if om.scanning {
-			om.scanningQueue = append(om.scanningQueue,
-				ociDeferredAction{
-					action:   om.processCloseAction,
-					sampleID: sampleID,
-					pid:      pid,
-					filename: configFilename,
-				})
-			om.scanningLock.Unlock()
-			return nil, nil
+	om.maybeDeferAction(func() {
+		opens := om.configOpens[pid]
+		if len(opens) == 0 {
+			return
 		}
-		om.scanningLock.Unlock()
-	}
+		filename := opens[len(opens)-1]
+		if len(opens) == 1 {
+			delete(om.configOpens, pid)
+		} else {
+			opens = opens[:len(opens)-1]
+			om.configOpens[pid] = opens
+		}
 
-	om.processCloseAction(sampleID, pid, configFilename)
+		if !strings.HasPrefix(filename, om.containerDir) {
+			return
+		}
+
+		om.processConfigJSON(sampleID, filename)
+	})
+
 	return nil, nil
 }
 
@@ -319,7 +263,6 @@ func (om *ociMonitor) decodeUnlink(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
 ) (interface{}, error) {
-	pid := int(data["common_pid"].(int32))
 	configFilename := data["pathname"].(string)
 	if !strings.HasPrefix(configFilename, om.containerDir) {
 		return nil, nil
@@ -332,22 +275,15 @@ func (om *ociMonitor) decodeUnlink(
 		CPU:  sample.CPU,
 	}
 
-	if om.scanning {
-		om.scanningLock.Lock()
-		if om.scanning {
-			om.scanningQueue = append(om.scanningQueue,
-				ociDeferredAction{
-					action:   om.processUnlinkAction,
-					sampleID: sampleID,
-					pid:      pid,
-					filename: configFilename,
-				})
-			om.scanningLock.Unlock()
-			return nil, nil
+	om.maybeDeferAction(func() {
+		parts := strings.Split(configFilename, "/")
+		if len(parts) >= 2 {
+			containerID := parts[len(parts)-2]
+			om.sensor.ContainerCache.DeleteContainer(containerID,
+				ContainerRuntimeUnknown, sampleID)
 		}
-		om.scanningLock.Unlock()
-	}
 
-	om.processUnlinkAction(sampleID, pid, configFilename)
+	})
+
 	return nil, nil
 }

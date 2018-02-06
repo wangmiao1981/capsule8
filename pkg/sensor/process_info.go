@@ -349,10 +349,10 @@ type ProcessInfoCache struct {
 
 type scannerDeferredAction func()
 
-// newProcessInfoCache creates a new process information cache object. An
+// NewProcessInfoCache creates a new process information cache object. An
 // existing sensor object is required in order for the process info cache to
 // able to install its probes to monitor the system to maintain the cache.
-func newProcessInfoCache(sensor *Sensor) ProcessInfoCache {
+func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	once.Do(func() {
 		procFS = sys.HostProcFS()
 		if procFS == nil {
@@ -584,7 +584,7 @@ func (pc *ProcessInfoCache) LookupTaskContainerInfo(t *Task) *ContainerInfo {
 	}
 
 	if ID := t.ContainerID; len(ID) > 0 {
-		if i := pc.sensor.containerCache.lookupContainer(ID, true); i != nil {
+		if i := pc.sensor.ContainerCache.LookupContainer(ID, true); i != nil {
 			t.ContainerInfo = i
 			return i
 		}
