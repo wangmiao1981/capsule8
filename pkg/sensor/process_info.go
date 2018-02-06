@@ -529,18 +529,20 @@ func (pc *ProcessInfoCache) scanProcFilesystem() error {
 
 		err = pc.cacheTaskFromProc(tgid, tgid)
 		if err != nil {
-			return err
+			// This is not fatal; the process may have gone away
+			continue
 		}
 
 		taskPath := fmt.Sprintf("%s/%d/task", procFS.MountPoint, tgid)
 		d, err = os.Open(taskPath)
 		if err != nil {
-			return fmt.Errorf("Cannot open %s: %s", taskPath, err)
+			// This is not fatal; the process may have gone away
+			continue
 		}
 		taskNames, err := d.Readdirnames(0)
 		if err != nil {
-			return fmt.Errorf("Cannot read tasks from %s: %s",
-				taskPath, err)
+			// This is not fatal; the process may have gone away
+			continue
 		}
 		d.Close()
 
@@ -554,10 +556,8 @@ func (pc *ProcessInfoCache) scanProcFilesystem() error {
 				continue
 			}
 
-			err = pc.cacheTaskFromProc(tgid, pid)
-			if err != nil {
-				return err
-			}
+			// Ignore errors here; the process may have gone away
+			_ = pc.cacheTaskFromProc(tgid, pid)
 		}
 	}
 
