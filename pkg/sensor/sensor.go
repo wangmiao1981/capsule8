@@ -66,8 +66,8 @@ type Sensor struct {
 	monitor *perf.EventMonitor
 
 	// Per-sensor caches and monitors
-	containerCache *containerCache
 	ProcessCache   ProcessInfoCache
+	ContainerCache *ContainerCache
 	dockerMonitor  *dockerMonitor
 	ociMonitor     *ociMonitor
 
@@ -145,8 +145,8 @@ func (s *Sensor) Start() error {
 		return err
 	}
 
-	s.containerCache = newContainerCache(s)
-	s.ProcessCache = newProcessInfoCache(s)
+	s.ContainerCache = NewContainerCache(s)
+	s.ProcessCache = NewProcessInfoCache(s)
 
 	if len(config.Sensor.DockerContainerDir) > 0 {
 		s.dockerMonitor = newDockerMonitor(s,

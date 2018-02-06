@@ -72,13 +72,7 @@ const (
 	dockerUnlinkKprobeFilter    = "pathname ~ */config.v2.json"
 )
 
-type dockerDeferredActionFn func(sampleID perf.SampleID, filename string)
-
-type dockerDeferredAction struct {
-	action   dockerDeferredActionFn
-	sampleID perf.SampleID
-	filename string
-}
+type dockerDeferredAction func()
 
 // dockerMonitor monitors the system for Docker container events
 type dockerMonitor struct {
@@ -149,7 +143,7 @@ func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 		dm.scanningQueue = nil
 		dm.scanningLock.Unlock()
 		for _, f := range queue {
-			f.action(f.sampleID, f.filename)
+			f()
 		}
 		dm.scanningLock.Lock()
 	}
@@ -172,7 +166,7 @@ func (dm *dockerMonitor) processDockerConfig(
 	paths := strings.Split(configFilename, "/")
 	containerID := paths[len(paths)-2]
 
-	containerInfo := dm.sensor.containerCache.lookupContainer(
+	containerInfo := dm.sensor.ContainerCache.LookupContainer(
 		containerID, false)
 	if containerInfo != nil && containerInfo.JSONConfig == JSONString {
 		// No change; do nothing more
@@ -190,7 +184,7 @@ func (dm *dockerMonitor) processDockerConfig(
 	// Update the cache with the newly loaded information
 	if config.ID != containerID || containerInfo == nil {
 		containerID = config.ID
-		containerInfo = dm.sensor.containerCache.lookupContainer(
+		containerInfo = dm.sensor.ContainerCache.LookupContainer(
 			containerID, true)
 	}
 	data["JSONConfig"] = JSONString
@@ -221,22 +215,18 @@ func (dm *dockerMonitor) processDockerConfig(
 	return nil
 }
 
-func (dm *dockerMonitor) processRenameAction(
-	sampleID perf.SampleID,
-	filename string,
-) {
-	dm.processDockerConfig(sampleID, filename)
-}
-
-func (dm *dockerMonitor) processUnlinkAction(
-	sampleID perf.SampleID,
-	filename string,
-) {
-	parts := strings.Split(filename, "/")
-	if len(parts) >= 2 {
-		containerID := parts[len(parts)-2]
-		dm.sensor.containerCache.deleteContainer(containerID, ContainerRuntimeDocker, sampleID)
+func (dm *dockerMonitor) maybeDeferAction(f func()) {
+	if dm.scanning {
+		dm.scanningLock.Lock()
+		if dm.scanning {
+			dm.scanningQueue = append(dm.scanningQueue, f)
+			dm.scanningLock.Unlock()
+			return
+		}
+		dm.scanningLock.Unlock()
 	}
+
+	f()
 }
 
 func (dm *dockerMonitor) decodeRename(
@@ -255,22 +245,10 @@ func (dm *dockerMonitor) decodeRename(
 		CPU:  sample.CPU,
 	}
 
-	if dm.scanning {
-		dm.scanningLock.Lock()
-		if dm.scanning {
-			dm.scanningQueue = append(dm.scanningQueue,
-				dockerDeferredAction{
-					action:   dm.processRenameAction,
-					sampleID: sampleID,
-					filename: configFilename,
-				})
-			dm.scanningLock.Unlock()
-			return nil, nil
-		}
-		dm.scanningLock.Unlock()
-	}
+	dm.maybeDeferAction(func() {
+		dm.processDockerConfig(sampleID, configFilename)
+	})
 
-	dm.processRenameAction(sampleID, configFilename)
 	return nil, nil
 }
 
@@ -290,21 +268,13 @@ func (dm *dockerMonitor) decodeUnlink(
 		CPU:  sample.CPU,
 	}
 
-	if dm.scanning {
-		dm.scanningLock.Lock()
-		if dm.scanning {
-			dm.scanningQueue = append(dm.scanningQueue,
-				dockerDeferredAction{
-					action:   dm.processUnlinkAction,
-					sampleID: sampleID,
-					filename: configFilename,
-				})
-			dm.scanningLock.Unlock()
-			return nil, nil
+	dm.maybeDeferAction(func() {
+		parts := strings.Split(configFilename, "/")
+		if len(parts) >= 2 {
+			containerID := parts[len(parts)-2]
+			dm.sensor.ContainerCache.DeleteContainer(containerID, ContainerRuntimeDocker, sampleID)
 		}
-		dm.scanningLock.Unlock()
-	}
+	})
 
-	dm.processUnlinkAction(sampleID, configFilename)
 	return nil, nil
 }
