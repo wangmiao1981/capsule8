@@ -322,6 +322,8 @@ func (s *Sensor) NewEventFromSample(
 	pid := int(e.ProcessPid)
 	if task, leader, ok := s.ProcessCache.LookupTaskAndLeader(pid); ok {
 		e.ProcessId = leader.ProcessID()
+		e.ProcessTgid = int32(task.TGID)
+
 		if c := task.Creds; c != nil {
 			e.Credentials = &api.Credentials{
 				Uid:   c.UID,
