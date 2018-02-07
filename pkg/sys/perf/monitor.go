@@ -212,8 +212,7 @@ type registeredEvent struct {
 
 type perfEventGroup struct {
 	rb         *ringBuffer
-	timeBase   uint64
-	timeOffset uint64
+	timeOffset int64
 	pid        int // passed as 'pid' argument to perf_event_open()
 	cpu        int // passed as 'cpu' argument to perf_event_open()
 	fd         int // fd returned from perf_event_open()
@@ -1196,8 +1195,9 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 		group := monitor.groups[fd]
 		group.rb.read(monitor.readSamples)
 		for i := first; i < len(monitor.samples); i++ {
-			monitor.samples[i].RawSample.Time = group.timeBase +
-				(monitor.samples[i].RawSample.Time - group.timeOffset)
+			monitor.samples[i].RawSample.Time =
+				uint64(int64(monitor.samples[i].RawSample.Time) -
+					group.timeOffset)
 		}
 
 		if first == 0 {
@@ -1420,74 +1420,117 @@ func (monitor *EventMonitor) Stop(wait bool) {
 	}
 }
 
-var referenceEventAttr = EventAttr{
-	Type:         PERF_TYPE_SOFTWARE,
-	Size:         sizeofPerfEventAttr,
-	Config:       PERF_COUNT_SW_CONTEXT_SWITCHES,
-	SampleFreq:   1,
-	SampleType:   PERF_SAMPLE_TIME,
-	Freq:         true,
-	WakeupEvents: 1,
-}
-
-func (monitor *EventMonitor) readReferenceSamples(data []byte) {
-	reader := bytes.NewReader(data)
-	for reader.Len() > 0 {
-		ems := EventMonitorSample{}
-		ems.Err = ems.RawSample.read(reader, &referenceEventAttr, nil)
-		monitor.samples = append(monitor.samples, ems)
-	}
-}
-
-func (monitor *EventMonitor) cpuTimeOffset(cpu int, groupfd int, rb *ringBuffer) (uint64, error) {
-	// Create a temporary event to get a reference timestamp. What
-	// type of event we use is unimportant. We just want something
-	// that will be reported immediately. After the timestamp is
-	// retrieved, we can get rid of it.
-	fd, err := open(&referenceEventAttr, -1, cpu, groupfd,
-		(PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP))
-	if err != nil {
-		glog.V(3).Infof("Couldn't open reference event: %s", err)
-		return 0, err
+func (monitor *EventMonitor) collectReferenceSamples(groups []perfEventGroup) ([]*Sample, error) {
+	referenceEventAttr := &EventAttr{
+		Type:         PERF_TYPE_SOFTWARE,
+		Size:         sizeofPerfEventAttr,
+		Config:       PERF_COUNT_SW_CPU_CLOCK,
+		SampleFreq:   1,
+		SampleType:   PERF_SAMPLE_TIME,
+		Disabled:     true,
+		Freq:         true,
+		WakeupEvents: 1,
 	}
 
-	// Wait for the event to be ready, then pull it immediately and
-	// remember the timestamp. That's our reference for this CPU.
-	pollfds := []unix.PollFd{
-		unix.PollFd{
-			Fd:     int32(groupfd),
+	ncpu := len(groups)
+	pollfds := make([]unix.PollFd, ncpu)
+	for cpu := 0; cpu < ncpu; cpu++ {
+		fd, err := open(referenceEventAttr, -1, cpu, groups[cpu].fd,
+			PERF_FLAG_FD_OUTPUT|PERF_FLAG_FD_NO_GROUP)
+		if err != nil {
+			err = fmt.Errorf("Couldn't open reference event: %s", err)
+			return nil, err
+		}
+		defer unix.Close(fd)
+		pollfds[cpu] = unix.PollFd{
+			Fd:     int32(fd),
 			Events: unix.POLLIN,
-		},
+		}
+
 	}
-	for {
-		n, err := unix.Poll(pollfds, -1)
+
+	// Enable all of the events we just registered
+	for _, p := range pollfds {
+		enable(int(p.Fd))
+	}
+
+	// Read all samples from each group, but keep only the first for each
+	// Don't wait forever. Return a timeout error if samples don't arrive
+	// within 2 seconds.
+	const timeout = 2 * time.Second
+	glog.V(2).Infof("Calculating CPU time offsets (max wait %d nsec)", timeout)
+
+	nsamples := 0
+	samples := make([]*Sample, ncpu)
+	timeoutAt := time.Now().UnixNano() + int64(timeout)
+	for nsamples < ncpu {
+		now := time.Now().UnixNano()
+		if now >= timeoutAt {
+			return nil, errors.New("Timeout while reading samples")
+		}
+		n, err := unix.Poll(pollfds, int((timeoutAt-now)/int64(time.Millisecond)))
 		if err != nil && err != unix.EINTR {
-			unix.Close(fd)
-			return 0, err
+			return nil, err
 		}
 		if n == 0 {
 			continue
 		}
 
-		rb.read(monitor.readReferenceSamples)
-		if len(monitor.samples) == 0 {
-			continue
+		for i, p := range pollfds {
+			if p.Revents&unix.POLLIN != unix.POLLIN {
+				continue
+			}
+
+			groups[i].rb.read(func(data []byte) {
+				r := bytes.NewReader(data)
+				s := Sample{}
+				err := s.read(r, referenceEventAttr, nil)
+				if err == nil {
+					samples[i] = &s
+					nsamples++
+				}
+			})
+
+			if samples[i] != nil {
+				pollfds[i].Events &= ^unix.POLLIN
+			}
 		}
-		esm := monitor.samples[0]
-
-		// Close the event to prevent any more samples from being
-		// added to the ring buffer. Remove anything from the ring
-		// buffer that remains and discard it.
-		unix.Close(fd)
-		rb.read(monitor.readReferenceSamples)
-		monitor.samples = nil
-
-		if esm.Err != nil {
-			return 0, esm.Err
-		}
-
-		return esm.RawSample.Time - rb.timeRunning(), nil
 	}
+
+	return samples, nil
+}
+
+func (monitor *EventMonitor) flushRingBuffers(groups []perfEventGroup) {
+	for _, g := range groups {
+		g.rb.flush()
+	}
+}
+
+func (monitor *EventMonitor) calculateTimeOffsets(groups []perfEventGroup) error {
+	// If there's only one CPU, there's nothing to do since offsets are
+	// relative to CPU 0.
+	if len(groups) < 2 {
+		return nil
+	}
+
+	// Obtain references samples, one for each group.
+	samples, err := monitor.collectReferenceSamples(groups)
+	if err != nil {
+		return err
+	}
+
+	// Flush any remaining samples from the ring buffers. It's just extra
+	// samples that we don't care about.
+	monitor.flushRingBuffers(groups)
+
+	// Calculate offsets relative to CPU 0.
+	timeBase := int64(samples[0].Time)
+	for i := 1; i < len(groups); i++ {
+		groups[i].timeOffset = int64(samples[i].Time) - timeBase
+		glog.V(2).Infof("EventMonitor CPU %d time offset is %d\n", i, groups[i].timeOffset)
+	}
+
+	return nil
 }
 
 func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ringBufferNumPages int) error {
@@ -1501,49 +1544,41 @@ func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ring
 	}
 
 	ncpu := runtime.NumCPU()
-	newfds := make(map[int]perfEventGroup, ncpu)
-
+	groups := make([]perfEventGroup, ncpu)
 	for cpu := 0; cpu < ncpu; cpu++ {
 		groupfd, err := open(groupEventAttr, pid, cpu, -1, flags)
 		if err != nil {
-			for fd := range newfds {
+			for fd := range groups {
 				unix.Close(fd)
 			}
 			return err
 		}
 
-		newGroup := perfEventGroup{
+		groups[cpu] = perfEventGroup{
 			pid:   pid,
 			cpu:   cpu,
 			fd:    groupfd,
 			flags: flags,
 		}
 
-		rb, err := newRingBuffer(groupfd, ringBufferNumPages)
-		if err == nil {
-			var offset uint64
-
-			newGroup.rb = rb
-
-			offset, err = monitor.cpuTimeOffset(cpu, groupfd, rb)
-			if err == nil {
-				newGroup.timeBase = uint64(time.Now().UnixNano())
-				newGroup.timeOffset = offset
-				newfds[groupfd] = newGroup
-				continue
+		groups[cpu].rb, err = newRingBuffer(groupfd, ringBufferNumPages)
+		if err != nil {
+			for i := cpu; i >= 0; i-- {
+				groups[i].cleanup()
 			}
+			return err
 		}
+	}
 
-		// This is the common error case
-		newGroup.cleanup()
-		for _, group := range newfds {
-			group.cleanup()
+	if err := monitor.calculateTimeOffsets(groups); err != nil {
+		for i := len(groups); i >= 0; i-- {
+			groups[i].cleanup()
 		}
 		return err
 	}
 
-	for k, v := range newfds {
-		monitor.groups[k] = v
+	for _, v := range groups {
+		monitor.groups[v.fd] = v
 	}
 
 	return nil
