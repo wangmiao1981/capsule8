@@ -1,3 +1,33 @@
+## 0.6.0-alpha (Feb 7, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Expose task TGID in telemetry events ([#130](https://github.com/capsule8/capsule8/pull/130))
+  * Add a public API to the container cache and expose it all ([#129](https://github.com/capsule8/capsule8/pull/129))
+  * Make Sensor.processCache public to expose its public methods ([#120](https://github.com/capsule8/capsule8/pull/120))
+  * Scan the proc filesystem to populate the task cache on startup ([#127](https://github.com/capsule8/capsule8/pull/127))
+  * Update the process cache API to be more friendly to lookups ([#126](https://github.com/capsule8/capsule8/pull/126))
+  * Add a monitor to watch for runc managed containers ([#118](https://github.com/capsule8/capsule8/pull/118) - this was later disabled by [#132](https://github.com/capsule8/capsule8/pull/132))
+
+IMPROVEMENTS:
+
+  * Guard against infinite loops in container id/info lookup ([#124](https://github.com/capsule8/capsule8/pull/124))
+  * Update CircleCI and require lint cleanliness going forward ([#121](https://github.com/capsule8/capsule8/pull/121))
+
+BUG FIXES:
+
+  * Don't bail out of scanning /proc when processes disappear during the scan ([#131](https://github.com/capsule8/capsule8/pull/131))
+  * Use a kprobe instead of Ubuntu-specific `fs/do_sys_open` tracepoint ([#128](https://github.com/capsule8/capsule8/pull/128))
+  * Remove looping behavior from LookupLeader ([#125](https://github.com/capsule8/capsule8/pull/125))
+  * Temporarily disable the OCI monitor ([#132](https://github.com/capsule8/capsule8/pull/132))
+  * Fix copy/paste error in rewrite of CreateModeMask ([#123](https://github.com/capsule8/capsule8/pull/123))
+  * Clean the leaking of file descriptors with inotify ([#117](https://github.com/capsule8/capsule8/pull/117))
+  * Flip stopped flag while holding exclusive lock ([#116](https://github.com/capsule8/capsule8/pull/116))
+
 ## 0.5.0-alpha (Jan 24, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
