@@ -152,9 +152,12 @@ func (s *Sensor) Start() error {
 		s.dockerMonitor = newDockerMonitor(s,
 			config.Sensor.DockerContainerDir)
 	}
+	/* Temporarily disable the OCI monitor until a better means of
+	   supporting it is found.
 	if len(config.Sensor.OciContainerDir) > 0 {
 		s.ociMonitor = newOciMonitor(s, config.Sensor.OciContainerDir)
 	}
+	*/
 
 	// Make sure that all events registered with the sensor's event monitor
 	// are active
