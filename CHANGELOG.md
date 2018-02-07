@@ -2,7 +2,7 @@
 
 BACKWARDS INCOMPATIBILITIES:
 
-  None
+  * `oci_config_json` is no longer set in telemetry after being temporarily disabled in [#132](https://github.com/capsule8/capsule8/pull/132)
 
 FEATURES:
 
@@ -20,10 +20,10 @@ IMPROVEMENTS:
 
 BUG FIXES:
 
+  * Temporarily disable the OCI monitor ([#132](https://github.com/capsule8/capsule8/pull/132))
   * Don't bail out of scanning /proc when processes disappear during the scan ([#131](https://github.com/capsule8/capsule8/pull/131))
   * Use a kprobe instead of Ubuntu-specific `fs/do_sys_open` tracepoint ([#128](https://github.com/capsule8/capsule8/pull/128))
   * Remove looping behavior from LookupLeader ([#125](https://github.com/capsule8/capsule8/pull/125))
-  * Temporarily disable the OCI monitor ([#132](https://github.com/capsule8/capsule8/pull/132))
   * Fix copy/paste error in rewrite of CreateModeMask ([#123](https://github.com/capsule8/capsule8/pull/123))
   * Clean the leaking of file descriptors with inotify ([#117](https://github.com/capsule8/capsule8/pull/117))
   * Flip stopped flag while holding exclusive lock ([#116](https://github.com/capsule8/capsule8/pull/116))
