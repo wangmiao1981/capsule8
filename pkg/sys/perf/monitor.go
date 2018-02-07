@@ -39,6 +39,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var (
+	eventMonitorOnce sync.Once
+	haveClockID      bool
+	notedClockID     bool
+)
+
 type eventMonitorOptions struct {
 	flags              uintptr
 	defaultEventAttr   *EventAttr
@@ -302,7 +308,14 @@ func fixupEventAttr(eventAttr *EventAttr) {
 	eventAttr.SampleType |= PERF_SAMPLE_STREAM_ID | PERF_SAMPLE_IDENTIFIER | PERF_SAMPLE_TIME
 	eventAttr.ReadFormat = 0
 	eventAttr.SampleIDAll = true
-	eventAttr.UseClockID = false
+
+	if haveClockID {
+		eventAttr.UseClockID = true
+		eventAttr.ClockID = unix.CLOCK_MONOTONIC_RAW
+	} else {
+		eventAttr.UseClockID = false
+		eventAttr.ClockID = 0
+	}
 
 	// Either WakeupWatermark or WakeupEvents may be used, but at least
 	// one must be non-zero, because EventMonitor does not poll.
@@ -1509,7 +1522,7 @@ func (monitor *EventMonitor) flushRingBuffers(groups []perfEventGroup) {
 func (monitor *EventMonitor) calculateTimeOffsets(groups []perfEventGroup) error {
 	// If there's only one CPU, there's nothing to do since offsets are
 	// relative to CPU 0.
-	if len(groups) < 2 {
+	if haveClockID || len(groups) < 2 {
 		return nil
 	}
 
@@ -1541,6 +1554,10 @@ func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ring
 		Disabled:        true,
 		Watermark:       true,
 		WakeupWatermark: 1,
+	}
+	if haveClockID {
+		groupEventAttr.UseClockID = true
+		groupEventAttr.ClockID = unix.CLOCK_MONOTONIC_RAW
 	}
 
 	ncpu := runtime.NumCPU()
@@ -1646,7 +1663,26 @@ func cleanupStaleProbes(tracingDir string) {
 // method must be called to clean it up gracefully, even if no events are
 // registered or it is never put into the running state.
 func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
-	// Process options
+	eventMonitorOnce.Do(func() {
+		attr := EventAttr{
+			SamplePeriod:    1,
+			Disabled:        true,
+			UseClockID:      true,
+			ClockID:         unix.CLOCK_MONOTONIC_RAW,
+			Watermark:       true,
+			WakeupWatermark: 1,
+		}
+		fd, err := open(&attr, 0, -1, -1, 0)
+		if err == nil {
+			unix.Close(fd)
+			haveClockID = true
+		}
+	})
+	if haveClockID && !notedClockID {
+		glog.V(1).Infof("EventMonitor is using ClockID CLOCK_MONOTONIC_RAW")
+		notedClockID = true
+	}
+
 	opts := eventMonitorOptions{}
 	for _, option := range options {
 		option(&opts)
