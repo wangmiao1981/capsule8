@@ -223,6 +223,11 @@ type perfEventGroup struct {
 	cpu        int // passed as 'cpu' argument to perf_event_open()
 	fd         int // fd returned from perf_event_open()
 	flags      uintptr
+
+	// Mutable only by the monitor goroutine while running. No
+	// synchronization is required.
+	pendingSamples []EventMonitorSample
+	processed      bool
 }
 
 func (group *perfEventGroup) cleanup() {
@@ -248,8 +253,8 @@ type EventMonitor struct {
 
 	// Immutable items. No protection required. These fields are all set
 	// when the EventMonitor is created and never changed after that.
-	groups       map[int]perfEventGroup // fd : group data
-	dispatchChan chan eventMonitorSampleList
+	groups       map[int]*perfEventGroup // fd : group data
+	dispatchChan chan [][]EventMonitorSample
 
 	// Mutable by various goroutines, and also needed by the monitor
 	// goroutine. All of these are thread-safe mutable without a lock.
@@ -264,15 +269,14 @@ type EventMonitor struct {
 
 	// Mutable only by the monitor goroutine while running. No protection
 	// required.
-	samples        eventMonitorSampleList // Used while reading from ringbuffers
-	pendingSamples eventMonitorSampleList
+	hasPendingSamples bool
 
-	// Immutable once set. Only used by the .dispatchSamples() goroutine.
+	// Immutable once set. Only used by the dispatchSampleLoop goroutine.
 	// Load once there and cache locally to avoid cache misses on this
 	// struct.
 	dispatchFn SampleDispatchFn
 
-	// Mutable only by the .dispatchSamples() goroutine. As external
+	// Mutable only by the dispatchSampleLoop goroutine. As external
 	// samples are pulled from externalSamples, they're entered into this
 	// list so that the mutex need not be locked for every single event
 	// while pending externalSamples remain undispatched.
@@ -308,6 +312,10 @@ func fixupEventAttr(eventAttr *EventAttr) {
 	eventAttr.SampleType |= PERF_SAMPLE_STREAM_ID | PERF_SAMPLE_IDENTIFIER | PERF_SAMPLE_TIME
 	eventAttr.ReadFormat = 0
 	eventAttr.SampleIDAll = true
+
+	eventAttr.Watermark = false
+	eventAttr.WakeupEvents = 1
+	eventAttr.WakeupWatermark = 0
 
 	if haveClockID {
 		eventAttr.UseClockID = true
@@ -355,7 +363,12 @@ func normalizeFetchargs(args string) string {
 	return args
 }
 
-func (monitor *EventMonitor) addKprobe(name string, address string, onReturn bool, output string) error {
+func (monitor *EventMonitor) addKprobe(
+	name string,
+	address string,
+	onReturn bool,
+	output string,
+) error {
 	output = normalizeFetchargs(output)
 
 	var definition string
@@ -374,7 +387,13 @@ func (monitor *EventMonitor) removeKprobe(name string) error {
 		fmt.Sprintf("-:%s", name))
 }
 
-func (monitor *EventMonitor) addUprobe(name string, bin string, address string, onReturn bool, output string) error {
+func (monitor *EventMonitor) addUprobe(
+	name string,
+	bin string,
+	address string,
+	onReturn bool,
+	output string,
+) error {
 	output = normalizeFetchargs(output)
 
 	var definition string
@@ -399,7 +418,10 @@ func (monitor *EventMonitor) newProbeName() string {
 		monitor.nextProbeID)
 }
 
-func (monitor *EventMonitor) perfEventOpen(eventAttr *EventAttr, filter string) ([]int, error) {
+func (monitor *EventMonitor) perfEventOpen(
+	eventAttr *EventAttr,
+	filter string,
+) ([]int, error) {
 	glog.V(2).Infof("Opening perf event: %d %s", eventAttr.Config, filter)
 
 	newfds := make([]int, 0, len(monitor.groups))
@@ -515,7 +537,12 @@ func (monitor *EventMonitor) newRegisteredPerfEvent(
 	return eventid, nil
 }
 
-func (monitor *EventMonitor) newRegisteredTraceEvent(name string, fn TraceEventDecoderFn, opts registerEventOptions, eventType EventType) (uint64, error) {
+func (monitor *EventMonitor) newRegisteredTraceEvent(
+	name string,
+	fn TraceEventDecoderFn,
+	opts registerEventOptions,
+	eventType EventType,
+) (uint64, error) {
 	// This should be called with monitor.lock held.
 
 	id, err := monitor.decoders.AddDecoder(name, fn)
@@ -575,8 +602,11 @@ func (monitor *EventMonitor) RegisterExternalEvent(
 // kernel. An event ID is returned that is unique to the EventMonitor and is
 // to be used to unregister the event. The event ID will also be passed to
 // the EventMonitor's dispatch function.
-func (monitor *EventMonitor) RegisterTracepoint(name string,
-	fn TraceEventDecoderFn, options ...RegisterEventOption) (uint64, error) {
+func (monitor *EventMonitor) RegisterTracepoint(
+	name string,
+	fn TraceEventDecoderFn,
+	options ...RegisterEventOption,
+) (uint64, error) {
 
 	opts := registerEventOptions{}
 	for _, option := range options {
@@ -594,9 +624,13 @@ func (monitor *EventMonitor) RegisterTracepoint(name string,
 // EventMonitor. An event ID is returned that is unqiue to the EventMonitor and
 // is to be used to unregister the event. The event ID will also be passed to
 // the EventMonitor's dispatch function.
-func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, output string,
-	fn TraceEventDecoderFn, options ...RegisterEventOption) (uint64, error) {
-
+func (monitor *EventMonitor) RegisterKprobe(
+	address string,
+	onReturn bool,
+	output string,
+	fn TraceEventDecoderFn,
+	options ...RegisterEventOption,
+) (uint64, error) {
 	opts := registerEventOptions{}
 	for _, option := range options {
 		option(&opts)
@@ -625,10 +659,14 @@ func (monitor *EventMonitor) RegisterKprobe(address string, onReturn bool, outpu
 // EventMonitor. An event ID is returned that is unique to the EventMonitor and
 // is to be used to unregister the event. The event ID will also be passed to
 // the EventMonitor's dispatch function.
-func (monitor *EventMonitor) RegisterUprobe(bin string, address string,
-	onReturn bool, output string, fn TraceEventDecoderFn,
-	options ...RegisterEventOption) (uint64, error) {
-
+func (monitor *EventMonitor) RegisterUprobe(
+	bin string,
+	address string,
+	onReturn bool,
+	output string,
+	fn TraceEventDecoderFn,
+	options ...RegisterEventOption,
+) (uint64, error) {
 	opts := registerEventOptions{}
 	for _, option := range options {
 		option(&opts)
@@ -787,7 +825,9 @@ func (monitor *EventMonitor) UnregisterEvent(eventid uint64) error {
 }
 
 // RegisteredEventType returns the type of an event
-func (monitor *EventMonitor) RegisteredEventType(eventID uint64) (EventType, bool) {
+func (monitor *EventMonitor) RegisteredEventType(
+	eventID uint64,
+) (EventType, bool) {
 	event, ok := monitor.events.lookup(eventID)
 	if !ok {
 		return EventTypeInvalid, false
@@ -943,22 +983,6 @@ type EventMonitorSample struct {
 	Err error
 }
 
-// eventMonitorSampleList implements sort.Interface and is used for sorting a
-// list of EventMonitorSample instances by time.
-type eventMonitorSampleList []EventMonitorSample
-
-func (l eventMonitorSampleList) Len() int {
-	return len(l)
-}
-
-func (l eventMonitorSampleList) Swap(i, j int) {
-	l[i], l[j] = l[j], l[i]
-}
-
-func (l eventMonitorSampleList) Less(i, j int) bool {
-	return l[i].RawSample.Time < l[j].RawSample.Time
-}
-
 type externalSample struct {
 	eventID uint64
 	sample  EventMonitorSample
@@ -1102,13 +1126,73 @@ func (monitor *EventMonitor) processExternalSamples(timeLimit uint64) {
 	}
 }
 
-func (monitor *EventMonitor) dispatchSortedSamples(samples eventMonitorSampleList) {
+type sampleMerger struct {
+	samples [][]EventMonitorSample
+	indices []int
+}
+
+func (m *sampleMerger) next() (EventMonitorSample, bool) {
+	nSources := len(m.indices)
+	if nSources == 0 {
+		return EventMonitorSample{}, true
+	}
+
+	// Samples from each ringbuffer will be in timestamp order; therefore,
+	// we can simpy look at the first element in each source to find the
+	// next one to return.
+
+	if nSources == 1 {
+		sample := m.samples[0][m.indices[0]]
+		m.indices[0]++
+		if m.indices[0] == len(m.samples[0]) {
+			m.samples = nil
+			m.indices = nil
+		}
+		return sample, false
+	}
+
+	index := 0
+	value := m.samples[0][m.indices[0]].RawSample.Time
+	for i := 1; i < nSources; i++ {
+		if v := m.samples[i][m.indices[i]].RawSample.Time; v < value {
+			index = i
+			value = v
+		}
+	}
+	sample := m.samples[index][m.indices[index]]
+
+	m.indices[index]++
+	if m.indices[index] == len(m.samples[index]) {
+		nSources--
+		m.indices[index] = m.indices[nSources]
+		m.indices = m.indices[:nSources]
+		m.samples[index] = m.samples[nSources]
+		m.samples = m.samples[:nSources]
+	}
+
+	return sample, false
+}
+
+func newSampleMerger(samples [][]EventMonitorSample) sampleMerger {
+	return sampleMerger{
+		samples: samples,
+		indices: make([]int, len(samples)),
+	}
+}
+
+func (monitor *EventMonitor) dispatchSamples(samples [][]EventMonitorSample) {
 	dispatchFn := monitor.dispatchFn
 	eventIDMap := monitor.eventIDMap.getMap()
 	eventMap := monitor.events.getMap()
 
-	for _, esm := range samples {
-		monitor.processExternalSamples(samples[0].RawSample.Time)
+	m := newSampleMerger(samples)
+	for {
+		esm, done := m.next()
+		if done {
+			break
+		}
+
+		monitor.processExternalSamples(esm.RawSample.Time)
 
 		streamID := esm.RawSample.SampleID.StreamID
 		eventID, ok := eventIDMap[streamID]
@@ -1155,7 +1239,7 @@ func (monitor *EventMonitor) dispatchSortedSamples(samples eventMonitorSampleLis
 	monitor.processExternalSamples(monitor.lastSampleTimeDispatched)
 }
 
-func (monitor *EventMonitor) dispatchSamples() {
+func (monitor *EventMonitor) dispatchSampleLoop() {
 	defer monitor.wg.Done()
 
 	for monitor.isRunning {
@@ -1164,14 +1248,11 @@ func (monitor *EventMonitor) dispatchSamples() {
 			if !ok {
 				// Channel is closed; stop dispatch
 				monitor.dispatchChan = nil
-
-				// Signal completion of dispatch via WaitGroup
 				return
 			}
 
-			if samples != nil {
-				sort.Sort(samples)
-				monitor.dispatchSortedSamples(samples)
+			if len(samples) > 0 {
+				monitor.dispatchSamples(samples)
 			} else {
 				monitor.processExternalSamples(uint64(time.Now().UnixNano()))
 			}
@@ -1179,74 +1260,96 @@ func (monitor *EventMonitor) dispatchSamples() {
 	}
 }
 
-func (monitor *EventMonitor) readSamples(data []byte) {
-	attrMap := monitor.eventAttrMap.getMap()
-	reader := bytes.NewReader(data)
-	for reader.Len() > 0 {
-		ems := EventMonitorSample{}
-		ems.Err = ems.RawSample.read(reader, nil, attrMap)
-		monitor.samples = append(monitor.samples, ems)
-	}
-}
-
 func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
-	var (
-		lastTimestamp uint64
-		lastIndex     int
-	)
+	// Clear the monitor's hasPendingSamples flag immediately. All samples
+	// pending at this time will be included for processing. New pending
+	// samples may be added and so this flag will be updated later.
+	monitor.hasPendingSamples = false
 
-	// Group fds are created with a read_format of 0, which means that the
-	// data read from each fd will always be 8 bytes. We don't care about
-	// the data, so we can safely ignore it. Due to the way that the
-	// interface works, we don't have to read it as long as we empty the
-	// associated ring buffer, which we will.
-
+	var lastTimestamp uint64
+	samples := make([][]EventMonitorSample, 0, len(readyfds))
 	for _, fd := range readyfds {
-		// Read the samples from the ring buffer, and then normalize
-		// the timestamps to be consistent across CPUs.
-		first := len(monitor.samples)
+		// It is not necessary to read from the ready fd, because the
+		// kernel fabricates that information on demand. We're not
+		// interested in it, so don't bother. Emptying the ringbuffer
+		// is what clears the fd's ready state.
+
+		var groupSamples, newPendingSamples []EventMonitorSample
 		group := monitor.groups[fd]
-		group.rb.read(monitor.readSamples)
-		for i := first; i < len(monitor.samples); i++ {
-			monitor.samples[i].RawSample.Time =
-				uint64(int64(monitor.samples[i].RawSample.Time) -
-					group.timeOffset)
+		group.processed = true
+
+		group.rb.read(func(data []byte) {
+			attrMap := monitor.eventAttrMap.getMap()
+			r := bytes.NewReader(data)
+			for r.Len() > 0 {
+				ems := EventMonitorSample{}
+				ems.Err = ems.RawSample.read(r, nil, attrMap)
+				ems.RawSample.Time =
+					uint64(int64(ems.RawSample.Time) -
+						group.timeOffset)
+				groupSamples = append(groupSamples, ems)
+			}
+		})
+
+		if len(groupSamples) == 0 {
+			if len(group.pendingSamples) > 0 {
+				samples = append(samples, group.pendingSamples)
+			}
+			group.pendingSamples = nil
+			continue
 		}
 
-		if first == 0 {
-			// Sometimes readyfds get no samples from the ringbuffer
-			if len(monitor.samples) > 0 {
-				lastTimestamp = monitor.samples[len(monitor.samples)-1].RawSample.Time
-			}
+		if lastTimestamp == 0 {
+			lastTimestamp = groupSamples[len(groupSamples)-1].RawSample.Time
 		} else {
-			x := len(monitor.samples)
-			for i := x - 1; i > lastIndex; i-- {
-				if monitor.samples[i].RawSample.Time > lastTimestamp {
-					x--
+			l := len(groupSamples)
+			for i := l - 1; i >= 0; i-- {
+				if groupSamples[i].RawSample.Time <= lastTimestamp {
+					break
+				}
+				l--
+			}
+			if l != len(groupSamples) {
+				monitor.hasPendingSamples = true
+				newPendingSamples = groupSamples[l:]
+				groupSamples = groupSamples[:l]
+				if len(groupSamples) == 0 {
+					group.pendingSamples = newPendingSamples
+					continue
 				}
 			}
-			if x != len(monitor.samples) {
-				monitor.pendingSamples = append(monitor.pendingSamples, monitor.samples[x:]...)
-				monitor.samples = monitor.samples[:x]
-			}
 		}
-		lastIndex = len(monitor.samples)
+
+		groupSamples = append(group.pendingSamples, groupSamples...)
+		group.pendingSamples = newPendingSamples
+		samples = append(samples, groupSamples)
 	}
 
-	if len(monitor.samples) > 0 {
-		if len(monitor.pendingSamples) > 0 {
-			monitor.samples = append(monitor.samples, monitor.pendingSamples...)
-			monitor.pendingSamples = monitor.pendingSamples[:0]
+	for _, group := range monitor.groups {
+		if !group.processed && len(group.pendingSamples) > 0 {
+			samples = append(samples, group.pendingSamples)
+			group.pendingSamples = nil
 		}
-		monitor.dispatchChan <- monitor.samples
-		monitor.samples = nil
+		group.processed = false
+	}
+
+	if len(samples) > 0 {
+		monitor.dispatchChan <- samples
 	}
 }
 
 func (monitor *EventMonitor) flushPendingSamples() {
-	if len(monitor.pendingSamples) > 0 {
-		monitor.dispatchChan <- monitor.pendingSamples
-		monitor.pendingSamples = nil
+	var samples [][]EventMonitorSample
+	for _, group := range monitor.groups {
+		if len(group.pendingSamples) > 0 {
+			samples = append(samples, group.pendingSamples)
+			group.pendingSamples = nil
+		}
+	}
+
+	monitor.hasPendingSamples = false
+	if len(samples) > 0 {
+		monitor.dispatchChan <- samples
 	}
 }
 
@@ -1285,12 +1388,12 @@ func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 	f, _ := fcntl(monitor.pipe[0], syscall.F_GETFL, 0)
 	fcntl(monitor.pipe[0], syscall.F_SETFL, f|syscall.O_NONBLOCK)
 
-	monitor.dispatchChan = make(chan eventMonitorSampleList,
+	monitor.dispatchChan = make(chan [][]EventMonitorSample,
 		config.Sensor.ChannelBufferLength)
 	monitor.dispatchFn = fn
 
 	monitor.wg.Add(1)
-	go monitor.dispatchSamples()
+	go monitor.dispatchSampleLoop()
 
 	// Set up the fds for polling. Monitor only the groupfds, because they
 	// will encapsulate all of the eventfds and they're tied to the ring
@@ -1312,7 +1415,7 @@ runloop:
 		// pending and go back to waiting for events normally. If there
 		// are events, the pending events will get handled during
 		// normal processing
-		if len(monitor.pendingSamples) > 0 {
+		if monitor.hasPendingSamples {
 			n, err = unix.Poll(pollfds, 0)
 			if err != nil && err != unix.EINTR {
 				break
@@ -1376,7 +1479,7 @@ runloop:
 			}
 			if len(readyfds) > 0 {
 				monitor.readRingBuffers(readyfds)
-			} else if len(monitor.pendingSamples) > 0 {
+			} else if monitor.hasPendingSamples {
 				monitor.flushPendingSamples()
 			}
 		}
@@ -1398,7 +1501,7 @@ runloop:
 	monitor.lock.Unlock()
 
 	if monitor.dispatchChan != nil {
-		// Wait for dispatchSamples goroutine to exit
+		// Wait for dispatchSampleLoop goroutine to exit
 		monitor.wg.Wait()
 	}
 
@@ -1433,10 +1536,11 @@ func (monitor *EventMonitor) Stop(wait bool) {
 	}
 }
 
-func (monitor *EventMonitor) collectReferenceSamples(groups []perfEventGroup) ([]*Sample, error) {
+func (monitor *EventMonitor) collectReferenceSamples(
+	groups []*perfEventGroup,
+) ([]*Sample, error) {
 	referenceEventAttr := &EventAttr{
 		Type:         PERF_TYPE_SOFTWARE,
-		Size:         sizeofPerfEventAttr,
 		Config:       PERF_COUNT_SW_CPU_CLOCK,
 		SampleFreq:   1,
 		SampleType:   PERF_SAMPLE_TIME,
@@ -1513,13 +1617,13 @@ func (monitor *EventMonitor) collectReferenceSamples(groups []perfEventGroup) ([
 	return samples, nil
 }
 
-func (monitor *EventMonitor) flushRingBuffers(groups []perfEventGroup) {
+func (monitor *EventMonitor) flushRingBuffers(groups []*perfEventGroup) {
 	for _, g := range groups {
 		g.rb.flush()
 	}
 }
 
-func (monitor *EventMonitor) calculateTimeOffsets(groups []perfEventGroup) error {
+func (monitor *EventMonitor) calculateTimeOffsets(groups []*perfEventGroup) error {
 	// If there's only one CPU, there's nothing to do since offsets are
 	// relative to CPU 0.
 	if haveClockID || len(groups) < 2 {
@@ -1532,7 +1636,7 @@ func (monitor *EventMonitor) calculateTimeOffsets(groups []perfEventGroup) error
 		return err
 	}
 
-	// Flush any remaining samples from the ring buffers. It's just extra
+	// Flush any remaining samples from the ringbuffers. It's just extra
 	// samples that we don't care about.
 	monitor.flushRingBuffers(groups)
 
@@ -1546,14 +1650,15 @@ func (monitor *EventMonitor) calculateTimeOffsets(groups []perfEventGroup) error
 	return nil
 }
 
-func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ringBufferNumPages int) error {
+func (monitor *EventMonitor) initializeGroupLeaders(
+	pid int,
+	flags uintptr,
+	ringBufferNumPages int,
+) error {
 	groupEventAttr := &EventAttr{
-		Type:            PERF_TYPE_SOFTWARE,
-		Size:            sizeofPerfEventAttr,
-		Config:          PERF_COUNT_SW_DUMMY, // Added in Linux 3.12
-		Disabled:        true,
-		Watermark:       true,
-		WakeupWatermark: 1,
+		Type:     PERF_TYPE_SOFTWARE,
+		Config:   PERF_COUNT_SW_DUMMY, // Added in Linux 3.12
+		Disabled: true,
 	}
 	if haveClockID {
 		groupEventAttr.UseClockID = true
@@ -1561,7 +1666,7 @@ func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ring
 	}
 
 	ncpu := runtime.NumCPU()
-	groups := make([]perfEventGroup, ncpu)
+	groups := make([]*perfEventGroup, ncpu)
 	for cpu := 0; cpu < ncpu; cpu++ {
 		groupfd, err := open(groupEventAttr, pid, cpu, -1, flags)
 		if err != nil {
@@ -1571,7 +1676,7 @@ func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ring
 			return err
 		}
 
-		groups[cpu] = perfEventGroup{
+		groups[cpu] = &perfEventGroup{
 			pid:   pid,
 			cpu:   cpu,
 			fd:    groupfd,
@@ -1601,7 +1706,10 @@ func (monitor *EventMonitor) initializeGroupLeaders(pid int, flags uintptr, ring
 	return nil
 }
 
-func doProbeCleanup(tracingDir, eventsFile string, activePids, deadPids map[int]bool) {
+func doProbeCleanup(
+	tracingDir, eventsFile string,
+	activePids, deadPids map[int]bool,
+) {
 	eventsFilename := filepath.Join(tracingDir, eventsFile)
 	data, err := ioutil.ReadFile(eventsFilename)
 	if err != nil {
@@ -1692,12 +1800,10 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 
 	if opts.defaultEventAttr == nil {
 		eventAttr = EventAttr{
-			SamplePeriod:    1,
-			SampleType:      PERF_SAMPLE_TIME | PERF_SAMPLE_CPU | PERF_SAMPLE_RAW,
-			Disabled:        true,
-			Inherit:         true,
-			Watermark:       true,
-			WakeupWatermark: 1,
+			SamplePeriod: 1,
+			SampleType:   PERF_SAMPLE_CPU | PERF_SAMPLE_RAW,
+			Disabled:     true,
+			Inherit:      true,
 		}
 	} else {
 		eventAttr = *opts.defaultEventAttr
@@ -1730,7 +1836,7 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 	}
 
 	monitor := &EventMonitor{
-		groups:       make(map[int]perfEventGroup),
+		groups:       make(map[int]*perfEventGroup),
 		eventAttrMap: newSafeEventAttrMap(),
 		eventIDMap:   newSafeUInt64Map(),
 		decoders:     newTraceEventDecoderMap(opts.tracingDir),
