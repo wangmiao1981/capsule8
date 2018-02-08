@@ -27,6 +27,7 @@ import (
 
 	"golang.org/x/net/context"
 
+	"github.com/golang/protobuf/jsonpb"
 	"google.golang.org/grpc"
 
 	api "github.com/capsule8/capsule8/api/v0"
@@ -35,8 +36,10 @@ import (
 )
 
 var config struct {
-	server string
-	image  string
+	server      string
+	image       string
+	json        bool
+	prettyPrint bool
 }
 
 func init() {
@@ -45,7 +48,11 @@ func init() {
 		"Capsule8 gRPC API server address")
 
 	flag.StringVar(&config.image, "image", "",
-		"container image wildcard pattern to monitor")
+		"Container image wildcard pattern to monitor")
+	flag.BoolVar(&config.json, "json", false,
+		"Output telemetry events as JSON")
+	flag.BoolVar(&config.prettyPrint, "prettyprint", false,
+		"Pretty print JSON telemetry events")
 }
 
 // Custom gRPC Dialer that understands "unix:/path/to/sock" as well as TCP addrs
@@ -191,6 +198,8 @@ func createSubscription() *api.Subscription {
 }
 
 func main() {
+	var marshaler *jsonpb.Marshaler
+
 	flag.Parse()
 
 	// Create telemetry service client
@@ -223,6 +232,14 @@ func main() {
 		cancel()
 	}()
 
+	if config.json {
+		marshaler = &jsonpb.Marshaler{EmitDefaults: true}
+
+		if config.prettyPrint {
+			marshaler.Indent = "\t"
+		}
+	}
+
 	for {
 		ev, err := stream.Recv()
 		if err != nil {
@@ -231,7 +248,17 @@ func main() {
 		}
 
 		for _, e := range ev.Events {
-			fmt.Println(e)
+			if config.json {
+				msg, err := marshaler.MarshalToString(e)
+				if err != nil {
+					fmt.Fprintf(os.Stderr,
+						"Unable to decode event: %v", err)
+					continue
+				}
+				fmt.Println(msg)
+			} else {
+				fmt.Println(e)
+			}
 		}
 	}
 }
