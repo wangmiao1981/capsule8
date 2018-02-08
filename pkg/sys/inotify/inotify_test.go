@@ -161,13 +161,13 @@ func TestSubdirs(t *testing.T) {
 
 	go func() {
 		for {
-			e, ok := <-instance.Events().Data
-			ev := e.(*Event)
-
-			if !ok {
-				return
-			} else if ev.Name == "file" {
-				done <- time.Now()
+			if e, ok := <-instance.Events().Data; ok {
+				ev := e.(*Event)
+				if ev.Name == "file" {
+					done <- time.Now()
+					return
+				}
+			} else {
 				return
 			}
 		}
