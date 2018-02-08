@@ -305,6 +305,7 @@ func (c *mapTaskCache) LookupTaskAndLeader(pid int) (*Task, *Task, bool) {
 	if ok {
 		if pid != t.TGID {
 			leader, ok := c.lookupTaskUnlocked(t.TGID)
+			c.Unlock()
 			return t, leader, ok
 		}
 		c.Unlock()
