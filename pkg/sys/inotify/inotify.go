@@ -66,6 +66,7 @@ type Instance struct {
 	ctrl        chan interface{}
 	triggers    []trigger
 	finished    bool
+	wg          sync.WaitGroup
 }
 
 type watch struct {
@@ -472,7 +473,10 @@ func NewInstance() (*Instance, error) {
 		return nil, err
 	}
 
+	is.wg.Add(1)
 	go func() {
+		defer is.wg.Done()
+
 		err := is.pollLoop()
 		if err != nil {
 			glog.Infof("Poll loop exited with error: %v", err)
@@ -541,4 +545,7 @@ func (is *Instance) Close() {
 
 	// Send the "finish" message
 	is.ctrl <- &inotifyFinish{}
+
+	// Wait for the pollLoop to exit
+	is.wg.Wait()
 }
