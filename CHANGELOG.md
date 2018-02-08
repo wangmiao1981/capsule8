@@ -1,3 +1,21 @@
+## 0.6.1-alpha (Feb 8, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  None
+
+BUG FIXES:
+
+  * Add a missing Unlock call in mapTaskCache.LookupTaskAndLeader ([#139](https://github.com/capsule8/capsule8/pull/139))
+
 ## 0.6.0-alpha (Feb 7, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
