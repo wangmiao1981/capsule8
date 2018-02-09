@@ -202,9 +202,22 @@ func main() {
 
 	flag.Parse()
 
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel context on control-C
+	signals := make(chan os.Signal)
+	signal.Notify(signals, os.Interrupt)
+
+	go func() {
+		<-signals
+		cancel()
+	}()
+
 	// Create telemetry service client
-	conn, err := grpc.Dial(config.server,
+	conn, err := grpc.DialContext(ctx, config.server,
 		grpc.WithDialer(dialer),
+		grpc.WithBlock(),
+		grpc.WithTimeout(1*time.Second),
 		grpc.WithInsecure())
 
 	c := api.NewTelemetryServiceClient(conn)
@@ -213,7 +226,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	stream, err := c.GetEvents(ctx, &api.GetEventsRequest{
 		Subscription: createSubscription(),
 	})
@@ -222,15 +234,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "GetEvents: %s\n", err)
 		os.Exit(1)
 	}
-
-	// Exit cleanly on Control-C
-	signals := make(chan os.Signal)
-	signal.Notify(signals, os.Interrupt)
-
-	go func() {
-		<-signals
-		cancel()
-	}()
 
 	if config.json {
 		marshaler = &jsonpb.Marshaler{EmitDefaults: true}
