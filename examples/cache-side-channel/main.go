@@ -16,7 +16,11 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"runtime"
+	"strings"
+
+	"github.com/capsule8/capsule8/pkg/sensor"
 
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 	"github.com/golang/glog"
@@ -54,9 +58,23 @@ type eventCounters struct {
 
 var cpuCounters []eventCounters
 
+func newSensor() *sensor.Sensor {
+	s, err := sensor.NewSensor()
+	if err != nil {
+		glog.Fatal("Could not create sensor: ", err.Error())
+	}
+	if err := s.Start(); err != nil {
+		glog.Fatal("Could not start sensor: ", err.Error())
+	}
+	return s
+}
+
 func main() {
 	flag.Set("logtostderr", "true")
 	flag.Parse()
+
+	glog.Infof("Starting Capsule8 sensor")
+	sensor := newSensor()
 
 	glog.Infof("Starting Capsule8 cache side channel detector")
 
@@ -109,12 +127,12 @@ func main() {
 	eg.Run(func(sample perf.Sample) {
 		sr, ok := sample.Record.(*perf.SampleRecord)
 		if ok {
-			onSample(sr, eg.EventAttrsByID)
+			onSample(sensor, sr, eg.EventAttrsByID)
 		}
 	})
 }
 
-func onSample(sr *perf.SampleRecord, eventAttrMap map[uint64]*perf.EventAttr) {
+func onSample(sensor *sensor.Sensor, sr *perf.SampleRecord, eventAttrMap map[uint64]*perf.EventAttr) {
 	var counters eventCounters
 
 	// The sample record contains all values in the event group,
@@ -138,20 +156,35 @@ func onSample(sr *perf.SampleRecord, eventAttrMap map[uint64]*perf.EventAttr) {
 		LLCLoadMisses: counters.LLCLoadMisses - prevCounters.LLCLoadMisses,
 	}
 
-	alarm(sr, counterDeltas)
+	alarm(sensor, sr, counterDeltas)
 }
 
-func alarm(sr *perf.SampleRecord, counters eventCounters) {
+func alarm(s *sensor.Sensor, sr *perf.SampleRecord, counters eventCounters) {
 	LLCLoadMissRate := float32(counters.LLCLoadMisses) / float32(counters.LLCLoads)
 
+	var fields []string
+	fields = append(fields, fmt.Sprintf("LLCLoadMissRate=%v", LLCLoadMissRate))
+	fields = append(fields, fmt.Sprintf("pid=%v", sr.Pid))
+	fields = append(fields, fmt.Sprintf("tid=%v", sr.Tid))
+	fields = append(fields, fmt.Sprintf("cpu=%v", sr.CPU))
+
+	if task, ok := s.ProcessCache.LookupTask(int(sr.Pid)); ok {
+		containerInfo := s.ProcessCache.LookupTaskContainerInfo(task)
+		if containerInfo != nil {
+			fields = append(fields, fmt.Sprintf("container_name=%v", containerInfo.Name))
+			fields = append(fields, fmt.Sprintf("container_id=%v", containerInfo.ID))
+			fields = append(fields, fmt.Sprintf("container_image=%v", containerInfo.ImageName))
+			fields = append(fields, fmt.Sprintf("container_image_id=%v", containerInfo.ImageID))
+		}
+	}
+
+	message := strings.Join(fields, " ")
+
 	if LLCLoadMissRate > alarmThresholdError {
-		glog.Errorf("cpu=%v pid=%v tid=%v LLCLoadMissRate=%v",
-			sr.CPU, sr.Pid, sr.Tid, LLCLoadMissRate)
+		glog.Errorf(message)
 	} else if LLCLoadMissRate > alarmThresholdWarning {
-		glog.Warningf("cpu=%v pid=%v tid=%v LLCLoadMissRate=%v",
-			sr.CPU, sr.Pid, sr.Tid, LLCLoadMissRate)
+		glog.Warningf(message)
 	} else if LLCLoadMissRate > alarmThresholdInfo {
-		glog.Infof("cpu=%v pid=%v tid=%v LLCLoadMissRate=%v",
-			sr.CPU, sr.Pid, sr.Tid, LLCLoadMissRate)
+		glog.Infof(message)
 	}
 }
