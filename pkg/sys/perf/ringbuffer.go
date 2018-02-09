@@ -80,10 +80,6 @@ func (rb *ringBuffer) unmap() error {
 	return unix.Munmap(rb.memory)
 }
 
-func (rb *ringBuffer) timeRunning() uint64 {
-	return atomic.LoadUint64(&rb.metadata.TimeRunning)
-}
-
 // Read calls the given function on each available record in the ringbuffer
 func (rb *ringBuffer) read(f func([]byte)) {
 	var dataHead, dataTail uint64
@@ -115,4 +111,10 @@ func (rb *ringBuffer) read(f func([]byte)) {
 		// Update dataHead in case it has been advanced in the interim
 		dataHead = atomic.LoadUint64(&rb.metadata.DataHead)
 	}
+}
+
+// Flush discards all data from the ringbuffer
+func (rb *ringBuffer) flush() {
+	dataHead := atomic.LoadUint64(&rb.metadata.DataHead)
+	atomic.StoreUint64(&rb.metadata.DataTail, dataHead)
 }
