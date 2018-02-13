@@ -112,9 +112,3 @@ func (rb *ringBuffer) read(f func([]byte)) {
 		dataHead = atomic.LoadUint64(&rb.metadata.DataHead)
 	}
 }
-
-// Flush discards all data from the ringbuffer
-func (rb *ringBuffer) flush() {
-	dataHead := atomic.LoadUint64(&rb.metadata.DataHead)
-	atomic.StoreUint64(&rb.metadata.DataTail, dataHead)
-}

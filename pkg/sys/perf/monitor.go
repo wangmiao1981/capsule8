@@ -43,6 +43,7 @@ var (
 	eventMonitorOnce sync.Once
 	haveClockID      bool
 	notedClockID     bool
+	timeOffsets      []int64
 )
 
 type eventMonitorOptions struct {
@@ -217,12 +218,11 @@ type registeredEvent struct {
 }
 
 type perfEventGroup struct {
-	rb         *ringBuffer
-	timeOffset int64
-	pid        int // passed as 'pid' argument to perf_event_open()
-	cpu        int // passed as 'cpu' argument to perf_event_open()
-	fd         int // fd returned from perf_event_open()
-	flags      uintptr
+	rb    *ringBuffer
+	pid   int // passed as 'pid' argument to perf_event_open()
+	cpu   int // passed as 'cpu' argument to perf_event_open()
+	fd    int // fd returned from perf_event_open()
+	flags uintptr
 
 	// Mutable only by the monitor goroutine while running. No
 	// synchronization is required.
@@ -255,6 +255,7 @@ type EventMonitor struct {
 	// when the EventMonitor is created and never changed after that.
 	groups       map[int]*perfEventGroup // fd : group data
 	dispatchChan chan [][]EventMonitorSample
+	epollFD      int
 
 	// Mutable by various goroutines, and also needed by the monitor
 	// goroutine. All of these are thread-safe mutable without a lock.
@@ -313,10 +314,6 @@ func fixupEventAttr(eventAttr *EventAttr) {
 	eventAttr.ReadFormat = 0
 	eventAttr.SampleIDAll = true
 
-	eventAttr.Watermark = false
-	eventAttr.WakeupEvents = 1
-	eventAttr.WakeupWatermark = 0
-
 	if haveClockID {
 		eventAttr.UseClockID = true
 		eventAttr.ClockID = unix.CLOCK_MONOTONIC_RAW
@@ -332,6 +329,12 @@ func fixupEventAttr(eventAttr *EventAttr) {
 	} else if !eventAttr.Watermark && eventAttr.WakeupEvents == 0 {
 		eventAttr.WakeupEvents = 1
 	}
+}
+
+func now() int64 {
+	var ts unix.Timespec
+	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
+	return unix.TimespecToNsec(ts)
 }
 
 func (monitor *EventMonitor) writeTraceCommand(name string, cmd string) error {
@@ -424,29 +427,31 @@ func (monitor *EventMonitor) perfEventOpen(
 ) ([]int, error) {
 	glog.V(2).Infof("Opening perf event: %d %s", eventAttr.Config, filter)
 
+	var err error
 	newfds := make([]int, 0, len(monitor.groups))
 	for groupfd, group := range monitor.groups {
+		var fd int
 		flags := group.flags | PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP
-		fd, err := open(eventAttr, group.pid, group.cpu, groupfd, flags)
+		fd, err = open(eventAttr, group.pid, group.cpu, groupfd, flags)
 		if err != nil {
-			for j := len(newfds) - 1; j >= 0; j-- {
-				unix.Close(newfds[j])
-			}
-			return nil, err
+			break
 		}
 		newfds = append(newfds, fd)
 
 		if len(filter) > 0 {
-			err := setFilter(fd, filter)
+			err = setFilter(fd, filter)
 			if err != nil {
-				for j := len(newfds) - 1; j >= 0; j-- {
-					unix.Close(newfds[j])
-				}
-				return nil, err
+				break
 			}
 		}
 	}
 
+	if err != nil {
+		for j := len(newfds) - 1; j >= 0; j-- {
+			unix.Close(newfds[j])
+		}
+		return nil, err
+	}
 	return newfds, nil
 }
 
@@ -879,6 +884,11 @@ func (monitor *EventMonitor) Close(wait bool) error {
 	}
 	monitor.groups = nil
 
+	if monitor.epollFD != -1 {
+		unix.Close(monitor.epollFD)
+		monitor.epollFD = -1
+	}
+
 	return nil
 }
 
@@ -1286,7 +1296,7 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 				ems.Err = ems.RawSample.read(r, nil, attrMap)
 				ems.RawSample.Time =
 					uint64(int64(ems.RawSample.Time) -
-						group.timeOffset)
+						timeOffsets[group.cpu])
 				groupSamples = append(groupSamples, ems)
 			}
 		})
@@ -1353,14 +1363,6 @@ func (monitor *EventMonitor) flushPendingSamples() {
 	}
 }
 
-func addPollFd(pollfds []unix.PollFd, fd int) []unix.PollFd {
-	pollfd := unix.PollFd{
-		Fd:     int32(fd),
-		Events: unix.POLLIN,
-	}
-	return append(pollfds, pollfd)
-}
-
 // Go does not provide fcntl(). We need to provide it for ourselves
 func fcntl(fd, cmd int, flag uintptr) (uintptr, error) {
 	r1, _, errno := syscall.Syscall(
@@ -1388,6 +1390,13 @@ func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 	f, _ := fcntl(monitor.pipe[0], syscall.F_GETFL, 0)
 	fcntl(monitor.pipe[0], syscall.F_SETFL, f|syscall.O_NONBLOCK)
 
+	event := unix.EpollEvent{
+		Events: unix.EPOLLIN,
+		Fd:     -1,
+	}
+	err = unix.EpollCtl(monitor.epollFD, unix.EPOLL_CTL_ADD,
+		monitor.pipe[0], &event)
+
 	monitor.dispatchChan = make(chan [][]EventMonitorSample,
 		config.Sensor.ChannelBufferLength)
 	monitor.dispatchFn = fn
@@ -1395,16 +1404,8 @@ func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 	monitor.wg.Add(1)
 	go monitor.dispatchSampleLoop()
 
-	// Set up the fds for polling. Monitor only the groupfds, because they
-	// will encapsulate all of the eventfds and they're tied to the ring
-	// buffers.
-	pollfds := make([]unix.PollFd, 0, len(monitor.groups)+1)
-	pollfds = addPollFd(pollfds, monitor.pipe[0])
-	for fd := range monitor.groups {
-		pollfds = addPollFd(pollfds, fd)
-	}
-
 	var nextTimeout int64
+	events := make([]unix.EpollEvent, len(monitor.groups))
 
 runloop:
 	for {
@@ -1416,7 +1417,7 @@ runloop:
 		// are events, the pending events will get handled during
 		// normal processing
 		if monitor.hasPendingSamples {
-			n, err = unix.Poll(pollfds, 0)
+			n, err = unix.EpollWait(monitor.epollFD, events, 0)
 			if err != nil && err != unix.EINTR {
 				break
 			}
@@ -1437,7 +1438,7 @@ runloop:
 					timeout = int((nextTimeout - now) / 1e6)
 				}
 			}
-			n, err = unix.Poll(pollfds, timeout)
+			n, err = unix.EpollWait(monitor.epollFD, events, timeout)
 			if err != nil && err != unix.EINTR {
 				break
 			}
@@ -1449,19 +1450,21 @@ runloop:
 			}
 		} else if n > 0 {
 			readyfds := make([]int, 0, n)
-			for i, fd := range pollfds {
-				if i == 0 {
-					if (fd.Revents & ^unix.POLLIN) != 0 {
-						// POLLERR, POLLHUP, or POLLNVAL set
+			for i := 0; i < n; i++ {
+				e := events[i]
+				if e.Fd == -1 {
+					if e.Events & ^uint32(unix.EPOLLIN) != 0 {
+						// EPOLLERR, EPOLLHUP, etc.
 						break runloop
 					}
-					if fd.Revents&unix.POLLIN != unix.POLLIN {
+					if e.Events&unix.EPOLLIN != unix.EPOLLIN {
 						continue
 					}
+					fd := monitor.pipe[0]
 					for {
 						var buffer = make([]byte, 8)
 
-						_, err = syscall.Read(int(fd.Fd), buffer)
+						_, err = syscall.Read(fd, buffer)
 						if err != nil {
 							if err == syscall.EINTR {
 								continue
@@ -1473,8 +1476,8 @@ runloop:
 							nextTimeout = v
 						}
 					}
-				} else if (fd.Revents & unix.POLLIN) != 0 {
-					readyfds = append(readyfds, int(fd.Fd))
+				} else if (e.Events & unix.EPOLLIN) != 0 {
+					readyfds = append(readyfds, int(e.Fd))
 				}
 			}
 			if len(readyfds) > 0 {
@@ -1536,9 +1539,7 @@ func (monitor *EventMonitor) Stop(wait bool) {
 	}
 }
 
-func (monitor *EventMonitor) collectReferenceSamples(
-	groups []*perfEventGroup,
-) ([]*Sample, error) {
+func collectReferenceSamples(ncpu int) ([]*Sample, error) {
 	referenceEventAttr := &EventAttr{
 		Type:         PERF_TYPE_SOFTWARE,
 		Config:       PERF_COUNT_SW_CPU_CLOCK,
@@ -1549,11 +1550,10 @@ func (monitor *EventMonitor) collectReferenceSamples(
 		WakeupEvents: 1,
 	}
 
-	ncpu := len(groups)
+	rbs := make([]*ringBuffer, ncpu)
 	pollfds := make([]unix.PollFd, ncpu)
 	for cpu := 0; cpu < ncpu; cpu++ {
-		fd, err := open(referenceEventAttr, -1, cpu, groups[cpu].fd,
-			PERF_FLAG_FD_OUTPUT|PERF_FLAG_FD_NO_GROUP)
+		fd, err := open(referenceEventAttr, -1, cpu, -1, 0)
 		if err != nil {
 			err = fmt.Errorf("Couldn't open reference event: %s", err)
 			return nil, err
@@ -1564,6 +1564,12 @@ func (monitor *EventMonitor) collectReferenceSamples(
 			Events: unix.POLLIN,
 		}
 
+		rbs[cpu], err = newRingBuffer(fd, 1)
+		if err != nil {
+			err = fmt.Errorf("Couldn't allocate ringbuffer: %s", err)
+			return nil, err
+		}
+		defer rbs[cpu].unmap()
 	}
 
 	// Enable all of the events we just registered
@@ -1579,13 +1585,13 @@ func (monitor *EventMonitor) collectReferenceSamples(
 
 	nsamples := 0
 	samples := make([]*Sample, ncpu)
-	timeoutAt := time.Now().UnixNano() + int64(timeout)
+	timeoutAt := now() + int64(timeout)
 	for nsamples < ncpu {
-		now := time.Now().UnixNano()
-		if now >= timeoutAt {
+		t := now()
+		if t >= timeoutAt {
 			return nil, errors.New("Timeout while reading samples")
 		}
-		n, err := unix.Poll(pollfds, int((timeoutAt-now)/int64(time.Millisecond)))
+		n, err := unix.Poll(pollfds, int((timeoutAt-t)/int64(time.Millisecond)))
 		if err != nil && err != unix.EINTR {
 			return nil, err
 		}
@@ -1593,23 +1599,23 @@ func (monitor *EventMonitor) collectReferenceSamples(
 			continue
 		}
 
-		for i, p := range pollfds {
+		for cpu, p := range pollfds {
 			if p.Revents&unix.POLLIN != unix.POLLIN {
 				continue
 			}
 
-			groups[i].rb.read(func(data []byte) {
+			rbs[cpu].read(func(data []byte) {
 				r := bytes.NewReader(data)
 				s := Sample{}
 				err := s.read(r, referenceEventAttr, nil)
 				if err == nil {
-					samples[i] = &s
+					samples[cpu] = &s
 					nsamples++
 				}
 			})
 
-			if samples[i] != nil {
-				pollfds[i].Events &= ^unix.POLLIN
+			if samples[cpu] != nil {
+				pollfds[cpu].Events &= ^unix.POLLIN
 			}
 		}
 	}
@@ -1617,34 +1623,27 @@ func (monitor *EventMonitor) collectReferenceSamples(
 	return samples, nil
 }
 
-func (monitor *EventMonitor) flushRingBuffers(groups []*perfEventGroup) {
-	for _, g := range groups {
-		g.rb.flush()
-	}
-}
-
-func (monitor *EventMonitor) calculateTimeOffsets(groups []*perfEventGroup) error {
+func calculateTimeOffsets() error {
 	// If there's only one CPU, there's nothing to do since offsets are
 	// relative to CPU 0.
-	if haveClockID || len(groups) < 2 {
+	ncpu := runtime.NumCPU()
+	timeOffsets = make([]int64, ncpu)
+	if haveClockID || ncpu < 2 {
 		return nil
 	}
 
 	// Obtain references samples, one for each group.
-	samples, err := monitor.collectReferenceSamples(groups)
+	samples, err := collectReferenceSamples(ncpu)
 	if err != nil {
 		return err
 	}
 
-	// Flush any remaining samples from the ringbuffers. It's just extra
-	// samples that we don't care about.
-	monitor.flushRingBuffers(groups)
-
 	// Calculate offsets relative to CPU 0.
 	timeBase := int64(samples[0].Time)
-	for i := 1; i < len(groups); i++ {
-		groups[i].timeOffset = int64(samples[i].Time) - timeBase
-		glog.V(2).Infof("EventMonitor CPU %d time offset is %d\n", i, groups[i].timeOffset)
+	for cpu := 1; cpu < ncpu; cpu++ {
+		timeOffsets[cpu] = int64(samples[cpu].Time) - timeBase
+		glog.V(2).Infof("EventMonitor CPU %d time offset is %d\n",
+			cpu, timeOffsets[cpu])
 	}
 
 	return nil
@@ -1690,13 +1689,19 @@ func (monitor *EventMonitor) initializeGroupLeaders(
 			}
 			return err
 		}
-	}
 
-	if err := monitor.calculateTimeOffsets(groups); err != nil {
-		for i := len(groups); i >= 0; i-- {
-			groups[i].cleanup()
+		event := unix.EpollEvent{
+			Events: unix.EPOLLIN,
+			Fd:     int32(groupfd),
 		}
-		return err
+		err = unix.EpollCtl(monitor.epollFD, unix.EPOLL_CTL_ADD,
+			groupfd, &event)
+		if err != nil {
+			for i := cpu; i >= 0; i-- {
+				groups[i].cleanup()
+			}
+			return err
+		}
 	}
 
 	for _, v := range groups {
@@ -1785,6 +1790,7 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 			unix.Close(fd)
 			haveClockID = true
 		}
+		calculateTimeOffsets()
 	})
 	if haveClockID && !notedClockID {
 		glog.V(1).Infof("EventMonitor is using ClockID CLOCK_MONOTONIC_RAW")
@@ -1835,8 +1841,14 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 		opts.pids = append(opts.pids, -1)
 	}
 
+	epollFD, err := unix.EpollCreate1(0)
+	if err != nil {
+		return nil, err
+	}
+
 	monitor := &EventMonitor{
 		groups:       make(map[int]*perfEventGroup),
+		epollFD:      epollFD,
 		eventAttrMap: newSafeEventAttrMap(),
 		eventIDMap:   newSafeUInt64Map(),
 		decoders:     newTraceEventDecoderMap(opts.tracingDir),
