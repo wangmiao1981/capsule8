@@ -7,19 +7,35 @@ contains the open-source components of the Capsule8 platform,
 including the Sensor, example API client code, and command-line
 interface.
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/capsule8/capsule8)](https://goreportcard.com/report/github.com/capsule8/capsule8)
+[![GoDoc](https://godoc.org/github.com/capsule8/capsule8?status.svg)](https://godoc.org/github.com/capsule8/capsule8)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/capsule8/capsule8/blob/master/LICENSE)
+
 [![CircleCI](https://circleci.com/gh/capsule8/capsule8/tree/master.svg?style=svg)](https://circleci.com/gh/capsule8/capsule8/tree/master)
 
 ## Status
 
-Capsule8 is current in alpha and under active development. The gRPC
+Capsule8 is currently in alpha and under active development. The gRPC
 API is v0 and subject to change at any time, but we strive to keep the
 sample code in `examples/` updated with any changes to the API.
 
 ## Docs
 
-## Quickstart
+  * [Quickstart](#Quickstart)
+  * [Architecture](docs/Architecture.md)
+  * [System Requirements](docs/System-Requirements.md)
+  * [Definitions](docs/Definitions.md) 
+  * [KProbes](docs/KProbes.md)
+  * [FAQ](docs/FAQ.md)
 
-For a quick demonstration of the capsule8 sensor's capabilities, start
+## Contributing
+
+For contributing guidelines see [CONTRIBUTING](./CONTRIBUTING.md).
+
+
+# Quickstart
+
+For a quick demonstration of the Capsule8 sensor's capabilities, start
 up three terminal sessions to run the sensor, example telemetry
 client, and target container as described below.
 
@@ -38,7 +54,7 @@ $ make
 
 ### Start the sensor
 
-Start the Sensor and listen for API clients on the default local unix
+Start the sensor and listen for API clients on the default local unix
 socket:
 
 ```
@@ -94,42 +110,3 @@ bin   dev   etc   home  proc  root  sys   tmp   usr   var
 cat: can't open '/foo': No such file or directory
 / # exit
 ```
-
-## Contributing
-
-For contributing guidelines see [CONTRIBUTING](./CONTRIBUTING.md).
-
-## FAQ
-
-### How is this supposed to be used?
-
-The Sensor is intended to be run on a Linux host persistently and
-ideally before the host begins running application workloads. It is
-designed to support API clients subscribing and unsubcribing from
-telemetry dynamically to implement various security incident detection
-strategies.
-
-### What types of events can be subscribed to currently?
-
-Container lifecycle, process lifecycle, raw system calls, file opens,
-network activity, and kernel function calls.
-
-### Kernel function calls?
-
-You can subscribe to calls to a chosen exported function symbol and
-receive telemetry events with named values of the data requested. This
-data can include function call arguments, return values, register
-values, and even values dereferences via offsets from any of them. For
-a more detailed description of what's possible, see the Linux kernel
-[kprobe docs](https://www.kernel.org/doc/Documentation/trace/kprobetrace.txt).
-
-### What guarantees does the Sensor provide?
-
-The Sensor provides telemetry events on a best-effort
-basis. System-level events are intentionally monitored through
-`perf_event_open(2)` such that an excessive volume of events causes
-them to be dropped by the kernel rather than blocking the kernel as
-the audit subsystem may do. This means that telemetry events, and even
-some of the information within them, is "lossy" by design. We believe
-that this is the right trade-off for monitoring production
-environments where stability and performance are critical.
