@@ -282,10 +282,6 @@ func (m *traceEventDecoderMap) DecodeSample(sample *SampleRecord) (TraceEventSam
 		return nil, nil, err
 	}
 
-	if pid, ok := data["common_pid"].(int32); ok && pid == m.pid {
-		return nil, nil, nil
-	}
-
 	decodedSample, err := decoder.decoderfn(sample, data)
 	return data, decodedSample, err
 }

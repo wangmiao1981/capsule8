@@ -198,7 +198,7 @@ func (m *safeEventAttrMap) update(emfrom eventAttrMap) {
 // map[uint64]registeredEvent
 //
 
-type registeredEventMap map[uint64]registeredEvent
+type registeredEventMap map[uint64]*registeredEvent
 
 func newRegisteredEventMap() registeredEventMap {
 	return make(registeredEventMap)
@@ -221,7 +221,7 @@ func (m *safeRegisteredEventMap) getMap() registeredEventMap {
 	return value.(registeredEventMap)
 }
 
-func (m *safeRegisteredEventMap) insertInPlace(eventID uint64, event registeredEvent) {
+func (m *safeRegisteredEventMap) insertInPlace(eventID uint64, event *registeredEvent) {
 	em := m.getMap()
 	if em == nil {
 		em = newRegisteredEventMap()
@@ -231,7 +231,7 @@ func (m *safeRegisteredEventMap) insertInPlace(eventID uint64, event registeredE
 	em[eventID] = event
 }
 
-func (m *safeRegisteredEventMap) insert(eventID uint64, event registeredEvent) {
+func (m *safeRegisteredEventMap) insert(eventID uint64, event *registeredEvent) {
 	m.Lock()
 	defer m.Unlock()
 
@@ -247,13 +247,13 @@ func (m *safeRegisteredEventMap) insert(eventID uint64, event registeredEvent) {
 	m.active.Store(nem)
 }
 
-func (m *safeRegisteredEventMap) lookup(eventID uint64) (registeredEvent, bool) {
+func (m *safeRegisteredEventMap) lookup(eventID uint64) (*registeredEvent, bool) {
 	em := m.getMap()
 	if em != nil {
 		e, ok := em[eventID]
 		return e, ok
 	}
-	return registeredEvent{}, false
+	return nil, false
 }
 
 func (m *safeRegisteredEventMap) removeInPlace(eventID uint64) {
@@ -280,4 +280,94 @@ func (m *safeRegisteredEventMap) remove(eventID uint64) {
 	}
 
 	m.active.Store(nem)
+}
+
+//
+// safePerfGroupLeaderMap
+// map[int]*perfGroupLeader
+//
+
+type perfGroupLeaderMap map[int]*perfGroupLeader
+
+func newPerfGroupLeaderMap() perfGroupLeaderMap {
+	return make(perfGroupLeaderMap)
+}
+
+type safePerfGroupLeaderMap struct {
+	sync.Mutex              // used only by writers
+	active     atomic.Value // map[int]*perfGroupLeader
+}
+
+func newSafePerfGroupLeaderMap() *safePerfGroupLeaderMap {
+	return &safePerfGroupLeaderMap{}
+}
+
+func (m *safePerfGroupLeaderMap) getMap() perfGroupLeaderMap {
+	value := m.active.Load()
+	if value == nil {
+		return nil
+	}
+	return value.(perfGroupLeaderMap)
+}
+
+func (m *safePerfGroupLeaderMap) lookup(fd int) (*perfGroupLeader, bool) {
+	t := m.getMap()
+	if t == nil {
+		return nil, false
+	}
+	pgl, ok := t[fd]
+	return pgl, ok
+}
+
+func (m *safePerfGroupLeaderMap) removeInPlace(fds map[int]bool) {
+	nm := m.getMap()
+	if nm != nil {
+		for fd := range fds {
+			delete(nm, fd)
+		}
+	}
+}
+
+func (m *safePerfGroupLeaderMap) remove(fds map[int]bool) {
+	m.Lock()
+	defer m.Unlock()
+
+	om := m.getMap()
+	nm := newPerfGroupLeaderMap()
+	if om != nil {
+		for k, v := range om {
+			if _, ok := fds[k]; !ok {
+				nm[k] = v
+			}
+		}
+	}
+	m.active.Store(nm)
+}
+
+func (m *safePerfGroupLeaderMap) updateInPlace(leaders []*perfGroupLeader) {
+	nm := m.getMap()
+	if nm == nil {
+		nm = newPerfGroupLeaderMap()
+		m.active.Store(nm)
+	}
+	for _, pgl := range leaders {
+		nm[pgl.fd] = pgl
+	}
+}
+
+func (m *safePerfGroupLeaderMap) update(leaders []*perfGroupLeader) {
+	m.Lock()
+	defer m.Unlock()
+
+	om := m.getMap()
+	nm := newPerfGroupLeaderMap()
+	if om != nil {
+		for k, v := range om {
+			nm[k] = v
+		}
+	}
+	for _, pgl := range leaders {
+		nm[pgl.fd] = pgl
+	}
+	m.active.Store(nm)
 }

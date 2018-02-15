@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -136,6 +137,7 @@ type registerEventOptions struct {
 	disabled  bool
 	eventAttr *EventAttr
 	filter    string
+	groupID   int32
 }
 
 // RegisterEventOption is used to implement optional arguments for event
@@ -169,6 +171,13 @@ func WithEventAttr(eventAttr *EventAttr) RegisterEventOption {
 func WithFilter(filter string) RegisterEventOption {
 	return func(o *registerEventOptions) {
 		o.filter = filter
+	}
+}
+
+// WithGroupID is used to register the event to a specific group.
+func WithGroupID(groupID int32) RegisterEventOption {
+	return func(o *registerEventOptions) {
+		o.groupID = groupID
 	}
 }
 
@@ -210,19 +219,35 @@ const (
 )
 
 type registeredEvent struct {
+	id        uint64
 	name      string
 	fds       []int
 	fields    map[string]int32
 	decoderFn TraceEventDecoderFn // used for EventTypeExternal
 	eventType EventType
+	group     *eventMonitorGroup
 }
 
-type perfEventGroup struct {
+const (
+	perfGroupLeaderStateActive = iota
+	perfGroupLeaderStateClosing
+	perfGroupLeaderStateClosed
+)
+
+type perfGroupLeader struct {
 	rb    *ringBuffer
-	pid   int // passed as 'pid' argument to perf_event_open()
-	cpu   int // passed as 'cpu' argument to perf_event_open()
-	fd    int // fd returned from perf_event_open()
-	flags uintptr
+	pid   int     // passed as 'pid' argument to perf_event_open()
+	cpu   int     // passed as 'cpu' argument to perf_event_open()
+	flags uintptr // passed as 'flags' argument to perf_event_open()
+	fd    int     // fd returned from perf_event_open()
+
+	// This is the event's state. Normally it will be active. When a group
+	// is being removed, it will transition to closing, which means that
+	// the ringbuffer servicing goroutine should ignore it. That goroutine
+	// will call .cleanup() for the event and transition it to the closed
+	// state, which means that it can be safely removed by any goroutine at
+	// any point in the future.
+	state int32
 
 	// Mutable only by the monitor goroutine while running. No
 	// synchronization is required.
@@ -230,13 +255,43 @@ type perfEventGroup struct {
 	processed      bool
 }
 
-func (group *perfEventGroup) cleanup() {
-	if group.rb != nil {
-		group.rb.unmap()
+func (pgl *perfGroupLeader) cleanup() {
+	if pgl.rb != nil {
+		pgl.rb.unmap()
+		pgl.rb = nil
 	}
-	unix.Close(group.fd)
-	if group.flags&PERF_FLAG_PID_CGROUP == PERF_FLAG_PID_CGROUP {
-		unix.Close(group.pid)
+	if pgl.fd != -1 {
+		unix.Close(pgl.fd)
+		pgl.fd = -1
+	}
+	atomic.StoreInt32(&pgl.state, perfGroupLeaderStateClosed)
+}
+
+type eventMonitorGroup struct {
+	name    string
+	leaders []*perfGroupLeader
+	events  map[uint64]*registeredEvent
+	monitor *EventMonitor
+}
+
+func (group *eventMonitorGroup) cleanup() {
+	// First we disable all events. This is necessary because of CentOS 6's
+	// kernel bugs that could cause a kernel panic if we don't do this.
+	for _, event := range group.events {
+		for _, fd := range event.fds {
+			disable(fd)
+		}
+	}
+
+	// Now we can unregister all of the events
+	monitor := group.monitor
+	for eventid, event := range group.events {
+		if monitor.isRunning {
+			monitor.events.remove(eventid)
+		} else {
+			monitor.events.removeInPlace(eventid)
+		}
+		monitor.removeRegisteredEvent(event)
 	}
 }
 
@@ -253,7 +308,6 @@ type EventMonitor struct {
 
 	// Immutable items. No protection required. These fields are all set
 	// when the EventMonitor is created and never changed after that.
-	groups       map[int]*perfEventGroup // fd : group data
 	dispatchChan chan [][]EventMonitorSample
 	epollFD      int
 
@@ -263,8 +317,9 @@ type EventMonitor struct {
 	// taken. The thread-safe mutation of .decoders is handled elsewhere.
 	// The other safe maps will lock if the monitor goroutine is running;
 	// otherwise, .lock protects in-place writes.
-	eventAttrMap *safeEventAttrMap // stream id : event attr
-	eventIDMap   *safeUInt64Map    // stream id : event id
+	groupLeaders *safePerfGroupLeaderMap // fd : group leader data
+	eventAttrMap *safeEventAttrMap       // stream id : event attr
+	eventIDMap   *safeUInt64Map          // stream id : event id
 	decoders     *traceEventDecoderMap
 	events       *safeRegisteredEventMap // event id : event
 
@@ -294,6 +349,8 @@ type EventMonitor struct {
 	// Mutable by various goroutines, but not required by the monitor goroutine
 	nextEventID            uint64
 	nextProbeID            uint64
+	nextGroupID            int32
+	groups                 map[int32]*eventMonitorGroup
 	eventfds               map[int]int    // fd : cpu index
 	eventids               map[int]uint64 // fd : stream id
 	externalSamples        externalSampleList
@@ -302,6 +359,12 @@ type EventMonitor struct {
 	// Immutable, used only when adding new tracepoints/probes
 	defaultAttr EventAttr
 	tracingDir  string
+
+	// Immutable, used only when adding new groups
+	ringBufferNumPages int
+	perfEventOpenFlags uintptr
+	cgroups            []int
+	pids               []int
 
 	// Used only once during shutdown
 	cond *sync.Cond
@@ -422,17 +485,18 @@ func (monitor *EventMonitor) newProbeName() string {
 }
 
 func (monitor *EventMonitor) perfEventOpen(
+	leaders []*perfGroupLeader,
 	eventAttr *EventAttr,
 	filter string,
 ) ([]int, error) {
 	glog.V(2).Infof("Opening perf event: %d %s", eventAttr.Config, filter)
 
 	var err error
-	newfds := make([]int, 0, len(monitor.groups))
-	for groupfd, group := range monitor.groups {
+	newfds := make([]int, 0, len(leaders))
+	for _, pgl := range leaders {
 		var fd int
-		flags := group.flags | PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP
-		fd, err = open(eventAttr, group.pid, group.cpu, groupfd, flags)
+		flags := pgl.flags | PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP
+		fd, err = open(eventAttr, pgl.pid, pgl.cpu, pgl.fd, flags)
 		if err != nil {
 			break
 		}
@@ -489,7 +553,11 @@ func (monitor *EventMonitor) newRegisteredPerfEvent(
 		attr.Type = PERF_TYPE_BREAKPOINT
 	}
 
-	newfds, err := monitor.perfEventOpen(&attr, opts.filter)
+	group, ok := monitor.groups[opts.groupID]
+	if !ok {
+		return 0, fmt.Errorf("Group ID %d does not exist", opts.groupID)
+	}
+	newfds, err := monitor.perfEventOpen(group.leaders, &attr, opts.filter)
 	if err != nil {
 		return 0, err
 	}
@@ -527,12 +595,15 @@ func (monitor *EventMonitor) newRegisteredPerfEvent(
 		monitor.eventfds[fd] = i
 	}
 
-	event := registeredEvent{
+	event := &registeredEvent{
+		id:        eventid,
 		name:      name,
 		fds:       newfds,
 		fields:    fields,
 		eventType: eventType,
+		group:     group,
 	}
+	group.events[eventid] = event
 
 	if monitor.isRunning {
 		monitor.events.insert(eventid, event)
@@ -580,7 +651,7 @@ func (monitor *EventMonitor) RegisterExternalEvent(
 	decoderFn TraceEventDecoderFn,
 	fields map[string]int32,
 ) (uint64, error) {
-	event := registeredEvent{
+	event := &registeredEvent{
 		name:      name,
 		fields:    fields,
 		decoderFn: decoderFn,
@@ -590,16 +661,16 @@ func (monitor *EventMonitor) RegisterExternalEvent(
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
 
-	eventID := monitor.nextEventID
+	event.id = monitor.nextEventID
 	monitor.nextEventID++
 
 	if monitor.isRunning {
-		monitor.events.insert(eventID, event)
+		monitor.events.insert(event.id, event)
 	} else {
-		monitor.events.insertInPlace(eventID, event)
+		monitor.events.insertInPlace(event.id, event)
 	}
 
-	return eventID, nil
+	return event.id, nil
 }
 
 // RegisterTracepoint is used to register a tracepoint with an EventMonitor.
@@ -770,7 +841,7 @@ func (monitor *EventMonitor) resolveSymbol(bin, symbol string) (string, error) {
 	return fmt.Sprintf("%#x", offset), nil
 }
 
-func (monitor *EventMonitor) removeRegisteredEvent(event registeredEvent) {
+func (monitor *EventMonitor) removeRegisteredEvent(event *registeredEvent) {
 	// This should be called with monitor.lock held
 
 	// event.fds may legitimately be nil for non-perf_event-based events
@@ -793,6 +864,12 @@ func (monitor *EventMonitor) removeRegisteredEvent(event registeredEvent) {
 			monitor.eventAttrMap.removeInPlace(ids)
 			monitor.eventIDMap.removeInPlace(ids)
 		}
+	}
+
+	// Not all events belong to a group. In particular, external events do
+	// not.
+	if event.group != nil {
+		delete(event.group.events, event.id)
 	}
 
 	switch event.eventType {
@@ -854,6 +931,11 @@ func (monitor *EventMonitor) Close(wait bool) error {
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
 
+	for _, group := range monitor.groups {
+		group.cleanup()
+	}
+	monitor.groups = nil
+
 	for _, event := range monitor.events.getMap() {
 		monitor.removeRegisteredEvent(event)
 	}
@@ -879,10 +961,18 @@ func (monitor *EventMonitor) Close(wait bool) error {
 	}
 	monitor.eventIDMap = nil
 
-	for _, group := range monitor.groups {
-		group.cleanup()
+	groups := monitor.groupLeaders.getMap()
+	for _, pgl := range groups {
+		pgl.cleanup()
 	}
-	monitor.groups = nil
+	monitor.groupLeaders = nil
+
+	if monitor.cgroups != nil {
+		for _, fd := range monitor.cgroups {
+			unix.Close(fd)
+		}
+		monitor.cgroups = nil
+	}
 
 	if monitor.epollFD != -1 {
 		unix.Close(monitor.epollFD)
@@ -1285,10 +1375,20 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 		// is what clears the fd's ready state.
 
 		var groupSamples, newPendingSamples []EventMonitorSample
-		group := monitor.groups[fd]
-		group.processed = true
+		pgl, ok := monitor.groupLeaders.lookup(fd)
+		if !ok {
+			continue
+		}
+		// If the pgl's state is not active, skip it. Either we need to
+		// to clean it up later or it has already been cleaned up.
+		// Either way, we're not interested in its ringbuffer (and in
+		// the latter case, we'd segfault)
+		if atomic.LoadInt32(&pgl.state) != perfGroupLeaderStateActive {
+			continue
+		}
+		pgl.processed = true
 
-		group.rb.read(func(data []byte) {
+		pgl.rb.read(func(data []byte) {
 			attrMap := monitor.eventAttrMap.getMap()
 			r := bytes.NewReader(data)
 			for r.Len() > 0 {
@@ -1296,16 +1396,16 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 				ems.Err = ems.RawSample.read(r, nil, attrMap)
 				ems.RawSample.Time =
 					uint64(int64(ems.RawSample.Time) -
-						timeOffsets[group.cpu])
+						timeOffsets[pgl.cpu])
 				groupSamples = append(groupSamples, ems)
 			}
 		})
 
 		if len(groupSamples) == 0 {
-			if len(group.pendingSamples) > 0 {
-				samples = append(samples, group.pendingSamples)
+			if len(pgl.pendingSamples) > 0 {
+				samples = append(samples, pgl.pendingSamples)
 			}
-			group.pendingSamples = nil
+			pgl.pendingSamples = nil
 			continue
 		}
 
@@ -1324,23 +1424,34 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 				newPendingSamples = groupSamples[l:]
 				groupSamples = groupSamples[:l]
 				if len(groupSamples) == 0 {
-					group.pendingSamples = newPendingSamples
+					pgl.pendingSamples = newPendingSamples
 					continue
 				}
 			}
 		}
 
-		groupSamples = append(group.pendingSamples, groupSamples...)
-		group.pendingSamples = newPendingSamples
+		groupSamples = append(pgl.pendingSamples, groupSamples...)
+		pgl.pendingSamples = newPendingSamples
 		samples = append(samples, groupSamples)
 	}
 
-	for _, group := range monitor.groups {
-		if !group.processed && len(group.pendingSamples) > 0 {
-			samples = append(samples, group.pendingSamples)
-			group.pendingSamples = nil
+	fds := make(map[int]bool)
+	for _, pgl := range monitor.groupLeaders.getMap() {
+		if atomic.LoadInt32(&pgl.state) == perfGroupLeaderStateClosing {
+			fds[pgl.fd] = true
+			pgl.cleanup()
+			continue
 		}
-		group.processed = false
+		if !pgl.processed && len(pgl.pendingSamples) > 0 {
+			samples = append(samples, pgl.pendingSamples)
+			pgl.pendingSamples = nil
+		}
+		pgl.processed = false
+	}
+	if len(fds) > 0 {
+		go func() {
+			monitor.groupLeaders.remove(fds)
+		}()
 	}
 
 	if len(samples) > 0 {
@@ -1350,10 +1461,14 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 
 func (monitor *EventMonitor) flushPendingSamples() {
 	var samples [][]EventMonitorSample
-	for _, group := range monitor.groups {
-		if len(group.pendingSamples) > 0 {
-			samples = append(samples, group.pendingSamples)
-			group.pendingSamples = nil
+	for _, pgl := range monitor.groupLeaders.getMap() {
+		if atomic.LoadInt32(&pgl.state) == perfGroupLeaderStateClosing {
+			pgl.cleanup()
+			continue
+		}
+		if len(pgl.pendingSamples) > 0 {
+			samples = append(samples, pgl.pendingSamples)
+			pgl.pendingSamples = nil
 		}
 	}
 
@@ -1405,7 +1520,7 @@ func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 	go monitor.dispatchSampleLoop()
 
 	var nextTimeout int64
-	events := make([]unix.EpollEvent, len(monitor.groups))
+	events := make([]unix.EpollEvent, len(monitor.groupLeaders.getMap()))
 
 runloop:
 	for {
@@ -1649,65 +1764,148 @@ func calculateTimeOffsets() error {
 	return nil
 }
 
+var groupEventAttr = EventAttr{
+	Type:     PERF_TYPE_SOFTWARE,
+	Config:   PERF_COUNT_SW_DUMMY, // Added in Linux 3.12
+	Disabled: true,
+}
+
 func (monitor *EventMonitor) initializeGroupLeaders(
 	pid int,
 	flags uintptr,
-	ringBufferNumPages int,
-) error {
-	groupEventAttr := &EventAttr{
-		Type:     PERF_TYPE_SOFTWARE,
-		Config:   PERF_COUNT_SW_DUMMY, // Added in Linux 3.12
-		Disabled: true,
-	}
-	if haveClockID {
-		groupEventAttr.UseClockID = true
-		groupEventAttr.ClockID = unix.CLOCK_MONOTONIC_RAW
-	}
+) ([]*perfGroupLeader, error) {
+	var err error
 
 	ncpu := runtime.NumCPU()
-	groups := make([]*perfEventGroup, ncpu)
+	pgls := make([]*perfGroupLeader, ncpu)
 	for cpu := 0; cpu < ncpu; cpu++ {
-		groupfd, err := open(groupEventAttr, pid, cpu, -1, flags)
+		var fd int
+		fd, err = open(&groupEventAttr, pid, cpu, -1, flags)
 		if err != nil {
-			for fd := range groups {
-				unix.Close(fd)
-			}
-			return err
+			break
 		}
 
-		groups[cpu] = &perfEventGroup{
+		pgls[cpu] = &perfGroupLeader{
 			pid:   pid,
 			cpu:   cpu,
-			fd:    groupfd,
+			fd:    fd,
 			flags: flags,
+			state: perfGroupLeaderStateActive,
 		}
 
-		groups[cpu].rb, err = newRingBuffer(groupfd, ringBufferNumPages)
+		pgls[cpu].rb, err = newRingBuffer(fd, monitor.ringBufferNumPages)
 		if err != nil {
-			for i := cpu; i >= 0; i-- {
-				groups[i].cleanup()
-			}
-			return err
+			break
 		}
 
 		event := unix.EpollEvent{
 			Events: unix.EPOLLIN,
-			Fd:     int32(groupfd),
+			Fd:     int32(fd),
 		}
 		err = unix.EpollCtl(monitor.epollFD, unix.EPOLL_CTL_ADD,
-			groupfd, &event)
+			fd, &event)
 		if err != nil {
-			for i := cpu; i >= 0; i-- {
-				groups[i].cleanup()
-			}
-			return err
+			break
 		}
 	}
 
-	for _, v := range groups {
-		monitor.groups[v.fd] = v
+	if err != nil {
+		for _, pgl := range pgls {
+			if pgl == nil {
+				break
+			}
+			pgl.cleanup()
+		}
+		return nil, err
 	}
 
+	return pgls, err
+}
+
+// RegisterEventGroup creates a new event group that can be used for grouping
+// events.
+func (monitor *EventMonitor) RegisterEventGroup(name string) (int32, error) {
+	nleaders := (len(monitor.cgroups) + len(monitor.pids)) * runtime.NumCPU()
+	leaders := make([]*perfGroupLeader, 0, nleaders)
+
+	if monitor.cgroups != nil {
+		flags := monitor.perfEventOpenFlags | PERF_FLAG_PID_CGROUP
+		for _, fd := range monitor.cgroups {
+			pgls, err := monitor.initializeGroupLeaders(fd, flags)
+			if err != nil {
+				for _, pgl := range leaders {
+					pgl.cleanup()
+				}
+				return -1, nil
+			}
+			leaders = append(leaders, pgls...)
+		}
+	}
+
+	if monitor.pids != nil {
+		flags := monitor.perfEventOpenFlags
+		for _, pid := range monitor.pids {
+			pgls, err := monitor.initializeGroupLeaders(pid, flags)
+			if err != nil {
+				for _, pgl := range leaders {
+					pgl.cleanup()
+				}
+				return -1, nil
+			}
+			leaders = append(leaders, pgls...)
+		}
+	}
+
+	group := &eventMonitorGroup{
+		name:    name,
+		leaders: leaders,
+		events:  make(map[uint64]*registeredEvent),
+		monitor: monitor,
+	}
+
+	monitor.lock.Lock()
+	groupID := monitor.nextGroupID
+	monitor.nextGroupID++
+	monitor.groups[groupID] = group
+
+	if monitor.isRunning {
+		monitor.groupLeaders.update(leaders)
+	} else {
+		monitor.groupLeaders.updateInPlace(leaders)
+	}
+
+	monitor.lock.Unlock()
+
+	return groupID, nil
+}
+
+// UnregisterEventGroup removes a registered event group. If there are any
+// events registered with the event group, they will be unregistered as well.
+func (monitor *EventMonitor) UnregisterEventGroup(groupID int32) error {
+	monitor.lock.Lock()
+	group, ok := monitor.groups[groupID]
+	if !ok {
+		monitor.lock.Unlock()
+		return fmt.Errorf("Group ID %d does not exist", groupID)
+	}
+	delete(monitor.groups, groupID)
+
+	group.cleanup()
+
+	if !monitor.isRunning {
+		fds := make(map[int]bool, len(group.leaders))
+		for _, pgl := range group.leaders {
+			fds[pgl.fd] = true
+			pgl.cleanup()
+		}
+		monitor.groupLeaders.removeInPlace(fds)
+	} else {
+		for _, pgl := range group.leaders {
+			atomic.StoreInt32(&pgl.state, perfGroupLeaderStateClosing)
+		}
+	}
+
+	monitor.lock.Unlock()
 	return nil
 }
 
@@ -1789,6 +1987,8 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 		if err == nil {
 			unix.Close(fd)
 			haveClockID = true
+			groupEventAttr.UseClockID = true
+			groupEventAttr.ClockID = unix.CLOCK_MONOTONIC_RAW
 		}
 		calculateTimeOffsets()
 	})
@@ -1846,64 +2046,69 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 		return nil, err
 	}
 
+	// Beyond this point, always call monitor.Close() if there's an error
+	// so that everything gets properly cleaned up. In particular, epoll_fd
+	// and cgroup fds if there are any.
+
 	monitor := &EventMonitor{
-		groups:       make(map[int]*perfEventGroup),
-		epollFD:      epollFD,
-		eventAttrMap: newSafeEventAttrMap(),
-		eventIDMap:   newSafeUInt64Map(),
-		decoders:     newTraceEventDecoderMap(opts.tracingDir),
-		events:       newSafeRegisteredEventMap(),
-		nextEventID:  1,
-		eventfds:     make(map[int]int),
-		eventids:     make(map[int]uint64),
-		defaultAttr:  eventAttr,
-		tracingDir:   opts.tracingDir,
+		groupLeaders:       newSafePerfGroupLeaderMap(),
+		epollFD:            epollFD,
+		eventAttrMap:       newSafeEventAttrMap(),
+		eventIDMap:         newSafeUInt64Map(),
+		decoders:           newTraceEventDecoderMap(opts.tracingDir),
+		events:             newSafeRegisteredEventMap(),
+		nextEventID:        1,
+		groups:             make(map[int32]*eventMonitorGroup),
+		eventfds:           make(map[int]int),
+		eventids:           make(map[int]uint64),
+		defaultAttr:        eventAttr,
+		tracingDir:         opts.tracingDir,
+		ringBufferNumPages: opts.ringBufferNumPages,
+		perfEventOpenFlags: opts.flags,
 	}
 	monitor.lock = &sync.Mutex{}
 	monitor.cond = sync.NewCond(monitor.lock)
 
-	cgroups := make(map[string]bool, len(opts.cgroups))
-	for _, cgroup := range opts.cgroups {
-		if cgroups[cgroup] {
-			glog.V(1).Infof("Ignoring duplicate cgroup %s", cgroup)
-			continue
-		}
-		cgroups[cgroup] = true
-
-		path := filepath.Join(opts.perfEventDir, cgroup)
-		fd, err := unix.Open(path, unix.O_RDONLY, 0)
-		if err == nil {
-			err = monitor.initializeGroupLeaders(fd,
-				opts.flags|PERF_FLAG_PID_CGROUP,
-				opts.ringBufferNumPages)
-			if err == nil {
+	if len(opts.cgroups) > 0 {
+		cgroups := make(map[string]bool, len(opts.cgroups))
+		monitor.cgroups = make([]int, 0, len(opts.cgroups))
+		for _, cgroup := range opts.cgroups {
+			if cgroups[cgroup] {
+				glog.V(1).Infof("Ignoring duplicate cgroup %s",
+					cgroup)
 				continue
 			}
-		}
+			cgroups[cgroup] = true
 
-		for _, group := range monitor.groups {
-			group.cleanup()
+			var fd int
+			path := filepath.Join(opts.perfEventDir, cgroup)
+			fd, err = unix.Open(path, unix.O_RDONLY, 0)
+			if err != nil {
+				monitor.Close(true)
+				return nil, err
+			}
+			monitor.cgroups = append(monitor.cgroups, fd)
 		}
-		return nil, err
 	}
 
-	pids := make(map[int]bool, len(opts.pids))
-	for _, pid := range opts.pids {
-		if pids[pid] {
-			glog.V(1).Infof("Ignoring duplicate pid %d", pid)
-			continue
-		}
-		pids[pid] = true
+	if len(opts.pids) > 0 {
+		pids := make(map[int]bool, len(opts.pids))
+		monitor.pids = make([]int, 0, len(opts.pids))
+		for _, pid := range opts.pids {
+			if pids[pid] {
+				glog.V(1).Infof("Ignoring duplicate pid %d",
+					pid)
+				continue
+			}
+			pids[pid] = true
 
-		err := monitor.initializeGroupLeaders(pid, opts.flags,
-			opts.ringBufferNumPages)
-		if err == nil {
-			continue
+			monitor.pids = append(monitor.pids, pid)
 		}
+	}
 
-		for _, group := range monitor.groups {
-			group.cleanup()
-		}
+	_, err = monitor.RegisterEventGroup("default")
+	if err != nil {
+		monitor.Close(true)
 		return nil, err
 	}
 
