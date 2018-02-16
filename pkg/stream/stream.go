@@ -28,6 +28,7 @@ package stream
 import (
 	"math"
 	"reflect"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -40,6 +41,9 @@ import (
 // from the Data channel and may terminate the stream by closing the Ctrl
 // channel.
 type Stream struct {
+	// Restrict `Close()` operation to one time only
+	sync.Once
+
 	// Ctrl is the control channel to the stream. Consumers may close
 	// it to shut down the stream.
 	Ctrl chan<- interface{}
@@ -49,9 +53,11 @@ type Stream struct {
 	Data <-chan interface{}
 }
 
-// Close terminates the stream
+// Close terminates the stream. It is safe to call more than once.
 func (s *Stream) Close() {
-	close(s.Ctrl)
+	s.Do(func() {
+		close(s.Ctrl)
+	})
 }
 
 // Next receives the next element in the stream. It returns that element
