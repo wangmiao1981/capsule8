@@ -170,7 +170,7 @@ func (s *Sensor) Start() error {
 func (s *Sensor) Stop() {
 	if s.monitor != nil {
 		glog.V(2).Info("Stopping sensor-global EventMonitor")
-		s.monitor.Close(true)
+		s.monitor.Close()
 		s.monitor = nil
 		glog.V(2).Info("Sensor-global EventMonitor stopped successfully")
 	}

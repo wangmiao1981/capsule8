@@ -920,9 +920,9 @@ func (monitor *EventMonitor) RegisteredEventType(
 // Close gracefully cleans up an EventMonitor instance. If the EventMonitor
 // is still running when Close is called, it will first be stopped. After
 // Close completes, the EventMonitor instance cannot be reused.
-func (monitor *EventMonitor) Close(wait bool) error {
+func (monitor *EventMonitor) Close() error {
 	// if the monitor is running, stop it and wait for it to stop
-	monitor.Stop(wait)
+	monitor.Stop(true)
 
 	// This lock isn't strictly necessary -- by the time .Close() is
 	// called, it would be a programming error for multiple go routines
@@ -2084,7 +2084,7 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 			path := filepath.Join(opts.perfEventDir, cgroup)
 			fd, err = unix.Open(path, unix.O_RDONLY, 0)
 			if err != nil {
-				monitor.Close(true)
+				monitor.Close()
 				return nil, err
 			}
 			monitor.cgroups = append(monitor.cgroups, fd)
@@ -2108,7 +2108,7 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 
 	_, err = monitor.RegisterEventGroup("default")
 	if err != nil {
-		monitor.Close(true)
+		monitor.Close()
 		return nil, err
 	}
 
