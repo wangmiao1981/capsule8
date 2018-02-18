@@ -160,11 +160,11 @@ func createSubscription() *api.Subscription {
 	}
 
 	chargenEvents := []*api.ChargenEventFilter{
-	/*
-		&api.ChargenEventFilter{
-			Length: 16,
-		},
-	*/
+		/*
+			&api.ChargenEventFilter{
+				Length: 16,
+			},
+		*/
 	}
 
 	eventFilter := &api.EventFilter{
