@@ -231,7 +231,8 @@ func main() {
 		if err != nil {
 			glog.Fatal("failed to load subscription config file:", err)
 		}
-		if err := jsonpb.Unmarshal(cfgFile, &sub); err != nil {
+		err = jsonpb.Unmarshal(cfgFile, &sub)
+		if err != nil {
 			glog.Fatal("failed to marshal subscription config:", err)
 		}
 	} else {
