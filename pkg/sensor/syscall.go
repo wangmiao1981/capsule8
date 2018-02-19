@@ -22,6 +22,7 @@ import (
 	api "github.com/capsule8/capsule8/api/v0"
 
 	"github.com/capsule8/capsule8/pkg/expression"
+	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"github.com/golang/glog"
@@ -184,7 +185,12 @@ const (
 		"arg5=+64(%di):u64" // r9
 )
 
-func registerSyscallEvents(sensor *Sensor, eventMap subscriptionMap, events []*api.SyscallEventFilter) {
+func registerSyscallEvents(
+	sensor *Sensor,
+	groupID int32,
+	eventMap subscriptionMap,
+	events []*api.SyscallEventFilter,
+) {
 	enterFilters := make(map[string]bool)
 	exitFilters := make(map[string]bool)
 
@@ -230,16 +236,34 @@ func registerSyscallEvents(sensor *Sensor, eventMap subscriptionMap, events []*a
 		}
 		filter := strings.Join(filters, " || ")
 
-		if atomic.AddInt64(&sensor.dummySyscallEventCount, 1) == 1 {
-			// Create the dummy syscall event. This event is needed
-			// to put the kernel into a mode where it'll make the
-			// function calls needed to make the kprobe we'll add
-			// fire. Add the tracepoint, but make sure it never
-			// adds events into the ringbuffer by using a filter
-			// that will never evaluate true.
-			eventName := "raw_syscalls/sys_enter"
-			eventID, err := sensor.monitor.RegisterTracepoint(
+		// Create the dummy syscall event. This event is needed to put
+		// the kernel into a mode where it'll make the function calls
+		// needed to make the kprobe we'll add fire. Add the tracepoint,
+		// but make sure it never adds events into the ringbuffer by
+		// using a filter that will never evaluate true. It also never
+		// gets enabled, but just creating it is enough.
+		//
+		// For kernels older than 3.x, create this dummy event in all
+		// event groups, because we cannot remove it when we don't need
+		// it anymore due to bugs in CentOS 6.x kernels (2.6.32).
+		var (
+			err     error
+			eventID uint64
+		)
+		eventName := "raw_syscalls/sys_enter"
+		major, _, _ := sys.KernelVersion()
+		if major < 3 {
+			eventID, err = sensor.monitor.RegisterTracepoint(
 				eventName, f.decodeDummySysEnter,
+				perf.WithEventGroup(groupID),
+				perf.WithFilter("id == 0x7fffffff"))
+			if err != nil {
+				glog.V(1).Infof("Couldn't register dummy syscall event %s: %v", eventName, err)
+			}
+		} else if atomic.AddInt64(&sensor.dummySyscallEventCount, 1) == 1 {
+			eventID, err = sensor.monitor.RegisterTracepoint(
+				eventName, f.decodeDummySysEnter,
+				perf.WithEventGroup(0),
 				perf.WithFilter("id == 0x7fffffff"))
 			if err != nil {
 				glog.V(1).Infof("Couldn't register dummy syscall event %s: %v", eventName, err)
@@ -256,26 +280,30 @@ func registerSyscallEvents(sensor *Sensor, eventMap subscriptionMap, events []*a
 		// fetchargs doesn't have to change. Try the new probe first,
 		// because the old probe will also set in the newer kernels,
 		// but it won't fire.
-		eventID, err := sensor.monitor.RegisterKprobe(
+		eventID, err = sensor.monitor.RegisterKprobe(
 			syscallNewEnterKprobeAddress, false,
 			syscallEnterKprobeFetchargs,
 			f.decodeSyscallTraceEnter,
+			perf.WithEventGroup(groupID),
 			perf.WithFilter(filter))
 		if err != nil {
 			eventID, err = sensor.monitor.RegisterKprobe(
 				syscallOldEnterKprobeAddress, false,
 				syscallEnterKprobeFetchargs,
 				f.decodeSyscallTraceEnter,
+				perf.WithEventGroup(groupID),
 				perf.WithFilter(filter))
 		}
 		if err != nil {
 			glog.V(1).Infof("Couldn't register syscall enter kprobe: %v", err)
 		} else {
 			s := eventMap.subscribe(eventID)
-			s.unregister = func(uint64, *subscription) {
-				eventID := sensor.dummySyscallEventID
-				if atomic.AddInt64(&sensor.dummySyscallEventCount, -1) == 0 {
-					sensor.monitor.UnregisterEvent(eventID)
+			if major >= 3 {
+				s.unregister = func(uint64, *subscription) {
+					eventID := sensor.dummySyscallEventID
+					if atomic.AddInt64(&sensor.dummySyscallEventCount, -1) == 0 {
+						sensor.monitor.UnregisterEvent(eventID)
+					}
 				}
 			}
 		}
@@ -289,7 +317,9 @@ func registerSyscallEvents(sensor *Sensor, eventMap subscriptionMap, events []*a
 		filter := strings.Join(filters, " || ")
 
 		eventName := "raw_syscalls/sys_exit"
-		eventID, err := sensor.monitor.RegisterTracepoint(eventName, f.decodeSysExit,
+		eventID, err := sensor.monitor.RegisterTracepoint(eventName,
+			f.decodeSysExit,
+			perf.WithEventGroup(groupID),
 			perf.WithFilter(filter))
 		if err != nil {
 			glog.V(1).Infof("Couldn't get %s event id: %v", eventName, err)

@@ -174,8 +174,8 @@ func WithFilter(filter string) RegisterEventOption {
 	}
 }
 
-// WithGroupID is used to register the event to a specific group.
-func WithGroupID(groupID int32) RegisterEventOption {
+// WithEventGroup is used to register the event to a specific event group.
+func WithEventGroup(groupID int32) RegisterEventOption {
 	return func(o *registerEventOptions) {
 		o.groupID = groupID
 	}
@@ -272,6 +272,7 @@ type eventMonitorGroup struct {
 	leaders []*perfGroupLeader
 	events  map[uint64]*registeredEvent
 	monitor *EventMonitor
+	groupID int32
 }
 
 func (group *eventMonitorGroup) cleanup() {
@@ -293,6 +294,42 @@ func (group *eventMonitorGroup) cleanup() {
 		}
 		monitor.removeRegisteredEvent(event)
 	}
+}
+
+func (group *eventMonitorGroup) perfEventOpen(
+	name string,
+	eventAttr *EventAttr,
+	filter string,
+) ([]int, error) {
+	glog.V(2).Infof("Opening perf event: %s (%d) in group %d %q {%s}",
+		name, eventAttr.Config, group.groupID, group.name, filter)
+
+	var err error
+	newfds := make([]int, 0, len(group.leaders))
+	for _, pgl := range group.leaders {
+		var fd int
+		fd, err = open(eventAttr, pgl.pid, pgl.cpu, pgl.fd,
+			pgl.flags|PERF_FLAG_FD_OUTPUT|PERF_FLAG_FD_NO_GROUP)
+		if err != nil {
+			break
+		}
+		newfds = append(newfds, fd)
+
+		if len(filter) > 0 {
+			err = setFilter(fd, filter)
+			if err != nil {
+				break
+			}
+		}
+	}
+
+	if err != nil {
+		for j := len(newfds) - 1; j >= 0; j-- {
+			unix.Close(newfds[j])
+		}
+		return nil, err
+	}
+	return newfds, nil
 }
 
 // SampleDispatchFn is the signature of a function called to dispatch a
@@ -484,41 +521,6 @@ func (monitor *EventMonitor) newProbeName() string {
 		monitor.nextProbeID)
 }
 
-func (monitor *EventMonitor) perfEventOpen(
-	leaders []*perfGroupLeader,
-	eventAttr *EventAttr,
-	filter string,
-) ([]int, error) {
-	glog.V(2).Infof("Opening perf event: %d %s", eventAttr.Config, filter)
-
-	var err error
-	newfds := make([]int, 0, len(leaders))
-	for _, pgl := range leaders {
-		var fd int
-		flags := pgl.flags | PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP
-		fd, err = open(eventAttr, pgl.pid, pgl.cpu, pgl.fd, flags)
-		if err != nil {
-			break
-		}
-		newfds = append(newfds, fd)
-
-		if len(filter) > 0 {
-			err = setFilter(fd, filter)
-			if err != nil {
-				break
-			}
-		}
-	}
-
-	if err != nil {
-		for j := len(newfds) - 1; j >= 0; j-- {
-			unix.Close(newfds[j])
-		}
-		return nil, err
-	}
-	return newfds, nil
-}
-
 func (monitor *EventMonitor) newRegisteredPerfEvent(
 	name string,
 	config uint64,
@@ -557,7 +559,8 @@ func (monitor *EventMonitor) newRegisteredPerfEvent(
 	if !ok {
 		return 0, fmt.Errorf("Group ID %d does not exist", opts.groupID)
 	}
-	newfds, err := monitor.perfEventOpen(group.leaders, &attr, opts.filter)
+
+	newfds, err := group.perfEventOpen(name, &attr, opts.filter)
 	if err != nil {
 		return 0, err
 	}
@@ -1864,9 +1867,9 @@ func (monitor *EventMonitor) RegisterEventGroup(name string) (int32, error) {
 	}
 
 	monitor.lock.Lock()
-	groupID := monitor.nextGroupID
+	group.groupID = monitor.nextGroupID
 	monitor.nextGroupID++
-	monitor.groups[groupID] = group
+	monitor.groups[group.groupID] = group
 
 	if monitor.isRunning {
 		monitor.groupLeaders.update(leaders)
@@ -1876,7 +1879,7 @@ func (monitor *EventMonitor) RegisterEventGroup(name string) (int32, error) {
 
 	monitor.lock.Unlock()
 
-	return groupID, nil
+	return group.groupID, nil
 }
 
 // UnregisterEventGroup removes a registered event group. If there are any

@@ -404,6 +404,7 @@ func (info *ContainerInfo) Update(
 
 func registerContainerEvents(
 	sensor *Sensor,
+	groupID int32,
 	eventMap subscriptionMap,
 	events []*api.ContainerEventFilter,
 ) {
