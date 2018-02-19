@@ -1,2 +1,6 @@
 # This subpackage doesn't actually exist, but example code references it.
 ignored = ["github.com/google/protobuf/examples/tutorial"]
+
+[[constraint]]
+  name = "google.golang.org/grpc"
+  version = "=1.9.2"
