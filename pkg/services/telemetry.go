@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sensor
+package services
 
 import (
 	"crypto/tls"
@@ -26,6 +26,7 @@ import (
 
 	api "github.com/capsule8/capsule8/api/v0"
 	"github.com/capsule8/capsule8/pkg/config"
+	"github.com/capsule8/capsule8/pkg/sensor"
 	"github.com/golang/glog"
 
 	"golang.org/x/sys/unix"
@@ -39,14 +40,14 @@ import (
 // events.
 type TelemetryService struct {
 	server *grpc.Server
-	sensor *Sensor
+	sensor *sensor.Sensor
 
 	address string
 }
 
 // NewTelemetryService creates a new TelemetryService instance that can be used
 // with a ServiceManager instance.
-func NewTelemetryService(sensor *Sensor, address string) *TelemetryService {
+func NewTelemetryService(sensor *sensor.Sensor, address string) *TelemetryService {
 	return &TelemetryService{
 		address: address,
 		sensor:  sensor,
@@ -153,7 +154,7 @@ func (ts *TelemetryService) Stop() {
 }
 
 type telemetryServiceServer struct {
-	sensor *Sensor
+	sensor *sensor.Sensor
 }
 
 func (t *telemetryServiceServer) GetEvents(req *api.GetEventsRequest, stream api.TelemetryService_GetEventsServer) error {

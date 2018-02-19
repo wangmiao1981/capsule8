@@ -17,7 +17,7 @@ package main
 import (
 	"flag"
 
-	"github.com/capsule8/capsule8/pkg/sensor"
+	"github.com/capsule8/capsule8/pkg/services"
 	"github.com/capsule8/capsule8/pkg/version"
 )
 
@@ -29,5 +29,5 @@ func main() {
 	// Log version and build at "Starting ..." for debugging
 	version.InitialBuildLog("sensor")
 
-	sensor.Main()
+	services.Main()
 }
