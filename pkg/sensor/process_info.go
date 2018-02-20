@@ -61,6 +61,9 @@ const (
 	doExecveatCommonAddress = "do_execveat_common"
 	sysExecveAddress        = "sys_execve"
 	sysExecveatAddress      = "sys_execveat"
+
+	doForkAddress   = "do_fork"
+	doForkFetchargs = "clone_flags=%di:u64"
 )
 
 var (
@@ -167,13 +170,18 @@ type Task struct {
 	// could be either the thread group leader or another process. Use
 	// Parent() to get the parent of a container.
 	parent *Task
+
+	// pendingCloneFlags is used internally for tracking the flags passed
+	// to the clone(2) system call.
+	pendingCloneFlags uint64
 }
 
 var rootTask = Task{}
 
 func newTask(pid int) *Task {
 	return &Task{
-		PID: pid,
+		PID:               pid,
+		pendingCloneFlags: ^uint64(0),
 	}
 }
 
@@ -367,7 +375,32 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		cache.decodeNewTask,
 		perf.WithEventEnabled())
 	if err != nil {
-		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
+		eventName = doForkAddress
+		_, err = sensor.monitor.RegisterKprobe(eventName, false,
+			doForkFetchargs, cache.decodeDoFork,
+			perf.WithEventEnabled())
+		if err != nil {
+			eventName = "_" + eventName
+			_, err = sensor.monitor.RegisterKprobe(eventName, false,
+				doForkFetchargs, cache.decodeDoFork,
+				perf.WithEventEnabled())
+			if err != nil {
+				glog.Fatalf("Couldn't register kprobe %s: %s",
+					eventName, err)
+			}
+		}
+		_, err = sensor.monitor.RegisterKprobe(eventName, true,
+			"", cache.decodeDoForkReturn,
+			perf.WithEventEnabled())
+		if err != nil {
+			glog.Fatalf("Couldn't register kretprobe %s: %s",
+				eventName, err)
+		}
+
+		eventName = "sched/sched_process_fork"
+		_, err = sensor.monitor.RegisterTracepoint(eventName,
+			cache.decodeSchedProcessFork,
+			perf.WithEventEnabled())
 	}
 
 	eventName = "sched/sched_process_exit"
@@ -383,16 +416,19 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		commitCredsArgs, cache.decodeCommitCreds,
 		perf.WithEventEnabled())
 
-	// Attach a probe for task_rename involving the runc
-	// init processes to trigger containerID lookups
-	f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
-	eventName = "task/task_rename"
-	_, err = sensor.monitor.RegisterTracepoint(eventName,
-		cache.decodeRuncTaskRename,
-		perf.WithFilter(f),
-		perf.WithEventEnabled())
-	if err != nil {
-		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
+	major, _, _ := sys.KernelVersion()
+	if major >= 3 {
+		// Attach a probe for task_rename involving the runc
+		// init processes to trigger containerID lookups
+		f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
+		eventName = "task/task_rename"
+		_, err = sensor.monitor.RegisterTracepoint(eventName,
+			cache.decodeRuncTaskRename,
+			perf.WithFilter(f),
+			perf.WithEventEnabled())
+		if err != nil {
+			glog.Fatalf("Couldn't register event %s: %s", eventName, err)
+		}
 	}
 
 	// Attach a probe to capture exec events in the kernel. Different
@@ -606,6 +642,28 @@ func (pc *ProcessInfoCache) maybeDeferAction(f func()) {
 	f()
 }
 
+func (pc *ProcessInfoCache) handleSysClone(
+	parentTask, parentLeader, childTask *Task,
+	cloneFlags uint64,
+	childComm string,
+) {
+	changes := map[string]interface{}{
+		"Command": childComm,
+	}
+
+	if (cloneFlags & CLONE_THREAD) != 0 {
+		changes["TGID"] = parentTask.PID
+	} else {
+		// This is a new thread group leader, tgid is the new pid
+		changes["TGID"] = childTask.PID
+		changes["ContainerID"] = parentLeader.ContainerID
+		changes["ContainerInfo"] = parentLeader.ContainerInfo
+	}
+
+	childTask.parent = parentTask
+	childTask.Update(changes)
+}
+
 func (pc *ProcessInfoCache) decodeNewTask(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
@@ -615,25 +673,12 @@ func (pc *ProcessInfoCache) decodeNewTask(
 	cloneFlags := data["clone_flags"].(uint64)
 	childComm := commToString(data["comm"].([]interface{}))
 
-	parentTask, parentLeader := pc.LookupTaskAndLeader(parentPid)
-	childTask := pc.LookupTask(childPid)
-
-	changes := map[string]interface{}{
-		"Command": childComm,
-	}
-
-	if (cloneFlags & CLONE_THREAD) != 0 {
-		changes["TGID"] = parentPid
-	} else {
-		// This is a new thread group leader, tgid is the new pid
-		changes["TGID"] = childPid
-		changes["ContainerID"] = parentLeader.ContainerID
-		changes["ContainerInfo"] = parentLeader.ContainerInfo
-	}
-
 	pc.maybeDeferAction(func() {
-		childTask.parent = parentTask
-		childTask.Update(changes)
+		parentTask, parentLeader := pc.LookupTaskAndLeader(parentPid)
+		childTask := pc.LookupTask(childPid)
+
+		pc.handleSysClone(parentTask, parentLeader, childTask,
+			cloneFlags, childComm)
 	})
 
 	return nil, nil
@@ -744,10 +789,81 @@ func (pc *ProcessInfoCache) decodeExecve(
 	return nil, nil
 }
 
+func (pc *ProcessInfoCache) decodeDoFork(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	pid := int(data["common_pid"].(int32))
+	cloneFlags := data["clone_flags"].(uint64)
+
+	pc.maybeDeferAction(func() {
+		t := pc.LookupTask(pid)
+
+		if t.pendingCloneFlags != ^uint64(0) {
+			glog.V(2).Infof("decodeDoFork: stale clone flags %x for pid %d\n",
+				t.pendingCloneFlags, pid)
+		}
+
+		t.pendingCloneFlags = cloneFlags
+	})
+
+	return nil, nil
+}
+
+func (pc *ProcessInfoCache) decodeDoForkReturn(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	pid := int(data["common_pid"].(int32))
+
+	pc.maybeDeferAction(func() {
+		t := pc.LookupTask(pid)
+
+		if t.pendingCloneFlags == ^uint64(0) {
+			glog.V(2).Infof("decodeDoFork: no pending clone flags for pid %d\n",
+				pid)
+		}
+
+		t.pendingCloneFlags = ^uint64(0)
+	})
+
+	return nil, nil
+}
+
+func (pc *ProcessInfoCache) decodeSchedProcessFork(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	parentPid := int(data["parent_pid"].(int32))
+	childPid := int(data["child_pid"].(int32))
+	childComm := commToString(data["child_comm"].([]interface{}))
+
+	pc.maybeDeferAction(func() {
+		parentTask, parentLeader := pc.LookupTaskAndLeader(parentPid)
+		if parentTask.pendingCloneFlags == ^uint64(0) {
+			glog.Fatalf("decodeSchedProcessFork: no pending clone flags for pid %d\n",
+				parentPid)
+		}
+
+		childTask := pc.LookupTask(childPid)
+
+		pc.handleSysClone(parentTask, parentLeader, childTask,
+			parentTask.pendingCloneFlags, childComm)
+	})
+
+	return nil, nil
+}
+
 func commToString(comm []interface{}) string {
 	s := make([]byte, len(comm))
 	for i, c := range comm {
-		s[i] = byte(c.(int8))
+		switch c := c.(type) {
+		case int8:
+			s[i] = byte(c)
+		case uint8:
+			// Kernel 2.6.32 erroneously reports unsigned
+			s[i] = byte(c)
+		}
 		if s[i] == 0 {
 			return string(s[:i])
 		}
