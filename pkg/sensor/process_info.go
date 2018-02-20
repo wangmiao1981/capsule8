@@ -30,14 +30,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode"
+	"unsafe"
 
 	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 	"github.com/capsule8/capsule8/pkg/sys/proc"
 	"github.com/golang/glog"
+
+	"golang.org/x/sys/unix"
 )
+
+const taskReuseThreshold = int64(10 * time.Millisecond)
 
 const (
 	commitCredsAddress = "commit_creds"
@@ -61,6 +68,56 @@ var (
 	once   sync.Once
 )
 
+func now() int64 {
+	var ts unix.Timespec
+	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
+	return ts.Nano()
+}
+
+// Cred contains task credential information
+type Cred struct {
+	// UID is the real UID
+	UID uint32
+	// GID is the real GID
+	GID uint32
+	// EUID is the effective UID
+	EUID uint32
+	// EGID is the effective GID
+	EGID uint32
+	// SUID is the saved UID
+	SUID uint32
+	// SGID is the saved GID
+	SGID uint32
+	// FSUID is the UID for filesystem operations
+	FSUID uint32
+	// FSGID is the GID for filesystem operations
+	FSGID uint32
+}
+
+var rootCredentials = Cred{}
+
+func newCredentials(
+	uid, euid, suid, fsuid uint32,
+	gid, egid, sgid, fsgid uint32,
+) *Cred {
+	if uid == 0 && euid == 0 && suid == 0 && fsuid == 0 {
+		if gid == 0 && egid == 0 && sgid == 0 && fsgid == 0 {
+			return &rootCredentials
+		}
+	}
+
+	return &Cred{
+		UID:   uid,
+		GID:   gid,
+		EUID:  euid,
+		EGID:  egid,
+		SUID:  suid,
+		SGID:  sgid,
+		FSUID: fsuid,
+		FSGID: fsgid,
+	}
+}
+
 // Task represents a schedulable task. All Linux tasks are uniquely identified
 // at a given time by their PID, but those PIDs may be reused after hitting the
 // maximum PID value.
@@ -74,11 +131,6 @@ type Task struct {
 	// have differing PIDs, but all share the same TGID. The thread group
 	// leader process's PID will be the same as its TGID.
 	TGID int
-
-	// PPID is the parent PID of the originating parent process vs. current
-	// parent in case the parent terminates and the child is reparented
-	// (usually to init).
-	PPID int
 
 	// Command is the kernel's comm field, which is initialized to the
 	// first 15 characters of the basename of the executable being run.
@@ -105,48 +157,38 @@ type Task struct {
 	// the container to which the task belongs, if any.
 	ContainerInfo *ContainerInfo
 
+	// ExitTime is the time at which a task exited.
+	ExitTime int64
+
 	// processID is a cached unique ID for the process.
 	processID string
+
+	// parent is an internal reference to the parent of this task, which
+	// could be either the thread group leader or another process. Use
+	// Parent() to get the parent of a container.
+	parent *Task
 }
 
-// Cred contains task credential information
-type Cred struct {
-	// UID is the real UID
-	UID uint32
-	// GID is the real GID
-	GID uint32
-	// EUID is the effective UID
-	EUID uint32
-	// EGID is the effective GID
-	EGID uint32
-	// SUID is the saved UID
-	SUID uint32
-	// SGID is the saved GID
-	SGID uint32
-	// FSUID is the UID for filesystem operations
-	FSUID uint32
-	// FSGID is the GID for filesystem operations
-	FSGID uint32
+var rootTask = Task{}
+
+func newTask(pid int) *Task {
+	return &Task{
+		PID: pid,
+	}
 }
 
-// IsValid returns true if the task instance is valid. A valid task instance
-// has both PID and TGID fields >= 0.
-func (t *Task) IsValid() bool {
-	return t.PID > 0 && t.TGID > 0
-}
-
-// Invalidate invalidates a task instance.
-func (t *Task) Invalidate() {
-	t.PID = 0
-	t.TGID = 0
-
-	// Clear references for GC
-	t.Command = ""
-	t.CommandLine = nil
-	t.ContainerID = ""
-	t.ContainerInfo = nil
-	t.Creds = nil
-	t.processID = ""
+// Parent returns a reference to a task's parent task.
+func (t *Task) Parent() *Task {
+	if t.parent == nil {
+		// t.parent may not be set yet if events arrive out of order.
+		if t.TGID != 0 {
+			glog.Fatalf("Internal error: t.PID == %d && t.TGID == %d && t.parent == nil", t.PID, t.TGID)
+		}
+		// We don't know anything about the parent, so return this task
+		// as the parent. Don't store the reference, though.
+		return t
+	}
+	return t.parent
 }
 
 // ProcessID returns the unique ID for a task. Normally this is used on the
@@ -154,7 +196,7 @@ func (t *Task) Invalidate() {
 // is derived inside or outside a container.
 func (t *Task) ProcessID() string {
 	if t.processID == "" {
-		t.processID = proc.DeriveUniqueID(t.PID, t.PPID)
+		t.processID = proc.DeriveUniqueID(t.PID, t.Parent().PID)
 	}
 	return t.processID
 }
@@ -189,7 +231,7 @@ func (t *Task) Update(data map[string]interface{}) bool {
 			s.Field(i).Set(reflect.ValueOf(v))
 
 			switch f.Name {
-			case "PID", "PPID":
+			case "Parent":
 				// The cached processID depends on PID and PPID.
 				// If either changes, invalidate the cached
 				// value.
@@ -210,55 +252,45 @@ func (t *Task) Update(data map[string]interface{}) bool {
 }
 
 type taskCache interface {
-	LookupTask(int) (*Task, bool)
-	LookupTaskAndLeader(int) (*Task, *Task, bool)
-	InsertTask(int, *Task)
-	DeleteTask(int)
+	LookupTask(int) *Task
 }
 
 type arrayTaskCache struct {
-	entries []Task
+	entries []*Task
 }
 
 func newArrayTaskCache(size uint) *arrayTaskCache {
 	return &arrayTaskCache{
-		entries: make([]Task, size),
+		entries: make([]*Task, size),
 	}
 }
 
-func (c *arrayTaskCache) LookupTask(pid int) (*Task, bool) {
-	t := &c.entries[pid]
-	if !t.IsValid() {
-		glog.V(10).Infof("LookupTask(%d) -> nil", pid)
-		return nil, false
+func (c *arrayTaskCache) LookupTask(pid int) *Task {
+	if pid <= 0 || pid > len(c.entries) {
+		glog.Fatalf("Invalid pid for lookup: %d", pid)
+	}
+
+	var t *Task
+	for {
+		var old *Task
+
+		t = c.entries[pid-1]
+		if t != nil {
+			if t.ExitTime == 0 || now()-t.ExitTime < taskReuseThreshold {
+				break
+			}
+			old = t
+		}
+		t = newTask(pid)
+		if atomic.CompareAndSwapPointer(
+			(*unsafe.Pointer)(unsafe.Pointer(&c.entries[pid-1])),
+			unsafe.Pointer(old),
+			unsafe.Pointer(t)) {
+			break
+		}
 	}
 	glog.V(10).Infof("LookupTask(%d) -> %+v", pid, t)
-	return t, true
-}
-
-func (c *arrayTaskCache) LookupTaskAndLeader(pid int) (*Task, *Task, bool) {
-	t, ok := c.LookupTask(pid)
-	if ok {
-		if pid != t.TGID {
-			leader, ok := c.LookupTask(t.TGID)
-			return t, leader, ok
-		}
-		return t, t, true
-	}
-	return nil, nil, false
-}
-
-func (c *arrayTaskCache) InsertTask(pid int, t *Task) {
-	glog.V(10).Infof("InsertTask(%d, %+v)", pid, t)
-	if pid <= 0 || !t.IsValid() {
-		glog.Fatalf("Invalid task for pid %d: %+v", pid, t)
-	}
-	c.entries[pid] = *t
-}
-
-func (c *arrayTaskCache) DeleteTask(pid int) {
-	glog.V(10).Infof("DeleteTask(%d)", pid)
-	c.entries[pid].Invalidate()
+	return t
 }
 
 type mapTaskCache struct {
@@ -276,64 +308,20 @@ func newMapTaskCache(size uint) *mapTaskCache {
 	}
 }
 
-func (c *mapTaskCache) lookupTaskUnlocked(pid int) (*Task, bool) {
+func (c *mapTaskCache) LookupTask(pid int) *Task {
+	if pid <= 0 {
+		glog.Fatalf("Invalid pid for lookup: %d", pid)
+	}
+
+	c.Lock()
 	t, ok := c.entries[pid]
-	if !ok {
-		glog.V(10).Infof("LookupTask(%d) -> nil", pid)
-		return nil, false
+	if !ok || (t.ExitTime != 0 && now()-t.ExitTime >= taskReuseThreshold) {
+		t = newTask(pid)
+		c.entries[pid] = t
 	}
-	if !t.IsValid() {
-		glog.Fatalf("Found invalid task in cache for pid %d: %+v",
-			pid, t)
-	}
-
+	c.Unlock()
 	glog.V(10).Infof("LookupTask(%d) -> %+v", pid, t)
-	return t, true
-}
-
-func (c *mapTaskCache) LookupTask(pid int) (*Task, bool) {
-	c.Lock()
-	t, ok := c.lookupTaskUnlocked(pid)
-	c.Unlock()
-
-	return t, ok
-}
-
-func (c *mapTaskCache) LookupTaskAndLeader(pid int) (*Task, *Task, bool) {
-	c.Lock()
-	t, ok := c.lookupTaskUnlocked(pid)
-	if ok {
-		if pid != t.TGID {
-			leader, ok := c.lookupTaskUnlocked(t.TGID)
-			c.Unlock()
-			return t, leader, ok
-		}
-		c.Unlock()
-		return t, t, true
-	}
-	c.Unlock()
-	return nil, nil, false
-}
-
-func (c *mapTaskCache) InsertTask(pid int, t *Task) {
-	glog.V(10).Infof("InsertTask(%d, %+v)", pid, t)
-	if pid <= 0 || !t.IsValid() {
-		glog.Fatalf("Invalid task for pid %d: %+v", pid, t)
-	}
-
-	taskCopy := *t
-
-	c.Lock()
-	c.entries[pid] = &taskCopy
-	c.Unlock()
-}
-
-func (c *mapTaskCache) DeleteTask(pid int) {
-	glog.V(10).Infof("DeleteTask(%d)", pid)
-
-	c.Lock()
-	delete(c.entries, pid)
-	c.Unlock()
+	return t
 }
 
 // ProcessInfoCache is an object that caches process information. It is
@@ -377,6 +365,14 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	eventName := "task/task_newtask"
 	_, err := sensor.monitor.RegisterTracepoint(eventName,
 		cache.decodeNewTask,
+		perf.WithEventEnabled())
+	if err != nil {
+		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
+	}
+
+	eventName = "sched/sched_process_exit"
+	_, err = sensor.monitor.RegisterTracepoint(eventName,
+		cache.decodeSchedProcessExit,
 		perf.WithEventEnabled())
 	if err != nil {
 		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
@@ -480,32 +476,27 @@ func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
 			pid, err)
 	}
 
-	containerID, err := procFS.ContainerID(tgid)
-	if err != nil {
-		return fmt.Errorf("Couldn't get containerID for tgid %d: %s",
-			pid, err)
+	t := pc.cache.LookupTask(s.PID)
+	t.TGID = s.TGID
+	t.Command = s.Name
+	t.Creds = newCredentials(s.UID[0], s.UID[1], s.UID[2], s.UID[3],
+		s.GID[0], s.GID[1], s.GID[2], s.GID[3])
+	if t.PID != t.TGID {
+		t.parent = pc.cache.LookupTask(t.TGID)
+	} else {
+		if s.PPID == 0 && (t.PID == 1 || s.Name == "kthreadd") {
+			t.parent = &rootTask
+		} else {
+			t.parent = pc.cache.LookupTask(s.PPID)
+		}
+		t.CommandLine = procFS.CommandLine(t.TGID)
+		t.ContainerID, err = procFS.ContainerID(tgid)
+		if err != nil {
+			return fmt.Errorf("Couldn't get containerID for tgid %d: %s",
+				pid, err)
+		}
 	}
 
-	t := Task{
-		PID:         s.PID,
-		TGID:        s.TGID,
-		PPID:        s.PPID,
-		Command:     s.Name,
-		CommandLine: procFS.CommandLine(tgid),
-		ContainerID: containerID,
-		Creds: &Cred{
-			UID:   s.UID[0],
-			EUID:  s.UID[1],
-			SUID:  s.UID[2],
-			FSUID: s.UID[3],
-			GID:   s.GID[0],
-			EGID:  s.GID[1],
-			SGID:  s.GID[2],
-			FSGID: s.GID[3],
-		},
-	}
-
-	pc.cache.InsertTask(t.PID, &t)
 	return nil
 }
 
@@ -566,20 +557,27 @@ func (pc *ProcessInfoCache) scanProcFilesystem() error {
 }
 
 // LookupTask finds the task information for the given PID.
-func (pc *ProcessInfoCache) LookupTask(pid int) (*Task, bool) {
+func (pc *ProcessInfoCache) LookupTask(pid int) *Task {
 	return pc.cache.LookupTask(pid)
 }
 
 // LookupTaskAndLeader finds the task information for both a given PID and the
 // thread group leader.
-func (pc *ProcessInfoCache) LookupTaskAndLeader(pid int) (*Task, *Task, bool) {
-	return pc.cache.LookupTaskAndLeader(pid)
+func (pc *ProcessInfoCache) LookupTaskAndLeader(pid int) (*Task, *Task) {
+	t := pc.cache.LookupTask(pid)
+	if pid == t.TGID {
+		return t, t
+	}
+	return t, t.Parent()
 }
 
 // LookupTaskContainerInfo returns the container info for a task, possibly
 // consulting the sensor's container cache and updating the task cached
 // information.
 func (pc *ProcessInfoCache) LookupTaskContainerInfo(t *Task) *ContainerInfo {
+	if t.PID != t.TGID {
+		t = t.Parent()
+	}
 	if i := t.ContainerInfo; i != nil {
 		return t.ContainerInfo
 	}
@@ -608,9 +606,6 @@ func (pc *ProcessInfoCache) maybeDeferAction(f func()) {
 	f()
 }
 
-//
-// Decodes each task/task_newtask tracepoint event into a processCacheEntry
-//
 func (pc *ProcessInfoCache) decodeNewTask(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
@@ -620,46 +615,52 @@ func (pc *ProcessInfoCache) decodeNewTask(
 	cloneFlags := data["clone_flags"].(uint64)
 	childComm := commToString(data["comm"].([]interface{}))
 
-	var (
-		commandLine   []string
-		containerID   string
-		containerInfo *ContainerInfo
-	)
+	parentTask, parentLeader := pc.LookupTaskAndLeader(parentPid)
+	childTask := pc.LookupTask(childPid)
 
-	parentTask, ok := pc.LookupTask(parentPid)
-	if ok {
-		commandLine = parentTask.CommandLine
-		containerID = parentTask.ContainerID
-		containerInfo = parentTask.ContainerInfo
+	changes := map[string]interface{}{
+		"Command": childComm,
 	}
 
-	childTask := Task{
-		PID:           childPid,
-		PPID:          parentPid,
-		Command:       childComm,
-		CommandLine:   commandLine,
-		ContainerID:   containerID,
-		ContainerInfo: containerInfo,
-	}
-
-	const cloneThread = 0x10000 // CLONE_THREAD from the kernel
-	if cloneFlags&cloneThread != 0 {
-		childTask.TGID = parentPid
+	if (cloneFlags & CLONE_THREAD) != 0 {
+		changes["TGID"] = parentPid
 	} else {
 		// This is a new thread group leader, tgid is the new pid
-		childTask.TGID = childPid
+		changes["TGID"] = childPid
+		changes["ContainerID"] = parentLeader.ContainerID
+		changes["ContainerInfo"] = parentLeader.ContainerInfo
 	}
 
 	pc.maybeDeferAction(func() {
-		pc.cache.InsertTask(childPid, &childTask)
+		childTask.parent = parentTask
+		childTask.Update(changes)
 	})
 
 	return nil, nil
 }
 
-//
-// Decodes each commit_creds dynamic tracepoint event and updates cache
-//
+// decodeSchedProcessExit marks a task as having exited. The time of the exit
+// is noted so that the task can be safely reused later. Don't delete it from
+// the cache, because out-of-order events could cause it to be recreated and
+// then when the pid is reused by the kernel later, it'll contain stale data.
+func (pc *ProcessInfoCache) decodeSchedProcessExit(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	pid := int(data["common_pid"].(int32))
+
+	changes := map[string]interface{}{
+		"ExitTime": now(),
+	}
+
+	pc.maybeDeferAction(func() {
+		t := pc.LookupTask(pid)
+		t.Update(changes)
+	})
+
+	return nil, nil
+}
+
 func (pc *ProcessInfoCache) decodeCommitCreds(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
@@ -684,18 +685,15 @@ func (pc *ProcessInfoCache) decodeCommitCreds(
 	}
 
 	pc.maybeDeferAction(func() {
-		if t, ok := pc.LookupTask(pid); ok {
-			t.Update(changes)
-		}
+		t := pc.LookupTask(pid)
+		t.Update(changes)
 	})
 
 	return nil, nil
 }
 
-//
-// decodeRuncTaskRename is called when runc exec's and obtains the containerID
+// decodeRuncTaskRename is called when runc execs and obtains the containerID
 // from /procfs and caches it.
-//
 func (pc *ProcessInfoCache) decodeRuncTaskRename(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
@@ -705,32 +703,14 @@ func (pc *ProcessInfoCache) decodeRuncTaskRename(
 	pc.maybeDeferAction(func() {
 		glog.V(10).Infof("decodeRuncTaskRename: pid = %d", pid)
 
-		t, ok := pc.LookupTask(pid)
-		if !ok {
-			return
-		}
-
-		if len(t.ContainerID) == 0 {
-			containerID, err := procFS.ContainerID(pid)
-			glog.V(10).Infof("containerID(%d) = %s", pid, containerID)
-			if err == nil && len(containerID) > 0 {
-				changes := map[string]interface{}{
-					"ContainerID": containerID,
-				}
-				t.Update(changes)
+		_, leader := pc.LookupTaskAndLeader(pid)
+		containerID, err := procFS.ContainerID(leader.PID)
+		if err == nil {
+			glog.V(10).Infof("containerID(%d) = %s", leader.PID, containerID)
+			changes := map[string]interface{}{
+				"ContainerID": containerID,
 			}
-		} else if parent, parentok := pc.LookupTask(t.PPID); parentok {
-			if len(parent.ContainerID) == 0 {
-				containerID, err := procFS.ContainerID(parent.PID)
-				glog.V(10).Infof("containerID(%d) = %s", pid, containerID)
-				if err == nil && len(containerID) > 0 {
-					changes := map[string]interface{}{
-						"ContainerID": containerID,
-					}
-					parent.Update(changes)
-				}
-
-			}
+			leader.Update(changes)
 		}
 	})
 
@@ -757,9 +737,8 @@ func (pc *ProcessInfoCache) decodeExecve(
 		"CommandLine": commandLine,
 	}
 	pc.maybeDeferAction(func() {
-		if t, ok := pc.LookupTask(pid); ok {
-			t.Update(changes)
-		}
+		t := pc.LookupTask(pid)
+		t.Update(changes)
 	})
 
 	return nil, nil

@@ -168,14 +168,12 @@ func alarm(s *sensor.Sensor, sr *perf.SampleRecord, counters eventCounters) {
 	fields = append(fields, fmt.Sprintf("tid=%v", sr.Tid))
 	fields = append(fields, fmt.Sprintf("cpu=%v", sr.CPU))
 
-	if task, ok := s.ProcessCache.LookupTask(int(sr.Pid)); ok {
-		containerInfo := s.ProcessCache.LookupTaskContainerInfo(task)
-		if containerInfo != nil {
-			fields = append(fields, fmt.Sprintf("container_name=%v", containerInfo.Name))
-			fields = append(fields, fmt.Sprintf("container_id=%v", containerInfo.ID))
-			fields = append(fields, fmt.Sprintf("container_image=%v", containerInfo.ImageName))
-			fields = append(fields, fmt.Sprintf("container_image_id=%v", containerInfo.ImageID))
-		}
+	task := s.ProcessCache.LookupTask(int(sr.Pid))
+	if ci := s.ProcessCache.LookupTaskContainerInfo(task); ci != nil {
+		fields = append(fields, fmt.Sprintf("container_name=%v", ci.Name))
+		fields = append(fields, fmt.Sprintf("container_id=%v", ci.ID))
+		fields = append(fields, fmt.Sprintf("container_image=%v", ci.ImageName))
+		fields = append(fields, fmt.Sprintf("container_image_id=%v", ci.ImageID))
 	}
 
 	message := strings.Join(fields, " ")

@@ -322,8 +322,8 @@ func (s *Sensor) NewEventFromSample(
 	e.ProcessPid, _ = data["common_pid"].(int32)
 	e.Cpu = int32(sample.CPU)
 
-	pid := int(e.ProcessPid)
-	if task, leader, ok := s.ProcessCache.LookupTaskAndLeader(pid); ok {
+	if e.ProcessPid != 0 {
+		task, leader := s.ProcessCache.LookupTaskAndLeader(int(e.ProcessPid))
 		e.ProcessId = leader.ProcessID()
 		e.ProcessTgid = int32(task.TGID)
 
@@ -347,7 +347,6 @@ func (s *Sensor) NewEventFromSample(
 			e.ImageName = i.ImageName
 		}
 	}
-
 	return e
 }
 
