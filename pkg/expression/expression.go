@@ -16,6 +16,7 @@ package expression
 
 import (
 	api "github.com/capsule8/capsule8/api/v0"
+	"github.com/golang/protobuf/ptypes/timestamp"
 )
 
 // FieldTypeMap is a mapping of types for field names/identifiers
@@ -171,6 +172,13 @@ func NewValue(i interface{}) *api.Value {
 		return &api.Value{
 			Type:  api.ValueType_DOUBLE,
 			Value: &api.Value_DoubleValue{DoubleValue: v},
+		}
+	case *timestamp.Timestamp:
+		return &api.Value{
+			Type: api.ValueType_TIMESTAMP,
+			Value: &api.Value_TimestampValue{
+				TimestampValue: v,
+			},
 		}
 	}
 
