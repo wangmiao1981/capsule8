@@ -1,3 +1,29 @@
+## 0.7.0-alpha (Feb 21, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  * Update vendoring with grpc version 1.9.2 ([#147](https://github.com/capsule8/capsule8/pull/147))
+  * Add container info to cache side channel example ([#137](https://github.com/capsule8/capsule8/pull/137))
+  * Add 1-second timeout and blocking to grpc.Dial in Telemetry Client ([#136](https://github.com/capsule8/capsule8/pull/136))
+  * Improve handling of sample timestamps in EventMonitor ([#134](https://github.com/capsule8/capsule8/pull/134))
+  * Updated example telemetry client to enable printing events as JSON ([#143](https://github.com/capsule8/capsule8/pull/143))
+
+BUG FIXES:
+
+  * Fix problems found with the release of Go 1.10 ([#148](https://github.com/capsule8/capsule8/pull/148))
+  * Wait for the pollLoop to finish in Instance.Close ([#144](https://github.com/capsule8/capsule8/pull/144))
+  * Protect the stream from multiple close calls ([#146](https://github.com/capsule8/capsule8/pull/146))
+  * Fix TestSubdirs so that it stops failing so often ([#141](https://github.com/capsule8/capsule8/pull/141))
+  * Add a missing Unlock call in mapTaskCache.LookupTaskAndLeader ([#139](https://github.com/capsule8/capsule8/pull/139))
+
 ## 0.6.1-alpha (Feb 8, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
