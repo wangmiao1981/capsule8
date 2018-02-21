@@ -309,22 +309,31 @@ func (s *Sensor) NewEventFromContainer(containerID string) *api.TelemetryEvent {
 }
 
 // NewEventFromSample creates a new API Event instance using perf_event sample
-// information.
+// information. If the sample comes from the calling process, no event will be
+// created, and the return will be nil.
 func (s *Sensor) NewEventFromSample(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
 ) *api.TelemetryEvent {
-	e := s.NewEvent()
-	e.SensorMonotimeNanos = int64(sample.Time) - s.bootMonotimeNanos
+	var leader, task *Task
 
 	// When both the sensor and the process generating the sample are in
 	// containers, the sample.Pid and sample.Tid fields will be zero.
 	// Use "common_pid" from the trace event data instead.
-	e.ProcessPid, _ = data["common_pid"].(int32)
+	pid, _ := data["common_pid"].(int32)
+	if pid != 0 {
+		task, leader = s.ProcessCache.LookupTaskAndLeader(int(pid))
+		if leader.IsSensor() {
+			return nil
+		}
+	}
+
+	e := s.NewEvent()
+	e.SensorMonotimeNanos = int64(sample.Time) - s.bootMonotimeNanos
 	e.Cpu = int32(sample.CPU)
 
-	if e.ProcessPid != 0 {
-		task, leader := s.ProcessCache.LookupTaskAndLeader(int(e.ProcessPid))
+	e.ProcessPid = pid
+	if pid != 0 {
 		e.ProcessId = leader.ProcessID()
 		e.ProcessTgid = int32(task.TGID)
 
@@ -348,6 +357,7 @@ func (s *Sensor) NewEventFromSample(
 			e.ImageName = i.ImageName
 		}
 	}
+
 	return e
 }
 

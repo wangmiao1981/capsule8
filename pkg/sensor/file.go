@@ -36,6 +36,9 @@ type fileOpenFilter struct {
 
 func (f *fileOpenFilter) decodeDoSysOpen(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
 	ev := f.sensor.NewEventFromSample(sample, data)
+	if ev == nil {
+		return nil, nil
+	}
 	ev.Event = &api.TelemetryEvent_File{
 		File: &api.FileEvent{
 			Type:      api.FileEventType_FILE_EVENT_TYPE_OPEN,

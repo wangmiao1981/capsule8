@@ -39,9 +39,12 @@ type processFilter struct {
 }
 
 func (f *processFilter) decodeSchedProcessFork(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
-	childPid := data["child_pid"].(int32)
-
 	ev := f.sensor.NewEventFromSample(sample, data)
+	if ev == nil {
+		return nil, nil
+	}
+
+	childPid := data["child_pid"].(int32)
 	ev.Event = &api.TelemetryEvent_Process{
 		Process: &api.ProcessEvent{
 			Type:         api.ProcessEventType_PROCESS_EVENT_TYPE_FORK,
@@ -57,6 +60,11 @@ func (f *processFilter) decodeSchedProcessFork(sample *perf.SampleRecord, data p
 }
 
 func (f *processFilter) decodeSchedProcessExec(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
+	ev := f.sensor.NewEventFromSample(sample, data)
+	if ev == nil {
+		return nil, nil
+	}
+
 	hostPid := data["common_pid"].(int32)
 	filename := data["filename"].(string)
 
@@ -70,7 +78,6 @@ func (f *processFilter) decodeSchedProcessExec(sample *perf.SampleRecord, data p
 		commandLine = l.CommandLine
 	}
 
-	ev := f.sensor.NewEventFromSample(sample, data)
 	processEvent := &api.ProcessEvent{
 		Type:            api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC,
 		ExecFilename:    filename,
@@ -85,6 +92,11 @@ func (f *processFilter) decodeSchedProcessExec(sample *perf.SampleRecord, data p
 }
 
 func (f *processFilter) decodeDoExit(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
+	ev := f.sensor.NewEventFromSample(sample, data)
+	if ev == nil {
+		return nil, nil
+	}
+
 	var exitStatus int
 	var exitSignal syscall.Signal
 	var coreDumped bool
@@ -101,7 +113,6 @@ func (f *processFilter) decodeDoExit(sample *perf.SampleRecord, data perf.TraceE
 		coreDumped = ws.CoreDump()
 	}
 
-	ev := f.sensor.NewEventFromSample(sample, data)
 	ev.Event = &api.TelemetryEvent_Process{
 		Process: &api.ProcessEvent{
 			Type:           api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT,

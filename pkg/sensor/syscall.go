@@ -38,6 +38,9 @@ func (f *syscallFilter) decodeDummySysEnter(sample *perf.SampleRecord, data perf
 
 func (f *syscallFilter) decodeSyscallTraceEnter(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
 	ev := f.sensor.NewEventFromSample(sample, data)
+	if ev == nil {
+		return nil, nil
+	}
 	ev.Event = &api.TelemetryEvent_Syscall{
 		Syscall: &api.SyscallEvent{
 			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
@@ -56,6 +59,9 @@ func (f *syscallFilter) decodeSyscallTraceEnter(sample *perf.SampleRecord, data 
 
 func (f *syscallFilter) decodeSysExit(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
 	ev := f.sensor.NewEventFromSample(sample, data)
+	if ev == nil {
+		return nil, nil
+	}
 	ev.Event = &api.TelemetryEvent_Syscall{
 		Syscall: &api.SyscallEvent{
 			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT,

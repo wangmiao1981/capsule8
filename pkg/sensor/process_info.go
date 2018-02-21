@@ -185,6 +185,11 @@ func newTask(pid int) *Task {
 	}
 }
 
+// IsSensor returns true if the task belongs to the sensor process.
+func (t *Task) IsSensor() bool {
+	return t.TGID == os.Getpid()
+}
+
 // Parent returns a reference to a task's parent task.
 func (t *Task) Parent() *Task {
 	if t.parent == nil {
