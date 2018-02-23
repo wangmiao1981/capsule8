@@ -30,9 +30,10 @@ import (
 
 	api "github.com/capsule8/capsule8/api/v0"
 	sensorConfig "github.com/capsule8/capsule8/pkg/config"
-
 	"github.com/capsule8/capsule8/pkg/sensor"
-	"github.com/capsule8/capsule8/pkg/subscription"
+	"github.com/capsule8/capsule8/pkg/services"
+	"github.com/golang/glog"
+
 	"github.com/capsule8/capsule8/pkg/version"
 )
 
@@ -41,6 +42,11 @@ var config struct {
 	image    string
 	verbose  bool
 }
+
+var (
+	testSensor *sensor.Sensor
+	manager    *services.ServiceManager
+)
 
 func init() {
 	flag.StringVar(&config.endpoint, "endpoint",
@@ -52,6 +58,23 @@ func init() {
 
 	flag.BoolVar(&config.verbose, "verbose", false,
 		"verbose (print events received)")
+
+	manager = services.NewServiceManager()
+
+	if len(sensorConfig.Sensor.ListenAddr) > 0 {
+		sensorInstance, err := sensor.NewSensor()
+		if err != nil {
+			glog.Fatalf("Could not create sensor: %s", err.Error())
+		}
+		testSensor = sensorInstance
+
+		if err := testSensor.Start(); err != nil {
+			glog.Fatalf("Could not start sensor: %s", err.Error())
+		}
+		defer testSensor.Stop()
+		service := sensor.NewTelemetryService(testSensor, sensorConfig.Sensor.ListenAddr)
+		manager.RegisterService(service)
+	}
 }
 
 // Custom gRPC Dialer that understands "unix:/path/to/sock" as well as TCP addrs
@@ -123,17 +146,17 @@ func createSubscription() *api.Subscription {
 var subscriptionEvents int64
 
 var startSubEvents int64
-var startMetrics map[string]subscription.MetricsCounters
+var startMetrics map[string]sensor.MetricsCounters
 var startRusage map[string]unix.Rusage
 
 func onContainerRunning(cID string) {
 	var rusage unix.Rusage
 
 	if startMetrics == nil {
-		startMetrics = make(map[string]subscription.MetricsCounters)
+		startMetrics = make(map[string]sensor.MetricsCounters)
 	}
 
-	startMetrics[cID] = subscription.Metrics
+	startMetrics[cID] = testSensor.Metrics
 
 	startSubEvents = subscriptionEvents
 
@@ -156,9 +179,9 @@ func max(x, y int64) int64 {
 }
 
 func onContainerExited(cID string) {
-	var metricsStart, metricsEnd, metricsDelta subscription.MetricsCounters
+	var metricsStart, metricsEnd, metricsDelta sensor.MetricsCounters
 
-	metricsEnd = subscription.Metrics
+	metricsEnd = testSensor.Metrics
 	metricsStart = startMetrics[cID]
 
 	metricsDelta.Events = metricsEnd.Events - metricsStart.Events
@@ -210,13 +233,13 @@ func main() {
 	flag.Parse()
 
 	// Enable profiling by default
-	sensorConfig.Global.ProfilingPort = 6060
+	sensorConfig.Global.ProfilingListenAddr = ":6060"
 
 	// Log version and build at "Starting ..." for debugging
 	version.InitialBuildLog("benchmark")
 
 	go func() {
-		sensor.Main()
+		manager.Run()
 	}()
 
 	time.Sleep(1 * time.Second)
@@ -266,7 +289,7 @@ func main() {
 			}
 
 			switch x := e.Event.(type) {
-			case *api.Event_Container:
+			case *api.TelemetryEvent_Container:
 				switch x.Container.GetType() {
 				case api.ContainerEventType_CONTAINER_EVENT_TYPE_RUNNING:
 					onContainerRunning(e.ContainerId)

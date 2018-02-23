@@ -61,7 +61,7 @@ BINS=$(patsubst %,bin/%,$(CMDS)) \
 	test/functional/functional.test
 
 # All source directories that need to be checked, compiled, tested, etc.
-SRC=./cmd/... ./pkg/... ./examples/...
+SRC=./cmd/... ./pkg/... ./examples/... ./test/benchmark/...
 PKG_SOURCES=$(shell find pkg 2>&1 | grep -E '.*\.go$$')
 
 #
