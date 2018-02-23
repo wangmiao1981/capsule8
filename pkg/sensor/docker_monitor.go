@@ -106,7 +106,7 @@ func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 	// right away. Otherwise there'll be race conditions as we scan the
 	// filesystem for existing containers
 
-	_, err = sensor.monitor.RegisterKprobe(dockerRenameKprobeSymbol, false,
+	_, err = sensor.Monitor.RegisterKprobe(dockerRenameKprobeSymbol, false,
 		dockerRenameKprobeFetchargs, dm.decodeRename,
 		perf.WithFilter(dockerRenameKprobeFilter),
 		perf.WithEventEnabled())
@@ -115,7 +115,7 @@ func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 			dockerRenameKprobeSymbol, err)
 	}
 
-	_, err = sensor.monitor.RegisterKprobe(dockerUnlinkKprobeSymbol, false,
+	_, err = sensor.Monitor.RegisterKprobe(dockerUnlinkKprobeSymbol, false,
 		dockerUnlinkKprobeFetchargs, dm.decodeUnlink,
 		perf.WithFilter(dockerUnlinkKprobeFilter),
 		perf.WithEventEnabled())

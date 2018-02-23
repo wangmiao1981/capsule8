@@ -366,33 +366,33 @@ func registerNetworkEvents(
 		sensor: sensor,
 	}
 
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_enter_accept", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_accept", f.decodeSysExitAccept, nfs.acceptResultFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_enter_accept4", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_accept4", f.decodeSysExitAccept, nfs.acceptResultFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_enter_accept", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_accept", f.decodeSysExitAccept, nfs.acceptResultFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_enter_accept4", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_accept4", f.decodeSysExitAccept, nfs.acceptResultFilters)
 
-	registerKprobe(sensor.monitor, groupID, eventMap, networkKprobeBindSymbol, networkKprobeBindFetchargs, f.decodeSysBind, nfs.bindAttemptFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_bind", f.decodeSysExitBind, nfs.bindResultFilters)
+	registerKprobe(sensor.Monitor, groupID, eventMap, networkKprobeBindSymbol, networkKprobeBindFetchargs, f.decodeSysBind, nfs.bindAttemptFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_bind", f.decodeSysExitBind, nfs.bindResultFilters)
 
-	registerKprobe(sensor.monitor, groupID, eventMap, networkKprobeConnectSymbol, networkKprobeConnectFetchargs, f.decodeSysConnect, nfs.connectAttemptFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_connect", f.decodeSysExitConnect, nfs.connectResultFilters)
+	registerKprobe(sensor.Monitor, groupID, eventMap, networkKprobeConnectSymbol, networkKprobeConnectFetchargs, f.decodeSysConnect, nfs.connectAttemptFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_connect", f.decodeSysExitConnect, nfs.connectResultFilters)
 
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_enter_listen", f.decodeSysEnterListen, nfs.listenAttemptFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_listen", f.decodeSysExitListen, nfs.listenResultFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_enter_listen", f.decodeSysEnterListen, nfs.listenAttemptFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_listen", f.decodeSysExitListen, nfs.listenResultFilters)
 
 	// There are two additional system calls added in Linux 3.0 that are of
 	// interest, but there's no way to get all of the data without eBPF
 	// support, so don't bother with them for now.
 
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_enter_recvfrom", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_enter_recvmsg", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_enter_recvfrom", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_enter_recvmsg", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
 
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_recvfrom", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_recvmsg", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_recvfrom", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_recvmsg", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
 
-	registerKprobe(sensor.monitor, groupID, eventMap, networkKprobeSendmsgSymbol, networkKprobeSendmsgFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
-	registerKprobe(sensor.monitor, groupID, eventMap, networkKprobeSendtoSymbol, networkKprobeSendtoFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
+	registerKprobe(sensor.Monitor, groupID, eventMap, networkKprobeSendmsgSymbol, networkKprobeSendmsgFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
+	registerKprobe(sensor.Monitor, groupID, eventMap, networkKprobeSendtoSymbol, networkKprobeSendtoFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
 
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_sendmsg", f.decodeSysExitSendto, nfs.sendtoResultFilters)
-	registerEvent(sensor.monitor, groupID, eventMap, "syscalls/sys_exit_sendto", f.decodeSysExitSendto, nfs.sendtoResultFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_sendmsg", f.decodeSysExitSendto, nfs.sendtoResultFilters)
+	registerEvent(sensor.Monitor, groupID, eventMap, "syscalls/sys_exit_sendto", f.decodeSysExitSendto, nfs.sendtoResultFilters)
 }

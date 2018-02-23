@@ -233,7 +233,7 @@ func registerProcessEvents(
 
 	if forkFilter {
 		eventName := "sched/sched_process_fork"
-		eventID, err := sensor.monitor.RegisterTracepoint(eventName,
+		eventID, err := sensor.Monitor.RegisterTracepoint(eventName,
 			f.decodeSchedProcessFork,
 			perf.WithEventGroup(groupID))
 
@@ -249,7 +249,7 @@ func registerProcessEvents(
 		filterString := processFilterString(execWildcard, execFilters)
 
 		eventName := "sched/sched_process_exec"
-		eventID, err := sensor.monitor.RegisterTracepoint(eventName,
+		eventID, err := sensor.Monitor.RegisterTracepoint(eventName,
 			f.decodeSchedProcessExec,
 			perf.WithEventGroup(groupID),
 			perf.WithFilter(filterString))
@@ -264,7 +264,7 @@ func registerProcessEvents(
 	if exitWildcard || len(exitFilters) > 0 {
 		filterString := processFilterString(exitWildcard, exitFilters)
 
-		eventID, err := sensor.monitor.RegisterKprobe(exitSymbol,
+		eventID, err := sensor.Monitor.RegisterKprobe(exitSymbol,
 			false, exitFetchargs, f.decodeDoExit,
 			perf.WithEventGroup(groupID),
 			perf.WithFilter(filterString))

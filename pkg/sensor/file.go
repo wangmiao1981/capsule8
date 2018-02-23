@@ -142,7 +142,7 @@ func registerFileEvents(
 		sensor: sensor,
 	}
 
-	eventID, err := sensor.monitor.RegisterKprobe(
+	eventID, err := sensor.Monitor.RegisterKprobe(
 		fsDoSysOpenKprobeAddress, false,
 		fsDoSysOpenKprobeFetchargs, f.decodeDoSysOpen,
 		perf.WithEventGroup(groupID),

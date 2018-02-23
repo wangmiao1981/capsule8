@@ -97,7 +97,7 @@ func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
 	// right away. Otherwise there'll be race conditions as we scan
 	// the filesystem for existing containers.
 
-	_, err = sensor.monitor.RegisterKprobe(ociSysOpenKprobeSymbol, false,
+	_, err = sensor.Monitor.RegisterKprobe(ociSysOpenKprobeSymbol, false,
 		ociSysOpenKprobeFetchargs, om.decodeSysOpen,
 		perf.WithFilter(ociSysOpenKprobeFilter),
 		perf.WithEventEnabled())
@@ -105,7 +105,7 @@ func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
 		glog.Fatalf("Could not register OCI monitor %s kprobe: %s",
 			ociSysOpenKprobeSymbol, err)
 	}
-	_, err = sensor.monitor.RegisterKprobe(ociImaFileFreeKprobeSymbol, false,
+	_, err = sensor.Monitor.RegisterKprobe(ociImaFileFreeKprobeSymbol, false,
 		ociImaFileFreeKprobeFetchargs, om.decodeImaFileFree,
 		perf.WithFilter(ociImaFileFreeKprobeFilter),
 		perf.WithEventEnabled())
@@ -114,7 +114,7 @@ func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
 			ociImaFileFreeKprobeSymbol, err)
 	}
 
-	_, err = sensor.monitor.RegisterKprobe(ociUnlinkKprobeSymbol, false,
+	_, err = sensor.Monitor.RegisterKprobe(ociUnlinkKprobeSymbol, false,
 		ociUnlinkKprobeFetchargs, om.decodeUnlink,
 		perf.WithFilter(ociUnlinkKprobeFilter),
 		perf.WithEventEnabled())
