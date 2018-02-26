@@ -138,6 +138,12 @@ api: ../capsule8/api/v0/*.proto
 		$(PROTO_INC) \
 		$?
 
+api_docs:
+	protoc --doc_out=../capsule8/docs/ \
+		--doc_opt=markdown,API.md:google/* \
+		$(PROTO_INC) \
+		../capsule8/api/v0/telemetry_service.proto
+
 #
 # Build all container images
 #
