@@ -67,6 +67,9 @@ func (f *networkFilter) newNetworkEvent(
 	}
 
 	event := f.sensor.NewEventFromSample(sample, data)
+	if event == nil {
+		return nil
+	}
 	event.Event = &api.TelemetryEvent_Network{
 		Network: &api.NetworkEvent{
 			Type: eventType,

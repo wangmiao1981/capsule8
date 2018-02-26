@@ -266,6 +266,11 @@ func (cc *ContainerCache) newContainerEvent(
 	data perf.TraceEventSampleData,
 	eventType api.ContainerEventType,
 ) (*api.TelemetryEvent, error) {
+	event := cc.sensor.NewEventFromSample(sample, data)
+	if event == nil {
+		return nil, nil
+	}
+
 	cev := &api.ContainerEvent{
 		Type:           eventType,
 		ImageId:        data["image_id"].(string),
@@ -284,7 +289,6 @@ func (cc *ContainerCache) newContainerEvent(
 		cev.OciConfigJson = s
 	}
 
-	event := cc.sensor.NewEventFromSample(sample, data)
 	event.ContainerId = data["container_id"].(string)
 	event.Event = &api.TelemetryEvent_Container{
 		Container: cev,

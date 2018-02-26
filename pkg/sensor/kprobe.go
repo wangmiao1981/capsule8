@@ -75,6 +75,11 @@ func newKprobeFilter(kef *api.KernelFunctionCallFilter) *kprobeFilter {
 }
 
 func (f *kprobeFilter) decodeKprobe(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
+	ev := f.sensor.NewEventFromSample(sample, data)
+	if ev == nil {
+		return nil, nil
+	}
+
 	args := make(map[string]*api.KernelFunctionCallEvent_FieldValue)
 	for k, v := range data {
 		value := &api.KernelFunctionCallEvent_FieldValue{}
@@ -113,7 +118,6 @@ func (f *kprobeFilter) decodeKprobe(sample *perf.SampleRecord, data perf.TraceEv
 		args[k] = value
 	}
 
-	ev := f.sensor.NewEventFromSample(sample, data)
 	ev.Event = &api.TelemetryEvent_KernelCall{
 		KernelCall: &api.KernelFunctionCallEvent{
 			Arguments: args,
