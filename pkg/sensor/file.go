@@ -85,7 +85,12 @@ func rewriteFileEventFilter(fef *api.FileEventFilter) {
 	}
 }
 
-func registerFileEvents(sensor *Sensor, eventMap subscriptionMap, events []*api.FileEventFilter) {
+func registerFileEvents(
+	sensor *Sensor,
+	groupID int32,
+	eventMap subscriptionMap,
+	events []*api.FileEventFilter,
+) {
 	var filterString string
 
 	wildcard := false
@@ -137,6 +142,7 @@ func registerFileEvents(sensor *Sensor, eventMap subscriptionMap, events []*api.
 	eventID, err := sensor.monitor.RegisterKprobe(
 		fsDoSysOpenKprobeAddress, false,
 		fsDoSysOpenKprobeFetchargs, f.decodeDoSysOpen,
+		perf.WithEventGroup(groupID),
 		perf.WithFilter(filterString))
 	if err != nil {
 		glog.Warning("Couldn't register kprobe %s: %s",

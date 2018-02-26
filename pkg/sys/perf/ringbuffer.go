@@ -77,7 +77,13 @@ func newRingBuffer(fd int, pageCount int) (*ringBuffer, error) {
 }
 
 func (rb *ringBuffer) unmap() error {
-	return unix.Munmap(rb.memory)
+	if rb.memory != nil {
+		if err := unix.Munmap(rb.memory); err != nil {
+			return err
+		}
+		rb.memory = nil
+	}
+	return nil
 }
 
 // Read calls the given function on each available record in the ringbuffer
@@ -111,10 +117,4 @@ func (rb *ringBuffer) read(f func([]byte)) {
 		// Update dataHead in case it has been advanced in the interim
 		dataHead = atomic.LoadUint64(&rb.metadata.DataHead)
 	}
-}
-
-// Flush discards all data from the ringbuffer
-func (rb *ringBuffer) flush() {
-	dataHead := atomic.LoadUint64(&rb.metadata.DataHead)
-	atomic.StoreUint64(&rb.metadata.DataTail, dataHead)
 }

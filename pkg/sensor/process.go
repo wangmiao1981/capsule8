@@ -158,7 +158,12 @@ func rewriteProcessEventFilter(pef *api.ProcessEventFilter) {
 	}
 }
 
-func registerProcessEvents(sensor *Sensor, eventMap subscriptionMap, events []*api.ProcessEventFilter) {
+func registerProcessEvents(
+	sensor *Sensor,
+	groupID int32,
+	eventMap subscriptionMap,
+	events []*api.ProcessEventFilter,
+) {
 	forkFilter := false
 	execFilters := make(map[string]bool)
 	execWildcard := false
@@ -218,7 +223,8 @@ func registerProcessEvents(sensor *Sensor, eventMap subscriptionMap, events []*a
 	if forkFilter {
 		eventName := "sched/sched_process_fork"
 		eventID, err := sensor.monitor.RegisterTracepoint(eventName,
-			f.decodeSchedProcessFork)
+			f.decodeSchedProcessFork,
+			perf.WithEventGroup(groupID))
 
 		if err != nil {
 			glog.V(1).Infof("Couldn't get %s event id: %v",
@@ -233,7 +239,9 @@ func registerProcessEvents(sensor *Sensor, eventMap subscriptionMap, events []*a
 
 		eventName := "sched/sched_process_exec"
 		eventID, err := sensor.monitor.RegisterTracepoint(eventName,
-			f.decodeSchedProcessExec, perf.WithFilter(filterString))
+			f.decodeSchedProcessExec,
+			perf.WithEventGroup(groupID),
+			perf.WithFilter(filterString))
 		if err != nil {
 			glog.V(1).Infof("Couldn't get %s event id: %v",
 				eventName, err)
@@ -247,6 +255,7 @@ func registerProcessEvents(sensor *Sensor, eventMap subscriptionMap, events []*a
 
 		eventID, err := sensor.monitor.RegisterKprobe(exitSymbol,
 			false, exitFetchargs, f.decodeDoExit,
+			perf.WithEventGroup(groupID),
 			perf.WithFilter(filterString))
 		if err != nil {
 			glog.Errorf("Couldn't register kprobe for %s: %s",

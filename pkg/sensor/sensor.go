@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,7 +171,7 @@ func (s *Sensor) Start() error {
 func (s *Sensor) Stop() {
 	if s.monitor != nil {
 		glog.V(2).Info("Stopping sensor-global EventMonitor")
-		s.monitor.Close(true)
+		s.monitor.Close()
 		s.monitor = nil
 		glog.V(2).Info("Sensor-global EventMonitor stopped successfully")
 	}
@@ -453,12 +454,18 @@ func (s *Sensor) createEventMonitor() error {
 func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, error) {
 	eventMap := newSubscriptionMap()
 
-	registerContainerEvents(s, eventMap, sub.EventFilter.ContainerEvents)
-	registerFileEvents(s, eventMap, sub.EventFilter.FileEvents)
-	registerKernelEvents(s, eventMap, sub.EventFilter.KernelEvents)
-	registerNetworkEvents(s, eventMap, sub.EventFilter.NetworkEvents)
-	registerProcessEvents(s, eventMap, sub.EventFilter.ProcessEvents)
-	registerSyscallEvents(s, eventMap, sub.EventFilter.SyscallEvents)
+	groupName := fmt.Sprintf("Subscription %p", sub)
+	groupID, err := s.monitor.RegisterEventGroup(groupName)
+	if err != nil {
+		return nil, err
+	}
+
+	registerContainerEvents(s, groupID, eventMap, sub.EventFilter.ContainerEvents)
+	registerFileEvents(s, groupID, eventMap, sub.EventFilter.FileEvents)
+	registerKernelEvents(s, groupID, eventMap, sub.EventFilter.KernelEvents)
+	registerNetworkEvents(s, groupID, eventMap, sub.EventFilter.NetworkEvents)
+	registerProcessEvents(s, groupID, eventMap, sub.EventFilter.ProcessEvents)
+	registerSyscallEvents(s, groupID, eventMap, sub.EventFilter.SyscallEvents)
 
 	if len(eventMap) == 0 {
 		return nil, nil
@@ -482,12 +489,15 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 				glog.V(2).Infof("Subscription %d control channel closed",
 					subscriptionID)
 
+				s.monitor.UnregisterEventGroup(groupID)
 				s.eventMap.unsubscribe(subscriptionID,
 					func(eventID uint64) {
-						t, ok := s.monitor.RegisteredEventType(eventID)
-						if ok && t != perf.EventTypeExternal {
-							s.monitor.UnregisterEvent(eventID)
-						}
+						/*
+							t, ok := s.monitor.RegisteredEventType(eventID)
+							if ok && t != perf.EventTypeExternal {
+								s.monitor.UnregisterEvent(eventID)
+							}
+						*/
 					})
 				return
 			}
