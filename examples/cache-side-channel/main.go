@@ -17,6 +17,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 
@@ -56,133 +58,119 @@ type eventCounters struct {
 	LLCLoadMisses uint64
 }
 
-var cpuCounters []eventCounters
-
 func newSensor() *sensor.Sensor {
 	s, err := sensor.NewSensor()
 	if err != nil {
-		glog.Fatal("Could not create sensor: ", err.Error())
+		glog.Fatalf("Could not create sensor: %s", err)
 	}
-	if err := s.Start(); err != nil {
-		glog.Fatal("Could not start sensor: ", err.Error())
+	err = s.Start()
+	if err != nil {
+		glog.Fatalf("Could not start sensor: %s", err)
 	}
 	return s
+}
+
+type counterTracker struct {
+	sensor   *sensor.Sensor
+	counters []eventCounters
 }
 
 func main() {
 	flag.Set("logtostderr", "true")
 	flag.Parse()
 
-	glog.Infof("Starting Capsule8 sensor")
-	sensor := newSensor()
-
 	glog.Infof("Starting Capsule8 cache side channel detector")
+	tracker := counterTracker{
+		sensor:   newSensor(),
+		counters: make([]eventCounters, runtime.NumCPU()),
+	}
 
-	//
 	// Create our event group to read LL cache accesses and misses
 	//
 	// We ask the kernel to sample every llcLoadSampleSize LLC
 	// loads. During each sample, the LLC load misses are also
 	// recorded, as well as CPU number, PID/TID, and sample time.
-	//
-	eventGroup := []*perf.EventAttr{}
-
-	ea := &perf.EventAttr{
-		Disabled: true,
-		Type:     perf.PERF_TYPE_HW_CACHE,
-		Config:   perfConfigLLCLoads,
-		SampleType: perf.PERF_SAMPLE_CPU | perf.PERF_SAMPLE_STREAM_ID |
-			perf.PERF_SAMPLE_TID | perf.PERF_SAMPLE_READ | perf.PERF_SAMPLE_TIME,
-		ReadFormat:   perf.PERF_FORMAT_GROUP | perf.PERF_FORMAT_ID,
-		Pinned:       true,
+	attr := perf.EventAttr{
 		SamplePeriod: llcLoadSampleSize,
-		WakeupEvents: 1,
+		SampleType:   perf.PERF_SAMPLE_TID | perf.PERF_SAMPLE_CPU,
 	}
-	eventGroup = append(eventGroup, ea)
-
-	ea = &perf.EventAttr{
-		Disabled: true,
-		Type:     perf.PERF_TYPE_HW_CACHE,
-		Config:   perfConfigLLCLoadMisses,
-	}
-	eventGroup = append(eventGroup, ea)
-
-	eg, err := perf.NewEventGroup(eventGroup)
+	groupID, err := tracker.sensor.Monitor.RegisterHardwareCacheEventGroup(
+		[]uint64{
+			perfConfigLLCLoads,
+			perfConfigLLCLoadMisses,
+		},
+		tracker.decodeConfigLLCLoads,
+		perf.WithEventAttr(&attr))
 	if err != nil {
-		glog.Fatal(err)
+		glog.Fatalf("Could not register hardware cache event: %s", err)
 	}
-
-	//
-	// Open the event group on all CPUs
-	//
-	err = eg.Open()
-	if err != nil {
-		glog.Fatal(err)
-	}
-
-	// Allocate counters per CPU
-	cpuCounters = make([]eventCounters, runtime.NumCPU())
 
 	glog.Info("Monitoring for cache side channels")
-	eg.Run(func(sample perf.Sample) {
-		sr, ok := sample.Record.(*perf.SampleRecord)
-		if ok {
-			onSample(sensor, sr, eg.EventAttrsByID)
-		}
-	})
+	tracker.sensor.Monitor.EnableGroup(groupID)
+
+	signals := make(chan os.Signal)
+	signal.Notify(signals, os.Interrupt)
+	<-signals
+	close(signals)
+
+	glog.Info("Shutting down gracefully")
+	tracker.sensor.Monitor.Close()
 }
 
-func onSample(sensor *sensor.Sensor, sr *perf.SampleRecord, eventAttrMap map[uint64]*perf.EventAttr) {
-	var counters eventCounters
-
-	// The sample record contains all values in the event group,
-	// tagged with their event ID
-	for _, v := range sr.V.Values {
-		ea := eventAttrMap[v.ID]
-
-		if ea.Config == perfConfigLLCLoads {
-			counters.LLCLoads = v.Value
-		} else if ea.Config == perfConfigLLCLoadMisses {
-			counters.LLCLoadMisses = v.Value
-		}
+func (t *counterTracker) decodeConfigLLCLoads(
+	sample *perf.SampleRecord,
+	counters map[uint64]uint64,
+	totalTimeElapsed uint64,
+	totalTimeRunning uint64,
+) (interface{}, error) {
+	cpu := sample.CPU
+	prevCounters := t.counters[cpu]
+	t.counters[cpu] = eventCounters{
+		LLCLoads:      counters[perfConfigLLCLoads],
+		LLCLoadMisses: counters[perfConfigLLCLoadMisses],
 	}
-
-	cpu := sr.CPU
-	prevCounters := cpuCounters[cpu]
-	cpuCounters[cpu] = counters
 
 	counterDeltas := eventCounters{
-		LLCLoads:      counters.LLCLoads - prevCounters.LLCLoads,
-		LLCLoadMisses: counters.LLCLoadMisses - prevCounters.LLCLoadMisses,
+		LLCLoads:      t.counters[cpu].LLCLoads - prevCounters.LLCLoads,
+		LLCLoadMisses: t.counters[cpu].LLCLoadMisses - prevCounters.LLCLoadMisses,
 	}
 
-	alarm(sensor, sr, counterDeltas)
+	t.alarm(sample, counterDeltas)
+	return nil, nil
 }
 
-func alarm(s *sensor.Sensor, sr *perf.SampleRecord, counters eventCounters) {
-	LLCLoadMissRate := float32(counters.LLCLoadMisses) / float32(counters.LLCLoads)
+func (t *counterTracker) alarm(
+	sample *perf.SampleRecord,
+	counters eventCounters,
+) {
+	LLCLoadMissRate := float32(counters.LLCLoadMisses) /
+		float32(counters.LLCLoads)
+	if LLCLoadMissRate <= alarmThresholdInfo {
+		return
+	}
 
 	var fields []string
 	fields = append(fields, fmt.Sprintf("LLCLoadMissRate=%v", LLCLoadMissRate))
-	fields = append(fields, fmt.Sprintf("pid=%v", sr.Pid))
-	fields = append(fields, fmt.Sprintf("tid=%v", sr.Tid))
-	fields = append(fields, fmt.Sprintf("cpu=%v", sr.CPU))
+	fields = append(fields, fmt.Sprintf("pid=%v", sample.Pid))
+	fields = append(fields, fmt.Sprintf("tid=%v", sample.Tid))
+	fields = append(fields, fmt.Sprintf("cpu=%v", sample.CPU))
 
-	task := s.ProcessCache.LookupTask(int(sr.Pid))
-	if ci := s.ProcessCache.LookupTaskContainerInfo(task); ci != nil {
-		fields = append(fields, fmt.Sprintf("container_name=%v", ci.Name))
-		fields = append(fields, fmt.Sprintf("container_id=%v", ci.ID))
-		fields = append(fields, fmt.Sprintf("container_image=%v", ci.ImageName))
-		fields = append(fields, fmt.Sprintf("container_image_id=%v", ci.ImageID))
+	if sample.Pid > 0 {
+		task := t.sensor.ProcessCache.LookupTask(int(sample.Pid))
+		if ci := t.sensor.ProcessCache.LookupTaskContainerInfo(task); ci != nil {
+			fields = append(fields, fmt.Sprintf("container_name=%v", ci.Name))
+			fields = append(fields, fmt.Sprintf("container_id=%v", ci.ID))
+			fields = append(fields, fmt.Sprintf("container_image=%v", ci.ImageName))
+			fields = append(fields, fmt.Sprintf("container_image_id=%v", ci.ImageID))
+		}
 	}
 
 	message := strings.Join(fields, " ")
-
 	if LLCLoadMissRate > alarmThresholdError {
 		glog.Errorf(message)
 	} else if LLCLoadMissRate > alarmThresholdWarning {
 		glog.Warningf(message)
-	} else if LLCLoadMissRate > alarmThresholdInfo {
+	} else {
 		glog.Infof(message)
 	}
 }

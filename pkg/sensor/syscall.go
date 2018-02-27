@@ -259,7 +259,7 @@ func registerSyscallEvents(
 		eventName := "raw_syscalls/sys_enter"
 		major, _, _ := sys.KernelVersion()
 		if major < 3 {
-			eventID, err = sensor.monitor.RegisterTracepoint(
+			eventID, err = sensor.Monitor.RegisterTracepoint(
 				eventName, f.decodeDummySysEnter,
 				perf.WithEventGroup(groupID),
 				perf.WithFilter("id == 0x7fffffff"))
@@ -267,7 +267,7 @@ func registerSyscallEvents(
 				glog.V(1).Infof("Couldn't register dummy syscall event %s: %v", eventName, err)
 			}
 		} else if atomic.AddInt64(&sensor.dummySyscallEventCount, 1) == 1 {
-			eventID, err = sensor.monitor.RegisterTracepoint(
+			eventID, err = sensor.Monitor.RegisterTracepoint(
 				eventName, f.decodeDummySysEnter,
 				perf.WithEventGroup(0),
 				perf.WithFilter("id == 0x7fffffff"))
@@ -286,14 +286,14 @@ func registerSyscallEvents(
 		// fetchargs doesn't have to change. Try the new probe first,
 		// because the old probe will also set in the newer kernels,
 		// but it won't fire.
-		eventID, err = sensor.monitor.RegisterKprobe(
+		eventID, err = sensor.Monitor.RegisterKprobe(
 			syscallNewEnterKprobeAddress, false,
 			syscallEnterKprobeFetchargs,
 			f.decodeSyscallTraceEnter,
 			perf.WithEventGroup(groupID),
 			perf.WithFilter(filter))
 		if err != nil {
-			eventID, err = sensor.monitor.RegisterKprobe(
+			eventID, err = sensor.Monitor.RegisterKprobe(
 				syscallOldEnterKprobeAddress, false,
 				syscallEnterKprobeFetchargs,
 				f.decodeSyscallTraceEnter,
@@ -308,7 +308,7 @@ func registerSyscallEvents(
 				s.unregister = func(uint64, *subscription) {
 					eventID := sensor.dummySyscallEventID
 					if atomic.AddInt64(&sensor.dummySyscallEventCount, -1) == 0 {
-						sensor.monitor.UnregisterEvent(eventID)
+						sensor.Monitor.UnregisterEvent(eventID)
 					}
 				}
 			}
@@ -323,7 +323,7 @@ func registerSyscallEvents(
 		filter := strings.Join(filters, " || ")
 
 		eventName := "raw_syscalls/sys_exit"
-		eventID, err := sensor.monitor.RegisterTracepoint(eventName,
+		eventID, err := sensor.Monitor.RegisterTracepoint(eventName,
 			f.decodeSysExit,
 			perf.WithEventGroup(groupID),
 			perf.WithFilter(filter))

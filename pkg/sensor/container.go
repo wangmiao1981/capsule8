@@ -137,7 +137,7 @@ func NewContainerCache(sensor *Sensor) *ContainerCache {
 	}
 
 	var err error
-	cache.ContainerCreatedEventID, err = sensor.monitor.RegisterExternalEvent(
+	cache.ContainerCreatedEventID, err = sensor.Monitor.RegisterExternalEvent(
 		"CONTAINER_CREATED",
 		cache.decodeContainerCreatedEvent,
 		containerEventTypes,
@@ -146,7 +146,7 @@ func NewContainerCache(sensor *Sensor) *ContainerCache {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
-	cache.ContainerRunningEventID, err = sensor.monitor.RegisterExternalEvent(
+	cache.ContainerRunningEventID, err = sensor.Monitor.RegisterExternalEvent(
 		"CONTAINER_RUNNING",
 		cache.decodeContainerRunningEvent,
 		containerEventTypes,
@@ -155,7 +155,7 @@ func NewContainerCache(sensor *Sensor) *ContainerCache {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
-	cache.ContainerExitedEventID, err = sensor.monitor.RegisterExternalEvent(
+	cache.ContainerExitedEventID, err = sensor.Monitor.RegisterExternalEvent(
 		"CONTAINER_EXITED",
 		cache.decodeContainerExitedEvent,
 		containerEventTypes,
@@ -164,7 +164,7 @@ func NewContainerCache(sensor *Sensor) *ContainerCache {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
-	cache.ContainerDestroyedEventID, err = sensor.monitor.RegisterExternalEvent(
+	cache.ContainerDestroyedEventID, err = sensor.Monitor.RegisterExternalEvent(
 		"CONTAINER_DESTROYED",
 		cache.decodeContainerDestroyedEvent,
 		containerEventTypes,
@@ -173,7 +173,7 @@ func NewContainerCache(sensor *Sensor) *ContainerCache {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
-	cache.ContainerUpdatedEventID, err = sensor.monitor.RegisterExternalEvent(
+	cache.ContainerUpdatedEventID, err = sensor.Monitor.RegisterExternalEvent(
 		"CONTAINER_UPDATED",
 		cache.decodeContainerUpdatedEvent,
 		containerEventTypes,
@@ -258,7 +258,7 @@ func (cc *ContainerCache) enqueueContainerEvent(
 		data["exit_signal"] = uint32(ws.Signal())
 	}
 
-	return cc.sensor.monitor.EnqueueExternalSample(eventID, sampleID, data)
+	return cc.sensor.Monitor.EnqueueExternalSample(eventID, sampleID, data)
 }
 
 func (cc *ContainerCache) newContainerEvent(

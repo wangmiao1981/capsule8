@@ -376,17 +376,17 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 
 	// Register with the sensor's global event monitor...
 	eventName := "task/task_newtask"
-	_, err := sensor.monitor.RegisterTracepoint(eventName,
+	_, err := sensor.Monitor.RegisterTracepoint(eventName,
 		cache.decodeNewTask,
 		perf.WithEventEnabled())
 	if err != nil {
 		eventName = doForkAddress
-		_, err = sensor.monitor.RegisterKprobe(eventName, false,
+		_, err = sensor.Monitor.RegisterKprobe(eventName, false,
 			doForkFetchargs, cache.decodeDoFork,
 			perf.WithEventEnabled())
 		if err != nil {
 			eventName = "_" + eventName
-			_, err = sensor.monitor.RegisterKprobe(eventName, false,
+			_, err = sensor.Monitor.RegisterKprobe(eventName, false,
 				doForkFetchargs, cache.decodeDoFork,
 				perf.WithEventEnabled())
 			if err != nil {
@@ -394,7 +394,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 					eventName, err)
 			}
 		}
-		_, err = sensor.monitor.RegisterKprobe(eventName, true,
+		_, err = sensor.Monitor.RegisterKprobe(eventName, true,
 			"", cache.decodeDoForkReturn,
 			perf.WithEventEnabled())
 		if err != nil {
@@ -403,13 +403,13 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		}
 
 		eventName = "sched/sched_process_fork"
-		_, err = sensor.monitor.RegisterTracepoint(eventName,
+		_, err = sensor.Monitor.RegisterTracepoint(eventName,
 			cache.decodeSchedProcessFork,
 			perf.WithEventEnabled())
 	}
 
 	eventName = "sched/sched_process_exit"
-	_, err = sensor.monitor.RegisterTracepoint(eventName,
+	_, err = sensor.Monitor.RegisterTracepoint(eventName,
 		cache.decodeSchedProcessExit,
 		perf.WithEventEnabled())
 	if err != nil {
@@ -417,7 +417,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	}
 
 	// Attach kprobe on commit_creds to capture task privileges
-	_, err = sensor.monitor.RegisterKprobe(commitCredsAddress, false,
+	_, err = sensor.Monitor.RegisterKprobe(commitCredsAddress, false,
 		commitCredsArgs, cache.decodeCommitCreds,
 		perf.WithEventEnabled())
 
@@ -427,7 +427,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		// init processes to trigger containerID lookups
 		f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
 		eventName = "task/task_rename"
-		_, err = sensor.monitor.RegisterTracepoint(eventName,
+		_, err = sensor.Monitor.RegisterTracepoint(eventName,
 			cache.decodeRuncTaskRename,
 			perf.WithFilter(f),
 			perf.WithEventEnabled())
@@ -442,12 +442,12 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	// if that succeeds, it's the only one we need. Otherwise, we need a
 	// bunch of others to try to hit everything. We may end up getting
 	// duplicate events, which is ok.
-	_, err = sensor.monitor.RegisterKprobe(
+	_, err = sensor.Monitor.RegisterKprobe(
 		doExecveatCommonAddress, false,
 		makeExecveFetchArgs("dx"), cache.decodeExecve,
 		perf.WithEventEnabled())
 	if err != nil {
-		_, err = sensor.monitor.RegisterKprobe(
+		_, err = sensor.Monitor.RegisterKprobe(
 			sysExecveAddress, false,
 			makeExecveFetchArgs("si"), cache.decodeExecve,
 			perf.WithEventEnabled())
@@ -455,17 +455,17 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 			glog.Fatalf("Couldn't register event %s: %s",
 				sysExecveAddress, err)
 		}
-		_, _ = sensor.monitor.RegisterKprobe(
+		_, _ = sensor.Monitor.RegisterKprobe(
 			doExecveAddress, false,
 			makeExecveFetchArgs("si"), cache.decodeExecve,
 			perf.WithEventEnabled())
 
-		_, err = sensor.monitor.RegisterKprobe(
+		_, err = sensor.Monitor.RegisterKprobe(
 			sysExecveatAddress, false,
 			makeExecveFetchArgs("dx"), cache.decodeExecve,
 			perf.WithEventEnabled())
 		if err == nil {
-			_, _ = sensor.monitor.RegisterKprobe(
+			_, _ = sensor.Monitor.RegisterKprobe(
 				doExecveatAddress, false,
 				makeExecveFetchArgs("dx"), cache.decodeExecve,
 				perf.WithEventEnabled())

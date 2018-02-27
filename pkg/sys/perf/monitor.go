@@ -138,6 +138,7 @@ type registerEventOptions struct {
 	eventAttr *EventAttr
 	filter    string
 	groupID   int32
+	decoderFn TraceEventDecoderFn
 }
 
 // RegisterEventOption is used to implement optional arguments for event
@@ -209,7 +210,7 @@ const (
 	EventTypeRaw
 
 	// EventTypeBreakpoint is a breakpoint event (PERF_TYPE_BREAKPOINT)
-	EventTypeBreakpoint // PERF_TYPE_BREAKPOINT
+	EventTypeBreakpoint
 
 	// EventTypeDynamicPMU is a dynamic PMU event
 	EventTypeDynamicPMU
@@ -218,14 +219,85 @@ const (
 	EventTypeExternal
 )
 
+type eventSampleDecoder interface {
+	decodeSample(*EventMonitorSample, *EventMonitor)
+}
+
+type externalEventSampleDecoder struct {
+	decoderFn TraceEventDecoderFn
+}
+
+func (d externalEventSampleDecoder) decodeSample(
+	esm *EventMonitorSample,
+	monitor *EventMonitor,
+) {
+	if d.decoderFn != nil {
+		esm.DecodedSample, esm.Err = d.decoderFn(
+			esm.RawSample.Record.(*SampleRecord),
+			esm.DecodedData)
+	}
+}
+
+// CounterEventDecoderFn is the signature of a function to call to decode a
+// counter event sample. The first argument is the sample to be decoded, the
+// second is a map of event counter IDs to values, the third is the total time
+// the event has been enabled, and the fourth is the total time the event has
+// been running.
+type CounterEventDecoderFn func(*SampleRecord, map[uint64]uint64, uint64, uint64) (interface{}, error)
+
+type counterEventSampleDecoder struct {
+	decoderFn CounterEventDecoderFn
+}
+
+func (d counterEventSampleDecoder) decodeSample(
+	esm *EventMonitorSample,
+	monitor *EventMonitor,
+) {
+	if d.decoderFn == nil {
+		return
+	}
+
+	sample, ok := esm.RawSample.Record.(*SampleRecord)
+	if !ok {
+		return
+	}
+
+	attrMap := monitor.eventAttrMap.getMap()
+	counters := make(map[uint64]uint64, len(sample.V.Values))
+	for _, v := range sample.V.Values {
+		var attr *EventAttr
+		attr, ok = attrMap[v.ID]
+		if !ok {
+			continue
+		}
+		counters[attr.Config] += v.Value
+	}
+
+	esm.DecodedSample, esm.Err = d.decoderFn(sample, counters,
+		sample.V.TimeEnabled, sample.V.TimeRunning)
+}
+
+type traceEventSampleDecoder struct {
+}
+
+func (d traceEventSampleDecoder) decodeSample(
+	esm *EventMonitorSample,
+	monitor *EventMonitor,
+) {
+	esm.DecodedData, esm.DecodedSample, esm.Err =
+		monitor.decoders.DecodeSample(
+			esm.RawSample.Record.(*SampleRecord))
+}
+
 type registeredEvent struct {
 	id        uint64
 	name      string
 	fds       []int
 	fields    map[string]int32
-	decoderFn TraceEventDecoderFn // used for EventTypeExternal
+	decoder   eventSampleDecoder
 	eventType EventType
 	group     *eventMonitorGroup
+	leader    bool
 }
 
 const (
@@ -278,11 +350,7 @@ type eventMonitorGroup struct {
 func (group *eventMonitorGroup) cleanup() {
 	// First we disable all events. This is necessary because of CentOS 6's
 	// kernel bugs that could cause a kernel panic if we don't do this.
-	for _, event := range group.events {
-		for _, fd := range event.fds {
-			disable(fd)
-		}
-	}
+	group.disable()
 
 	// Now we can unregister all of the events
 	monitor := group.monitor
@@ -296,10 +364,27 @@ func (group *eventMonitorGroup) cleanup() {
 	}
 }
 
+func (group *eventMonitorGroup) disable() {
+	for _, event := range group.events {
+		for _, fd := range event.fds {
+			disable(fd)
+		}
+	}
+}
+
+func (group *eventMonitorGroup) enable() {
+	for _, event := range group.events {
+		for _, fd := range event.fds {
+			enable(fd)
+		}
+	}
+}
+
 func (group *eventMonitorGroup) perfEventOpen(
 	name string,
 	eventAttr *EventAttr,
 	filter string,
+	flags uintptr,
 ) ([]int, error) {
 	glog.V(2).Infof("Opening perf event: %s (%d) in group %d %q {%s}",
 		name, eventAttr.Config, group.groupID, group.name, filter)
@@ -309,7 +394,7 @@ func (group *eventMonitorGroup) perfEventOpen(
 	for _, pgl := range group.leaders {
 		var fd int
 		fd, err = open(eventAttr, pgl.pid, pgl.cpu, pgl.fd,
-			pgl.flags|PERF_FLAG_FD_OUTPUT|PERF_FLAG_FD_NO_GROUP)
+			pgl.flags|flags)
 		if err != nil {
 			break
 		}
@@ -411,7 +496,8 @@ type EventMonitor struct {
 func fixupEventAttr(eventAttr *EventAttr) {
 	// Adjust certain fields in eventAttr that must be set a certain way
 	eventAttr.SampleType |= PERF_SAMPLE_STREAM_ID | PERF_SAMPLE_IDENTIFIER | PERF_SAMPLE_TIME
-	eventAttr.ReadFormat = 0
+	eventAttr.Disabled = true
+	eventAttr.Pinned = false
 	eventAttr.SampleIDAll = true
 
 	if haveClockID {
@@ -420,6 +506,12 @@ func fixupEventAttr(eventAttr *EventAttr) {
 	} else {
 		eventAttr.UseClockID = false
 		eventAttr.ClockID = 0
+	}
+
+	if eventAttr.Freq && eventAttr.SampleFreq == 0 {
+		eventAttr.SampleFreq = 1
+	} else if !eventAttr.Freq && eventAttr.SamplePeriod == 0 {
+		eventAttr.SamplePeriod = 1
 	}
 
 	// Either WakeupWatermark or WakeupEvents may be used, but at least
@@ -521,50 +613,16 @@ func (monitor *EventMonitor) newProbeName() string {
 		monitor.nextProbeID)
 }
 
-func (monitor *EventMonitor) newRegisteredPerfEvent(
+func (monitor *EventMonitor) newRegisteredEvent(
 	name string,
-	config uint64,
+	newfds []int,
 	fields map[string]int32,
-	opts registerEventOptions,
 	eventType EventType,
+	decoder eventSampleDecoder,
+	attr *EventAttr,
+	group *eventMonitorGroup,
+	leader bool,
 ) (uint64, error) {
-	// This should be called with monitor.lock held.
-
-	var attr EventAttr
-	if opts.eventAttr == nil {
-		attr = monitor.defaultAttr
-	} else {
-		attr = *opts.eventAttr
-		fixupEventAttr(&attr)
-	}
-	attr.Config = config
-	attr.Disabled = opts.disabled
-
-	switch eventType {
-	case EventTypeHardware:
-		attr.Type = PERF_TYPE_HARDWARE
-	case EventTypeSoftware:
-		attr.Type = PERF_TYPE_SOFTWARE
-	case EventTypeTracepoint, EventTypeKprobe, EventTypeUprobe:
-		attr.Type = PERF_TYPE_TRACEPOINT
-	case EventTypeHardwareCache:
-		attr.Type = PERF_TYPE_HW_CACHE
-	case EventTypeRaw:
-		attr.Type = PERF_TYPE_RAW
-	case EventTypeBreakpoint:
-		attr.Type = PERF_TYPE_BREAKPOINT
-	}
-
-	group, ok := monitor.groups[opts.groupID]
-	if !ok {
-		return 0, fmt.Errorf("Group ID %d does not exist", opts.groupID)
-	}
-
-	newfds, err := group.perfEventOpen(name, &attr, opts.filter)
-	if err != nil {
-		return 0, err
-	}
-
 	// Choose the eventid for this event now, but don't commit to it until
 	// later when no error has occurred in registering the event.
 	eventid := monitor.nextEventID
@@ -575,12 +633,11 @@ func (monitor *EventMonitor) newRegisteredPerfEvent(
 		streamid, err := unix.IoctlGetInt(fd, PERF_EVENT_IOC_ID)
 		if err != nil {
 			for _, fd := range newfds {
-				unix.Close(fd)
 				delete(monitor.eventids, fd)
 			}
 			return 0, err
 		}
-		eventAttrMap[uint64(streamid)] = &attr
+		eventAttrMap[uint64(streamid)] = attr
 		eventIDMap[uint64(streamid)] = eventid
 		monitor.eventids[fd] = uint64(streamid)
 	}
@@ -603,8 +660,10 @@ func (monitor *EventMonitor) newRegisteredPerfEvent(
 		name:      name,
 		fds:       newfds,
 		fields:    fields,
+		decoder:   decoder,
 		eventType: eventType,
 		group:     group,
+		leader:    leader,
 	}
 	group.events[eventid] = event
 
@@ -612,6 +671,68 @@ func (monitor *EventMonitor) newRegisteredPerfEvent(
 		monitor.events.insert(eventid, event)
 	} else {
 		monitor.events.insertInPlace(eventid, event)
+	}
+
+	return eventid, nil
+}
+
+func (monitor *EventMonitor) newRegisteredPerfEvent(
+	name string,
+	config uint64,
+	fields map[string]int32,
+	opts registerEventOptions,
+	eventType EventType,
+	decoder eventSampleDecoder,
+) (uint64, error) {
+	// This should be called with monitor.lock held.
+
+	var (
+		attr  EventAttr
+		flags uintptr
+	)
+
+	if opts.eventAttr == nil {
+		attr = monitor.defaultAttr
+	} else {
+		attr = *opts.eventAttr
+		fixupEventAttr(&attr)
+	}
+	attr.Config = config
+	attr.Disabled = opts.disabled
+
+	switch eventType {
+	case EventTypeHardware:
+		attr.Type = PERF_TYPE_HARDWARE
+	case EventTypeSoftware:
+		attr.Type = PERF_TYPE_SOFTWARE
+	case EventTypeTracepoint, EventTypeKprobe, EventTypeUprobe:
+		attr.Type = PERF_TYPE_TRACEPOINT
+		flags = PERF_FLAG_FD_OUTPUT | PERF_FLAG_FD_NO_GROUP
+	case EventTypeHardwareCache:
+		attr.Type = PERF_TYPE_HW_CACHE
+	case EventTypeRaw:
+		attr.Type = PERF_TYPE_RAW
+	case EventTypeBreakpoint:
+		attr.Type = PERF_TYPE_BREAKPOINT
+	}
+
+	group, ok := monitor.groups[opts.groupID]
+	if !ok {
+		return 0, fmt.Errorf("Group ID %d does not exist", opts.groupID)
+	}
+
+	newfds, err := group.perfEventOpen(name, &attr, opts.filter, flags)
+	if err != nil {
+		return 0, err
+	}
+
+	eventid, err := monitor.newRegisteredEvent(name, newfds, fields,
+		eventType, decoder, &attr, group, false)
+	if err != nil {
+		for _, fd := range newfds {
+			unix.Close(fd)
+		}
+		return 0, err
 	}
 	return eventid, nil
 }
@@ -635,7 +756,8 @@ func (monitor *EventMonitor) newRegisteredTraceEvent(
 		fields[k] = v.dataType
 	}
 
-	eventid, err := monitor.newRegisteredPerfEvent(name, uint64(id), fields, opts, eventType)
+	eventid, err := monitor.newRegisteredPerfEvent(name, uint64(id),
+		fields, opts, eventType, traceEventSampleDecoder{})
 	if err != nil {
 		monitor.decoders.RemoveDecoder(name)
 		return 0, err
@@ -657,9 +779,9 @@ func (monitor *EventMonitor) RegisterExternalEvent(
 	event := &registeredEvent{
 		name:      name,
 		fields:    fields,
-		decoderFn: decoderFn,
 		eventType: EventTypeExternal,
 	}
+	event.decoder = externalEventSampleDecoder{decoderFn: decoderFn}
 
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -676,6 +798,118 @@ func (monitor *EventMonitor) RegisterExternalEvent(
 	return event.id, nil
 }
 
+func (monitor *EventMonitor) registerPerfCounterEvent(
+	eventType EventType,
+	sampleType uint32,
+	name string,
+	counters []uint64,
+	decoderFn CounterEventDecoderFn,
+	options ...RegisterEventOption,
+) (int32, error) {
+	if len(counters) < 1 {
+		return 0, errors.New("At least one counter must be specified")
+	}
+
+	opts := registerEventOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
+	if len(opts.filter) > 0 {
+		return 0, errors.New("Counter events do not support filters")
+	}
+	if opts.groupID != 0 {
+		return 0, errors.New("Counter events are their own groups")
+	}
+
+	if opts.eventAttr == nil {
+		opts.eventAttr = &EventAttr{}
+	} else {
+		attr := *opts.eventAttr
+		opts.eventAttr = &attr
+	}
+	opts.eventAttr.Type = sampleType
+	opts.eventAttr.SampleType |= PERF_SAMPLE_READ
+	opts.eventAttr.ReadFormat = PERF_FORMAT_GROUP | PERF_FORMAT_ID |
+		PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING
+	fixupEventAttr(opts.eventAttr)
+
+	// For our purposese, leaders should always be pinned. Note that
+	// fixupEventAttr() sets Pinned to false for all other events in the
+	// group.
+	leaderAttr := *opts.eventAttr
+	leaderAttr.Config = counters[0]
+	leaderAttr.Pinned = true
+	group, err := monitor.newEventGroup(&leaderAttr)
+	if err != nil {
+		return -1, err
+	}
+	group.name = name
+
+	monitor.lock.Lock()
+	defer monitor.lock.Unlock()
+
+	monitor.registerNewEventGroup(group)
+	opts.groupID = group.groupID
+
+	decoder := counterEventSampleDecoder{decoderFn: decoderFn}
+
+	newfds := make([]int, len(group.leaders))
+	for i, leader := range group.leaders {
+		newfds[i] = leader.fd
+	}
+	_, err = monitor.newRegisteredEvent(name, newfds, nil, eventType,
+		decoder, &leaderAttr, group, true)
+	if err != nil {
+		monitor.unregisterEventGroup(group)
+		return -1, nil
+	}
+
+	for i := 1; i < len(counters); i++ {
+		_, err = monitor.newRegisteredPerfEvent(name, counters[i], nil,
+			opts, eventType, decoder)
+		if err != nil {
+			monitor.unregisterEventGroup(group)
+			return -1, nil
+		}
+	}
+
+	return group.groupID, nil
+}
+
+// RegisterHardwareEventGroup is used to register a hardware event with an
+// event monitor. These types of events are alqways created as groups, and
+// so they return a new group identifier.
+func (monitor *EventMonitor) RegisterHardwareEventGroup(
+	counters []uint64,
+	decoderFn CounterEventDecoderFn,
+	options ...RegisterEventOption,
+) (int32, error) {
+	return monitor.registerPerfCounterEvent(
+		EventTypeHardware,
+		PERF_TYPE_HARDWARE,
+		"PERF_TYPE_HARDWARE",
+		counters,
+		decoderFn,
+		options...)
+}
+
+// RegisterHardwareCacheEventGroup is used to register a hardware cache event
+// with an event monitor. These types of events are always created as groups,
+// and so they return a new group identifier.
+func (monitor *EventMonitor) RegisterHardwareCacheEventGroup(
+	counters []uint64,
+	decoderFn CounterEventDecoderFn,
+	options ...RegisterEventOption,
+) (int32, error) {
+	return monitor.registerPerfCounterEvent(
+		EventTypeHardwareCache,
+		PERF_TYPE_HW_CACHE,
+		"PERF_TYPE_HW_CACHE",
+		counters,
+		decoderFn,
+		options...)
+}
+
 // RegisterTracepoint is used to register a tracepoint with an EventMonitor.
 // The tracepoint is selected by name and it must exist in the running Linux
 // kernel. An event ID is returned that is unique to the EventMonitor and is
@@ -686,7 +920,6 @@ func (monitor *EventMonitor) RegisterTracepoint(
 	fn TraceEventDecoderFn,
 	options ...RegisterEventOption,
 ) (uint64, error) {
-
 	opts := registerEventOptions{}
 	for _, option := range options {
 		option(&opts)
@@ -857,7 +1090,9 @@ func (monitor *EventMonitor) removeRegisteredEvent(event *registeredEvent) {
 				ids = append(ids, id)
 				delete(monitor.eventids, fd)
 			}
-			unix.Close(fd)
+			if !event.leader {
+				unix.Close(fd)
+			}
 		}
 
 		if monitor.isRunning {
@@ -1011,6 +1246,21 @@ func (monitor *EventMonitor) DisableAll() {
 	}
 }
 
+// DisableGroup disables all events for an event group.
+func (monitor *EventMonitor) DisableGroup(groupID int32) error {
+	monitor.lock.Lock()
+	defer monitor.lock.Unlock()
+
+	group, ok := monitor.groups[groupID]
+	if !ok {
+		return fmt.Errorf("Group ID %d does not exist", groupID)
+	}
+
+	group.disable()
+
+	return nil
+}
+
 // Enable is used to enable a registered event. The event to enable is
 // specified by its event ID as returned when the event was initially
 // registered with the EventMonitor.
@@ -1035,6 +1285,21 @@ func (monitor *EventMonitor) EnableAll() {
 	for fd := range monitor.eventfds {
 		enable(fd)
 	}
+}
+
+// EnableGroup enables all events for an event group.
+func (monitor *EventMonitor) EnableGroup(groupID int32) error {
+	monitor.lock.Lock()
+	defer monitor.lock.Unlock()
+
+	group, ok := monitor.groups[groupID]
+	if !ok {
+		return fmt.Errorf("Group ID %d does not exist", groupID)
+	}
+
+	group.enable()
+
+	return nil
 }
 
 // SetFilter is used to set or remove a filter from a registered event.
@@ -1206,10 +1471,8 @@ func (monitor *EventMonitor) processExternalSamples(timeLimit uint64) {
 		if !ok {
 			continue
 		}
-		if event.decoderFn != nil {
-			e.sample.DecodedSample, e.sample.Err = event.decoderFn(
-				e.sample.RawSample.Record.(*SampleRecord),
-				e.sample.DecodedData)
+		if e.sample.Err == nil {
+			event.decoder.decodeSample(&e.sample, monitor)
 		}
 		dispatchFn(e.eventID, e.sample)
 	}
@@ -1325,13 +1588,9 @@ func (monitor *EventMonitor) dispatchSamples(samples [][]EventMonitorSample) {
 			// Adjust the sample time so that it
 			// matches the normalized timestamp.
 			record.Time = esm.RawSample.Time
-			if esm.Err == nil &&
-				(event.eventType == EventTypeTracepoint ||
-					event.eventType == EventTypeKprobe ||
-					event.eventType == EventTypeUprobe) {
-				esm.DecodedData, esm.DecodedSample, esm.Err =
-					monitor.decoders.DecodeSample(record)
-			}
+		}
+		if esm.Err == nil {
+			event.decoder.decodeSample(&esm, monitor)
 		}
 		dispatchFn(eventID, esm)
 		if esm.RawSample.Time > monitor.lastSampleTimeDispatched {
@@ -1776,14 +2035,19 @@ var groupEventAttr = EventAttr{
 func (monitor *EventMonitor) initializeGroupLeaders(
 	pid int,
 	flags uintptr,
+	attr *EventAttr,
 ) ([]*perfGroupLeader, error) {
 	var err error
+
+	if attr == nil {
+		attr = &groupEventAttr
+	}
 
 	ncpu := runtime.NumCPU()
 	pgls := make([]*perfGroupLeader, ncpu)
 	for cpu := 0; cpu < ncpu; cpu++ {
 		var fd int
-		fd, err = open(&groupEventAttr, pid, cpu, -1, flags)
+		fd, err = open(attr, pid, cpu, -1, flags)
 		if err != nil {
 			break
 		}
@@ -1825,21 +2089,22 @@ func (monitor *EventMonitor) initializeGroupLeaders(
 	return pgls, err
 }
 
-// RegisterEventGroup creates a new event group that can be used for grouping
-// events.
-func (monitor *EventMonitor) RegisterEventGroup(name string) (int32, error) {
+func (monitor *EventMonitor) newEventGroup(
+	attr *EventAttr,
+) (*eventMonitorGroup, error) {
 	nleaders := (len(monitor.cgroups) + len(monitor.pids)) * runtime.NumCPU()
 	leaders := make([]*perfGroupLeader, 0, nleaders)
 
 	if monitor.cgroups != nil {
 		flags := monitor.perfEventOpenFlags | PERF_FLAG_PID_CGROUP
 		for _, fd := range monitor.cgroups {
-			pgls, err := monitor.initializeGroupLeaders(fd, flags)
+			pgls, err := monitor.initializeGroupLeaders(fd, flags,
+				attr)
 			if err != nil {
 				for _, pgl := range leaders {
 					pgl.cleanup()
 				}
-				return -1, nil
+				return nil, err
 			}
 			leaders = append(leaders, pgls...)
 		}
@@ -1848,50 +2113,59 @@ func (monitor *EventMonitor) RegisterEventGroup(name string) (int32, error) {
 	if monitor.pids != nil {
 		flags := monitor.perfEventOpenFlags
 		for _, pid := range monitor.pids {
-			pgls, err := monitor.initializeGroupLeaders(pid, flags)
+			pgls, err := monitor.initializeGroupLeaders(pid, flags,
+				attr)
 			if err != nil {
 				for _, pgl := range leaders {
 					pgl.cleanup()
 				}
-				return -1, nil
+				return nil, err
 			}
 			leaders = append(leaders, pgls...)
 		}
 	}
 
-	group := &eventMonitorGroup{
-		name:    name,
+	return &eventMonitorGroup{
 		leaders: leaders,
 		events:  make(map[uint64]*registeredEvent),
 		monitor: monitor,
-	}
+	}, nil
+}
 
-	monitor.lock.Lock()
+func (monitor *EventMonitor) registerNewEventGroup(group *eventMonitorGroup) {
+	// This should be called with monitor.lock LOCKED!
+
 	group.groupID = monitor.nextGroupID
 	monitor.nextGroupID++
 	monitor.groups[group.groupID] = group
 
 	if monitor.isRunning {
-		monitor.groupLeaders.update(leaders)
+		monitor.groupLeaders.update(group.leaders)
 	} else {
-		monitor.groupLeaders.updateInPlace(leaders)
+		monitor.groupLeaders.updateInPlace(group.leaders)
 	}
+}
 
+// RegisterEventGroup creates a new event group that can be used for grouping
+// events.
+func (monitor *EventMonitor) RegisterEventGroup(name string) (int32, error) {
+	group, err := monitor.newEventGroup(nil)
+	if err != nil {
+		return -1, err
+	}
+	group.name = name
+
+	monitor.lock.Lock()
+	monitor.registerNewEventGroup(group)
 	monitor.lock.Unlock()
 
 	return group.groupID, nil
 }
 
-// UnregisterEventGroup removes a registered event group. If there are any
-// events registered with the event group, they will be unregistered as well.
-func (monitor *EventMonitor) UnregisterEventGroup(groupID int32) error {
-	monitor.lock.Lock()
-	group, ok := monitor.groups[groupID]
-	if !ok {
-		monitor.lock.Unlock()
-		return fmt.Errorf("Group ID %d does not exist", groupID)
-	}
-	delete(monitor.groups, groupID)
+func (monitor *EventMonitor) unregisterEventGroup(group *eventMonitorGroup) {
+	// This should be called with monitor.lock LOCKED!!
+
+	delete(monitor.groups, group.groupID)
 
 	group.cleanup()
 
@@ -1907,6 +2181,19 @@ func (monitor *EventMonitor) UnregisterEventGroup(groupID int32) error {
 			atomic.StoreInt32(&pgl.state, perfGroupLeaderStateClosing)
 		}
 	}
+}
+
+// UnregisterEventGroup removes a registered event group. If there are any
+// events registered with the event group, they will be unregistered as well.
+func (monitor *EventMonitor) UnregisterEventGroup(groupID int32) error {
+	monitor.lock.Lock()
+	group, ok := monitor.groups[groupID]
+	if !ok {
+		monitor.lock.Unlock()
+		return fmt.Errorf("Group ID %d does not exist", groupID)
+	}
+
+	monitor.unregisterEventGroup(group)
 
 	monitor.lock.Unlock()
 	return nil
@@ -2009,10 +2296,7 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 
 	if opts.defaultEventAttr == nil {
 		eventAttr = EventAttr{
-			SamplePeriod: 1,
-			SampleType:   PERF_SAMPLE_CPU | PERF_SAMPLE_RAW,
-			Disabled:     true,
-			Inherit:      true,
+			SampleType: PERF_SAMPLE_CPU | PERF_SAMPLE_RAW,
 		}
 	} else {
 		eventAttr = *opts.defaultEventAttr
