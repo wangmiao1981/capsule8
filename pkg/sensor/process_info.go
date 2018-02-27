@@ -40,8 +40,6 @@ import (
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 	"github.com/capsule8/capsule8/pkg/sys/proc"
 	"github.com/golang/glog"
-
-	"golang.org/x/sys/unix"
 )
 
 const taskReuseThreshold = int64(10 * time.Millisecond)
@@ -70,12 +68,6 @@ var (
 	procFS *proc.FileSystem
 	once   sync.Once
 )
-
-func now() int64 {
-	var ts unix.Timespec
-	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
-	return ts.Nano()
-}
 
 // Cred contains task credential information
 type Cred struct {
@@ -289,7 +281,8 @@ func (c *arrayTaskCache) LookupTask(pid int) *Task {
 
 		t = c.entries[pid-1]
 		if t != nil {
-			if t.ExitTime == 0 || now()-t.ExitTime < taskReuseThreshold {
+			now := sys.CurrentMonotonicRaw()
+			if t.ExitTime == 0 || now-t.ExitTime < taskReuseThreshold {
 				break
 			}
 			old = t
@@ -328,7 +321,8 @@ func (c *mapTaskCache) LookupTask(pid int) *Task {
 
 	c.Lock()
 	t, ok := c.entries[pid]
-	if !ok || (t.ExitTime != 0 && now()-t.ExitTime >= taskReuseThreshold) {
+	now := sys.CurrentMonotonicRaw()
+	if !ok || (t.ExitTime != 0 && now-t.ExitTime >= taskReuseThreshold) {
 		t = newTask(pid)
 		c.entries[pid] = t
 	}
@@ -700,7 +694,7 @@ func (pc *ProcessInfoCache) decodeSchedProcessExit(
 	pid := int(data["common_pid"].(int32))
 
 	changes := map[string]interface{}{
-		"ExitTime": now(),
+		"ExitTime": sys.CurrentMonotonicRaw(),
 	}
 
 	pc.maybeDeferAction(func() {

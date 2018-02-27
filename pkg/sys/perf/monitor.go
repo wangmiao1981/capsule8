@@ -44,6 +44,7 @@ var (
 	eventMonitorOnce sync.Once
 	haveClockID      bool
 	notedClockID     bool
+	timeBase         int64
 	timeOffsets      []int64
 )
 
@@ -521,12 +522,6 @@ func fixupEventAttr(eventAttr *EventAttr) {
 	} else if !eventAttr.Watermark && eventAttr.WakeupEvents == 0 {
 		eventAttr.WakeupEvents = 1
 	}
-}
-
-func now() int64 {
-	var ts unix.Timespec
-	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
-	return unix.TimespecToNsec(ts)
 }
 
 func (monitor *EventMonitor) writeTraceCommand(name string, cmd string) error {
@@ -1616,7 +1611,8 @@ func (monitor *EventMonitor) dispatchSampleLoop() {
 			if len(samples) > 0 {
 				monitor.dispatchSamples(samples)
 			} else {
-				monitor.processExternalSamples(uint64(time.Now().UnixNano()))
+				now := sys.CurrentMonotonicRaw()
+				monitor.processExternalSamples(uint64(now))
 			}
 		}
 	}
@@ -1658,7 +1654,8 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 				ems.Err = ems.RawSample.read(r, nil, attrMap)
 				ems.RawSample.Time =
 					uint64(int64(ems.RawSample.Time) -
-						timeOffsets[pgl.cpu])
+						timeOffsets[pgl.cpu] +
+						timeBase)
 				groupSamples = append(groupSamples, ems)
 			}
 		})
@@ -1807,7 +1804,7 @@ runloop:
 			if nextTimeout == 0 {
 				timeout = -1
 			} else {
-				now := time.Now().UnixNano()
+				now := sys.CurrentMonotonicRaw()
 				if now > nextTimeout {
 					nextTimeout = 0
 					timeout = 0
@@ -1916,7 +1913,7 @@ func (monitor *EventMonitor) Stop(wait bool) {
 	}
 }
 
-func collectReferenceSamples(ncpu int) ([]*Sample, error) {
+func collectReferenceSamples(ncpu int) (int64, int64, []int64, error) {
 	referenceEventAttr := &EventAttr{
 		Type:         PERF_TYPE_SOFTWARE,
 		Config:       PERF_COUNT_SW_CPU_CLOCK,
@@ -1933,7 +1930,7 @@ func collectReferenceSamples(ncpu int) ([]*Sample, error) {
 		fd, err := open(referenceEventAttr, -1, cpu, -1, 0)
 		if err != nil {
 			err = fmt.Errorf("Couldn't open reference event: %s", err)
-			return nil, err
+			return 0, 0, nil, err
 		}
 		defer unix.Close(fd)
 		pollfds[cpu] = unix.PollFd{
@@ -1944,7 +1941,7 @@ func collectReferenceSamples(ncpu int) ([]*Sample, error) {
 		rbs[cpu], err = newRingBuffer(fd, 1)
 		if err != nil {
 			err = fmt.Errorf("Couldn't allocate ringbuffer: %s", err)
-			return nil, err
+			return 0, 0, nil, err
 		}
 		defer rbs[cpu].unmap()
 	}
@@ -1954,6 +1951,9 @@ func collectReferenceSamples(ncpu int) ([]*Sample, error) {
 		enable(int(p.Fd))
 	}
 
+	var firstTime int64
+	startTime := sys.CurrentMonotonicRaw()
+
 	// Read all samples from each group, but keep only the first for each
 	// Don't wait forever. Return a timeout error if samples don't arrive
 	// within 2 seconds.
@@ -1961,19 +1961,22 @@ func collectReferenceSamples(ncpu int) ([]*Sample, error) {
 	glog.V(2).Infof("Calculating CPU time offsets (max wait %d nsec)", timeout)
 
 	nsamples := 0
-	samples := make([]*Sample, ncpu)
-	timeoutAt := now() + int64(timeout)
+	samples := make([]int64, ncpu)
+	timeoutAt := sys.CurrentMonotonicRaw() + int64(timeout)
 	for nsamples < ncpu {
-		t := now()
-		if t >= timeoutAt {
-			return nil, errors.New("Timeout while reading samples")
+		now := sys.CurrentMonotonicRaw()
+		if now >= timeoutAt {
+			return 0, 0, nil, errors.New("Timeout while reading samples")
 		}
-		n, err := unix.Poll(pollfds, int((timeoutAt-t)/int64(time.Millisecond)))
+		n, err := unix.Poll(pollfds, int((timeoutAt-now)/int64(time.Millisecond)))
 		if err != nil && err != unix.EINTR {
-			return nil, err
+			return 0, 0, nil, err
 		}
 		if n == 0 {
 			continue
+		}
+		if firstTime == 0 {
+			firstTime = sys.CurrentMonotonicRaw()
 		}
 
 		for cpu, p := range pollfds {
@@ -1986,39 +1989,36 @@ func collectReferenceSamples(ncpu int) ([]*Sample, error) {
 				s := Sample{}
 				err := s.read(r, referenceEventAttr, nil)
 				if err == nil {
-					samples[cpu] = &s
+					samples[cpu] = int64(s.Time)
 					nsamples++
 				}
 			})
 
-			if samples[cpu] != nil {
+			if samples[cpu] != 0 {
 				pollfds[cpu].Events &= ^unix.POLLIN
 			}
 		}
 	}
 
-	return samples, nil
+	return startTime, firstTime, samples, nil
 }
 
 func calculateTimeOffsets() error {
-	// If there's only one CPU, there's nothing to do since offsets are
-	// relative to CPU 0.
 	ncpu := runtime.NumCPU()
 	timeOffsets = make([]int64, ncpu)
-	if haveClockID || ncpu < 2 {
+	if haveClockID {
 		return nil
 	}
 
-	// Obtain references samples, one for each group.
-	samples, err := collectReferenceSamples(ncpu)
+	// Obtain references samples, one for each CPU.
+	startTime, firstTime, samples, err := collectReferenceSamples(ncpu)
 	if err != nil {
 		return err
 	}
 
-	// Calculate offsets relative to CPU 0.
-	timeBase := int64(samples[0].Time)
-	for cpu := 1; cpu < ncpu; cpu++ {
-		timeOffsets[cpu] = int64(samples[cpu].Time) - timeBase
+	timeBase = startTime
+	for cpu := 0; cpu < ncpu; cpu++ {
+		timeOffsets[cpu] = samples[cpu] - (firstTime - startTime)
 		glog.V(2).Infof("EventMonitor CPU %d time offset is %d\n",
 			cpu, timeOffsets[cpu])
 	}
