@@ -224,7 +224,7 @@ func (t *Task) Update(data map[string]interface{}) bool {
 			continue
 		}
 		if !reflect.TypeOf(v).AssignableTo(f.Type) {
-			glog.Fatalf("Cannot assign %v to %s %",
+			glog.Fatalf("Cannot assign %v to %s %v",
 				v, f.Name, f.Type)
 		}
 

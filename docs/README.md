@@ -1,1 +1,0 @@
-# Capsule8 Documentation
