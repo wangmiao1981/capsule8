@@ -24,7 +24,8 @@ sample code in `examples/` updated with any changes to the API.
   * [Quickstart](#Quickstart)
   * [Architecture](docs/Architecture.md)
   * [System Requirements](docs/System-Requirements.md)
-  * [Definitions](docs/Definitions.md) 
+  * [API Protocol](docs/API.md)
+  * [Definitions](docs/Definitions.md)
   * [KProbes](docs/KProbes.md)
   * [FAQ](docs/FAQ.md)
 
