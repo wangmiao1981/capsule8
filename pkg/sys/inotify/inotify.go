@@ -24,23 +24,19 @@ package inotify
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sync"
+	"sync/atomic"
 
 	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/stream"
-	"github.com/golang/glog"
 
 	"golang.org/x/sys/unix"
 )
 
-const pollTimeoutMillis = -1
 const inotifyBufferSize = (unix.SizeofInotifyEvent + unix.NAME_MAX + 1) * 128
-const controlBufferSize = 4096 // Must not be greater than PIPE_BUF (4096)
 
 // Event represents an inotify event
 type Event struct {
@@ -55,17 +51,17 @@ type Event struct {
 
 // Instance represents an initialized inotify instance
 type Instance struct {
-	mu          sync.Mutex
-	fd          int
-	elem        chan interface{}
-	errc        chan error
-	watch       map[int]*watch
-	path        map[string]*watch
+	fd   int
+	pipe [2]int32
+
+	events chan Event
+	ctrl   chan interface{}
+	elem   chan interface{}
+
+	watch map[int]*watch
+	path  map[string]*watch
+
 	eventStream *stream.Stream
-	pipe        [2]int
-	ctrl        chan interface{}
-	triggers    []trigger
-	finished    bool
 	wg          sync.WaitGroup
 }
 
@@ -73,23 +69,15 @@ type watch struct {
 	descriptor int
 	path       string
 	mask       uint32
-	recursive  bool
 }
 
-type trigger struct {
-	pattern string
-	mask    uint32
-	re      *regexp.Regexp
-}
-
-func (is *Instance) addWatch(path string, mask uint32) error {
+func (is *Instance) add(path string, mask uint32) error {
 	wd, err := unix.InotifyAddWatch(is.fd, path, mask)
 	if err == nil {
 		watch := &watch{
 			descriptor: wd,
 			path:       path,
 			mask:       mask,
-			recursive:  false,
 		}
 
 		is.watch[wd] = watch
@@ -97,63 +85,6 @@ func (is *Instance) addWatch(path string, mask uint32) error {
 	}
 
 	return err
-}
-
-func (is *Instance) add(path string, mask uint32, recursive bool) error {
-	walkFn := func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		//
-		// For a recursive watch, we only add a watch on directories
-		//
-		if recursive {
-			mask |= unix.IN_ONLYDIR
-		}
-
-		wd, err := unix.InotifyAddWatch(is.fd, path, mask)
-		if err == nil {
-			watch := &watch{
-				descriptor: wd,
-				path:       path,
-				mask:       mask,
-				recursive:  recursive,
-			}
-
-			is.watch[wd] = watch
-			is.path[path] = watch
-		}
-
-		if recursive == false {
-			// Added a non-recursive watch on a single file, we're done.
-			return filepath.SkipDir
-		} else if err != unix.ENOENT {
-			// We ignore ENOENT on recursive watches since we added IN_ONLYDIR
-			return err
-		}
-
-		return nil
-	}
-
-	return filepath.Walk(path, walkFn)
-}
-
-func (is *Instance) addTrigger(pattern string, mask uint32) error {
-	r, err := regexp.Compile(pattern)
-	if err != nil {
-		return err
-	}
-
-	t := trigger{
-		pattern: pattern,
-		mask:    mask,
-		re:      r,
-	}
-
-	is.triggers = append(is.triggers, t)
-
-	return nil
 }
 
 func (is *Instance) remove(path string) error {
@@ -172,31 +103,12 @@ func (is *Instance) remove(path string) error {
 	return filepath.Walk(path, walkFn)
 }
 
-func (is *Instance) removeTrigger(pattern string) error {
-	for i, t := range is.triggers {
-		if t.pattern == pattern {
-			is.triggers =
-				append(is.triggers[:i], is.triggers[i+1:]...)
-			return nil
-		}
-	}
-
-	return errors.New("Trigger pattern not found")
-}
-
 // -----------------------------------------------------------------------------
 
 type inotifyAdd struct {
-	reply     chan<- error
-	path      string
-	mask      uint32
-	recursive bool
-}
-
-type inotifyAddTrigger struct {
-	reply   chan<- error
-	pattern string
-	mask    uint32
+	reply chan<- error
+	path  string
+	mask  uint32
 }
 
 type inotifyRemove struct {
@@ -204,241 +116,139 @@ type inotifyRemove struct {
 	path  string
 }
 
-type inotifyRemoveTrigger struct {
-	reply   chan<- error
-	pattern string
-}
-
-type inotifyFinish struct{}
-
-//
-// Handle a control message notification message sent over the pipe
-//
-func (is *Instance) handleControlBuffer(b []byte) error {
-	// Pipe signals a wakeup to read message from control channel
-	msg, ok := <-is.ctrl
-	if !ok {
-		return errors.New("Control channel closed")
-	}
-
-	switch msg.(type) {
-	case *inotifyAdd:
-		msg := msg.(*inotifyAdd)
-		err := is.add(msg.path, msg.mask, msg.recursive)
+func (is *Instance) handleControlMessage(msg interface{}) {
+	switch msg := msg.(type) {
+	case inotifyAdd:
+		err := is.add(msg.path, msg.mask)
 		msg.reply <- err
 
-	case *inotifyAddTrigger:
-		msg := msg.(*inotifyAddTrigger)
-		err := is.addTrigger(msg.pattern, msg.mask)
-		msg.reply <- err
-
-	case *inotifyRemove:
-		msg := msg.(*inotifyRemove)
+	case inotifyRemove:
 		err := is.remove(msg.path)
 		msg.reply <- err
-
-	case *inotifyRemoveTrigger:
-		msg := msg.(*inotifyRemoveTrigger)
-		err := is.removeTrigger(msg.pattern)
-		msg.reply <- err
-
-	case *inotifyFinish:
-		is.finished = true
 
 	default:
 		panic(fmt.Sprintf("Unknown control message type: %T", msg))
 	}
-
-	return nil
 }
 
-func (is *Instance) handleInotifyEvent(ev *Event, w *watch) error {
-	//
-	// Name is only present when subject of event is a file
-	// within a watched directory
-	//
-	if ev.Len > 0 {
-		// If event was related to a directory within a
-		// recursively watched directory, propagate the watch.
-		if ev.Mask&unix.IN_CREATE != 0 && ev.Mask&unix.IN_ISDIR != 0 {
-			if w.recursive {
-				err := is.add(ev.Path, w.mask, w.recursive)
-				if err != nil {
-					return err
-				}
-			}
-		}
+func (is *Instance) handleInotifyEvent(ev Event) {
+	if w, ok := is.watch[int(ev.Wd)]; ok {
+		ev.Path = filepath.Join(w.path, ev.Name)
+	} else {
+		return
 	}
 
-	is.elem <- ev
-
-	return nil
+	if (ev.Mask & unix.IN_IGNORED) != 0 {
+		// Watch was removed explicitly or automatically
+		delete(is.watch, int(ev.Wd))
+		delete(is.path, ev.Path)
+	} else {
+		is.elem <- &ev
+	}
 }
 
-//
-// Handle an inotify buffer received from the kernel over an inotify
-// instance file descriptor
-//
-func (is *Instance) handleInotifyBuffer(b []byte) error {
-	// Create a bytes.Buffer using amount of b that was read into
-	buf := bytes.NewBuffer(b)
+func (is *Instance) pollLoop() {
+	for {
+		select {
+		case msg, ok := <-is.ctrl:
+			// This is a control message (add, remove)
+			if !ok {
+				return
+			}
+			is.handleControlMessage(msg)
+		case ev, ok := <-is.events:
+			// This is an event from inotify
+			if !ok {
+				return
+			}
+			is.handleInotifyEvent(ev)
+		}
+	}
+}
 
-	//
-	// Parse out each inotify_event
-	//
+func (is *Instance) processInotifyBuffer(b []byte) {
+	buf := bytes.NewBuffer(b)
 	for buf.Len() > 0 {
 		ev := Event{}
 		binary.Read(buf, binary.LittleEndian, &ev.InotifyEvent)
-
-		w := is.watch[int(ev.Wd)]
 
 		// The name field from kernel is padded w/ NULLs to an
 		// alignment boundary, remove them when converting to
 		// a string.
 		name := buf.Next(int(ev.Len))
 		ev.Name = string(bytes.Trim(name, "\x00"))
-		ev.Path = filepath.Join(w.path, ev.Name)
 
-		if (ev.Mask & unix.IN_IGNORED) != 0 {
-			// Watch was removed explicitly or automatically
-			is.watch[int(ev.Wd)] = nil
-			is.path[ev.Path] = nil
-
-			continue
-		}
-
-		// Process configured triggers first
-		for _, t := range is.triggers {
-			if t.re.MatchString(ev.Path) {
-				is.addWatch(ev.Path, t.mask)
-				// Ignore errors (how would we handle?)
-			}
-		}
-
-		is.handleInotifyEvent(&ev, w)
+		is.events <- ev
 	}
-
-	return nil
 }
 
-func (is *Instance) pollLoop() error {
-	controlBuffer := make([]byte, controlBufferSize)
-	inotifyBuffer := make([]byte, inotifyBufferSize)
+func (is *Instance) inotifyReader() {
+	pollFDs := []unix.PollFd{
+		{
+			Fd:     is.pipe[0],
+			Events: unix.POLLIN,
+		},
+		{
+			Fd:     int32(is.fd),
+			Events: unix.POLLIN,
+		},
+	}
+	buffer := make([]byte, inotifyBufferSize)
+	for {
+		n, err := unix.Poll(pollFDs, -1)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			break
+		}
 
-	pollFds := make([]unix.PollFd, 2)
-
-	// pipe to wake up loop to handle control channel messages
-	pollFds[0].Fd = int32(is.pipe[0])
-	pollFds[0].Events = unix.POLLIN
-
-	// inotify file descriptor
-	pollFds[1].Fd = int32(is.fd)
-	pollFds[1].Events = unix.POLLIN
-
-	for !is.finished {
-		n, err := unix.Poll(pollFds, pollTimeoutMillis)
-		if err != nil && err != unix.EINTR {
-			return err
-		} else if n == 0 {
-			// timeout, check the stop channel and restart poll()
+		if n <= 0 {
+			continue
+		}
+		if pollFDs[0].Revents&(unix.POLLNVAL|unix.POLLERR|unix.POLLHUP|unix.POLLRDHUP) != 0 {
+			break
+		}
+		if pollFDs[1].Revents&unix.POLLIN == 0 {
 			continue
 		}
 
-		//
-		// We always give event file descriptor higher priority. We
-		// only service the control message queue when there are no
-		// inotify events to handle.
-		//
-		if pollFds[1].Revents&unix.POLLIN != 0 {
-			n, err = unix.Read(int(pollFds[1].Fd), inotifyBuffer)
-			if err != nil {
-				if err != unix.EINTR {
-					return err
-				}
-			} else if n > 0 {
-				err = is.handleInotifyBuffer(inotifyBuffer[:n])
-				if err != nil {
-					return err
-				}
-			}
-		} else if pollFds[0].Revents&unix.POLLIN != 0 {
-			n, err = unix.Read(int(pollFds[0].Fd), controlBuffer)
-			if err != nil {
-				if err != unix.EINTR {
-					return err
-				}
-			} else if n > 0 {
-				err = is.handleControlBuffer(controlBuffer[:n])
-				if err != nil {
-					return err
-				}
-			}
+		n, err = unix.Read(is.fd, buffer)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			break
+		}
+		if n > 0 {
+			is.processInotifyBuffer(buffer[:n])
 		}
 	}
-
-	return nil
 }
 
 // -----------------------------------------------------------------------------
 
-func (is *Instance) sendAdd(path string, mask uint32, recursive bool) error {
+func (is *Instance) sendAdd(path string, mask uint32) error {
 	reply := make(chan error)
-	msg := &inotifyAdd{
-		reply:     reply,
-		path:      path,
-		mask:      mask,
-		recursive: recursive,
-	}
-
-	// Wake the pollLoop
-	buf := [1]byte{0}
-	_, err := unix.Write(is.pipe[1], buf[:])
-	if err != nil {
-		return err
+	msg := inotifyAdd{
+		reply: reply,
+		path:  path,
+		mask:  mask,
 	}
 
 	is.ctrl <- msg
-	err = <-reply
-	return err
-}
-
-func (is *Instance) sendAddTrigger(pattern string, mask uint32) error {
-	reply := make(chan error)
-	msg := &inotifyAddTrigger{
-		reply:   reply,
-		pattern: pattern,
-		mask:    mask,
-	}
-
-	// Wake the pollLoop
-	buf := [1]byte{0}
-	_, err := unix.Write(is.pipe[1], buf[:])
-	if err != nil {
-		return err
-	}
-
-	is.ctrl <- msg
-	err = <-reply
-	return err
+	return <-reply
 }
 
 func (is *Instance) removeWatch(path string) error {
 	reply := make(chan error)
-	msg := &inotifyRemove{
+	msg := inotifyRemove{
 		reply: reply,
 		path:  path,
 	}
 
-	// Wake the pollLoop
-	buf := [1]byte{0}
-	_, err := unix.Write(is.pipe[1], buf[:])
-	if err != nil {
-		return err
-	}
-
 	is.ctrl <- msg
-	err = <-reply
-	return err
+	return <-reply
 }
 
 // -----------------------------------------------------------------------------
@@ -453,52 +263,43 @@ func NewInstance() (*Instance, error) {
 	stop := make(chan interface{})
 	elem := make(chan interface{}, config.Sensor.ChannelBufferLength)
 	ctrl := make(chan interface{})
+	events := make(chan Event, config.Sensor.ChannelBufferLength)
 
 	is := &Instance{
-		fd:    fd,
-		elem:  elem,
-		errc:  make(chan error, 1),
-		watch: make(map[int]*watch),
-		path:  make(map[string]*watch),
+		fd:     fd,
+		events: events,
+		ctrl:   ctrl,
+		elem:   elem,
+		watch:  make(map[int]*watch),
+		path:   make(map[string]*watch),
 		eventStream: &stream.Stream{
 			Ctrl: stop,
 			Data: elem,
 		},
-		ctrl:     ctrl,
-		finished: false,
 	}
 
-	err = unix.Pipe(is.pipe[:])
+	var p [2]int
+	err = unix.Pipe(p[:])
 	if err != nil {
+		close(events)
+		close(ctrl)
+		is.eventStream.Close()
+		unix.Close(fd)
 		return nil, err
 	}
+	is.pipe[0] = int32(p[0])
+	is.pipe[1] = int32(p[1])
 
 	is.wg.Add(1)
 	go func() {
 		defer is.wg.Done()
+		is.inotifyReader()
+	}()
 
-		err := is.pollLoop()
-		if err != nil {
-			glog.Infof("Poll loop exited with error: %v", err)
-		}
-
-		err = unix.Close(is.fd)
-		if err != nil {
-			glog.Infof("Error closing inotify fd: %v", err)
-		}
-
-		err = unix.Close(is.pipe[1])
-		if err != nil {
-			glog.Infof("Error closing inotify pipe write-side: %v", err)
-		}
-		err = unix.Close(is.pipe[0])
-		if err != nil {
-			glog.Infof("Error closing inotify pipe read-side: %v", err)
-		}
-
-		is.eventStream.Close()
-		close(is.errc)
-		close(is.elem)
+	is.wg.Add(1)
+	go func() {
+		defer is.wg.Done()
+		is.pollLoop()
 	}()
 
 	return is, nil
@@ -513,22 +314,7 @@ func (is *Instance) Events() *stream.Stream {
 // events specified in the given mask. If the path is already being watched,
 // the existing watch is modified.
 func (is *Instance) AddWatch(path string, mask uint32) error {
-	return is.sendAdd(path, mask, false)
-}
-
-// AddRecursiveWatch adds the given path to the inotify instance's
-// watch list as well as any directories recursively identified within
-// it. Newly created subdirectories within the subtree rooted at path are
-// added to the watch list as well.
-func (is *Instance) AddRecursiveWatch(path string, mask uint32) error {
-	return is.sendAdd(path, mask, true)
-}
-
-// AddTrigger adds the given regular expression as a "watch trigger". When
-// an event's full path matches it, a new watch is added for that event's
-// full path with the given mask specifying the inotify events to be monitored.
-func (is *Instance) AddTrigger(pattern string, mask uint32) error {
-	return is.sendAddTrigger(pattern, mask)
+	return is.sendAdd(path, mask)
 }
 
 // RemoveWatch removes the given path from the inotify instance's watch list.
@@ -539,13 +325,27 @@ func (is *Instance) RemoveWatch(path string) error {
 // Close the inotify instance and allow the kernel to free its associated
 // resources. All associated watches are automatically freed.
 func (is *Instance) Close() {
-	// Wake the pollLoop
-	buf := [1]byte{0}
-	unix.Write(is.pipe[1], buf[:])
+	fd := int32(is.pipe[1])
+	if fd == -1 {
+		return
+	}
+	if !atomic.CompareAndSwapInt32(&is.pipe[1], fd, -1) {
+		return
+	}
 
-	// Send the "finish" message
-	is.ctrl <- &inotifyFinish{}
+	// Close the write side of the pipe so that the inotifyReader will
+	// terminate.
+	unix.Close(int(fd))
+
+	// Close the control channel so that the pollLoop will terminate.
+	close(is.ctrl)
 
 	// Wait for the pollLoop to exit
 	is.wg.Wait()
+
+	// Cleanup remaining resources
+	is.eventStream.Close()
+	close(is.events)
+	unix.Close(int(is.pipe[0]))
+	unix.Close(is.fd)
 }
