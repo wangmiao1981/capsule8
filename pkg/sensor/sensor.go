@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -476,9 +477,11 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 	registerNetworkEvents(s, groupID, eventMap, sub.EventFilter.NetworkEvents)
 	registerProcessEvents(s, groupID, eventMap, sub.EventFilter.ProcessEvents)
 	registerSyscallEvents(s, groupID, eventMap, sub.EventFilter.SyscallEvents)
+	registerChargenEvents(s, groupID, eventMap, sub.EventFilter.ChargenEvents)
+	registerTimerEvents(s, groupID, eventMap, sub.EventFilter.TickerEvents)
 
 	if len(eventMap) == 0 {
-		return nil, nil
+		return nil, errors.New("Invalid subscription (no filters specified)")
 	}
 
 	ctrl := make(chan interface{})
@@ -494,21 +497,12 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 		defer close(data)
 
 		for {
-			_, ok := <-ctrl
-			if !ok {
+			if _, ok := <-ctrl; !ok {
 				glog.V(2).Infof("Subscription %d control channel closed",
 					subscriptionID)
 
 				s.Monitor.UnregisterEventGroup(groupID)
-				s.eventMap.unsubscribe(subscriptionID,
-					func(eventID uint64) {
-						/*
-							t, ok := s.Monitor.RegisteredEventType(eventID)
-							if ok && t != perf.EventTypeExternal {
-								s.Monitor.UnregisterEvent(eventID)
-							}
-						*/
-					})
+				s.eventMap.unsubscribe(subscriptionID, nil)
 				return
 			}
 		}
@@ -540,43 +534,13 @@ func (s *Sensor) applyModifiers(eventStream *stream.Stream, modifier api.Modifie
 // subscription.
 func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) {
 	glog.V(1).Infof("Subscribing to %+v", sub)
-
-	eventStream, joiner := stream.NewJoiner()
-	joiner.Off()
-
-	if len(sub.EventFilter.ContainerEvents) > 0 ||
-		len(sub.EventFilter.FileEvents) > 0 ||
-		len(sub.EventFilter.KernelEvents) > 0 ||
-		len(sub.EventFilter.NetworkEvents) > 0 ||
-		len(sub.EventFilter.ProcessEvents) > 0 ||
-		len(sub.EventFilter.SyscallEvents) > 0 {
-
-		pes, err := s.createPerfEventStream(sub)
-		if err != nil {
-			joiner.Close()
-			return nil, err
-		}
-		if pes != nil {
-			joiner.Add(pes)
-		}
+	if sub.EventFilter == nil {
+		return nil, errors.New("Invalid subscription (no EventFilter)")
 	}
 
-	for _, cf := range sub.EventFilter.ChargenEvents {
-		cs, err := newChargenSource(s, cf)
-		if err != nil {
-			joiner.Close()
-			return nil, err
-		}
-		joiner.Add(cs)
-	}
-
-	for _, tf := range sub.EventFilter.TickerEvents {
-		ts, err := newTickerSource(s, tf)
-		if err != nil {
-			joiner.Close()
-			return nil, err
-		}
-		joiner.Add(ts)
+	eventStream, err := s.createPerfEventStream(sub)
+	if err != nil {
+		return nil, err
 	}
 
 	if sub.ContainerFilter != nil {
@@ -594,7 +558,6 @@ func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) 
 	}
 
 	s.Metrics.Subscriptions++
-	joiner.On()
 
 	return eventStream, nil
 }

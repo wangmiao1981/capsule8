@@ -18,73 +18,89 @@ import (
 	"time"
 
 	api "github.com/capsule8/capsule8/api/v0"
+	"github.com/capsule8/capsule8/pkg/expression"
+	"github.com/capsule8/capsule8/pkg/sys"
+	"github.com/capsule8/capsule8/pkg/sys/perf"
 
-	"github.com/capsule8/capsule8/pkg/stream"
+	"github.com/golang/glog"
 )
 
-type ticker struct {
-	ctrl     chan interface{}
-	data     chan interface{}
-	sensor   *Sensor
-	filter   *api.TickerEventFilter
-	duration time.Duration
-	ticker   *stream.Stream
+var tickerEventTypes = expression.FieldTypeMap{
+	"seconds":     int32(api.ValueType_SINT64),
+	"nanoseconds": int32(api.ValueType_SINT64),
 }
 
-func (t *ticker) newTickerEvent(tick time.Time) *api.TelemetryEvent {
+type tickerFilter struct {
+	sensor *Sensor
+}
+
+func (t *tickerFilter) decodeTickerEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
 	e := t.sensor.NewEvent()
 	e.Event = &api.TelemetryEvent_Ticker{
 		Ticker: &api.TickerEvent{
-			Seconds:     tick.Unix(),
-			Nanoseconds: tick.UnixNano(),
+			Seconds:     data["seconds"].(int64),
+			Nanoseconds: data["nanoseconds"].(int64),
 		},
 	}
-
-	return e
+	return e, nil
 }
 
-func newTickerSource(sensor *Sensor, filter *api.TickerEventFilter) (*stream.Stream, error) {
-	// Each call to New creates a new session with the Sensor. It is the
-	// Sensor's responsibility to handle all of its sessions in the most
-	// high-performance way possible. For example, a Sensor may install
-	// kernel probes for the union of all sessions, but then demux the
-	// results through individual goroutines forwarding events over
-	// their own channels.
-
-	duration := time.Duration(filter.Interval)
-	t := &ticker{
-		ctrl:     make(chan interface{}),
-		data:     make(chan interface{}),
-		sensor:   sensor,
-		filter:   filter,
-		duration: duration,
-		ticker:   stream.Ticker(duration),
+func registerTimerEvents(
+	sensor *Sensor,
+	groupID int32,
+	eventMap subscriptionMap,
+	events []*api.TickerEventFilter,
+) {
+	f := tickerFilter{sensor: sensor}
+	eventID, err := sensor.Monitor.RegisterExternalEvent("ticker",
+		f.decodeTickerEvent, tickerEventTypes)
+	if err != nil {
+		glog.V(1).Infof("Could not register ticker event: %v", err)
+		return
 	}
 
-	go func() {
-		for {
-			select {
-			case _, ok := <-t.ctrl:
-				if !ok {
-					close(t.data)
-					return
-				}
+	done := make(chan struct{})
+	ntickers := 0
+	for _, e := range events {
+		if e.Interval <= 0 {
+			continue
+		}
+		ticker := time.NewTicker(time.Duration(e.Interval))
+		ntickers++
 
-			case e, ok := <-t.ticker.Data:
-				if ok {
-					tick := e.(time.Time)
-					ev := t.newTickerEvent(tick)
-					t.data <- ev
-
-				} else {
+		go func() {
+			for {
+				select {
+				case <-done:
+					ticker.Stop()
 					return
+				case <-ticker.C:
+					monoNow := sys.CurrentMonotonicRaw()
+					sampleID := perf.SampleID{
+						Time: uint64(monoNow),
+					}
+					now := time.Now()
+					data := perf.TraceEventSampleData{
+						"seconds":     int64(now.Unix()),
+						"nanoseconds": int64(now.UnixNano()),
+					}
+					sensor.Monitor.EnqueueExternalSample(
+						eventID, sampleID, data)
 				}
 			}
-		}
-	}()
+		}()
+	}
+	if ntickers == 0 {
+		sensor.Monitor.UnregisterEvent(eventID)
+		return
+	}
 
-	return &stream.Stream{
-		Ctrl: t.ctrl,
-		Data: t.data,
-	}, nil
+	s := eventMap.subscribe(eventID)
+	s.unregister = func(eventID uint64, s *subscription) {
+		sensor.Monitor.UnregisterEvent(eventID)
+		close(done)
+	}
 }
