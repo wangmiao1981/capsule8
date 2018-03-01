@@ -55,9 +55,9 @@ func fileTestDataMap() (map[string]*api.FileEvent, error) {
 func eventMatchFileTestData(fe *api.FileEvent, td *api.FileEvent) bool {
 	// Even on 64 bit systems, we see the large file bit set in open flags.
 	// For now, ignore differences in this bit.
-	const O_LARGEFILE = 0100000
+	const OpenLargeFile = 0100000
 	return fe.Type == td.Type &&
 		fe.Filename == td.Filename &&
-		(fe.OpenFlags & ^O_LARGEFILE) == (td.OpenFlags & ^O_LARGEFILE) &&
+		(fe.OpenFlags & ^OpenLargeFile) == (td.OpenFlags & ^OpenLargeFile) &&
 		(fe.OpenMode == td.OpenMode || (fe.OpenFlags&syscall.O_CREAT) == 0)
 }

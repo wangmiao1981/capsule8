@@ -53,7 +53,7 @@ func decodeDoExit(sample *perf.SampleRecord, data perf.TraceEventSampleData) (in
 	return nil, nil
 }
 
-func onSample(sample interface{}, err error) {
+func onSample(eventID uint64, sample perf.EventMonitorSample) {
 	nSamples++
 	// Do nothing
 }
@@ -63,24 +63,21 @@ func main() {
 	flag.Parse()
 
 	glog.Info("Creating monitor on cgroup /docker")
-	monitor, err := perf.NewEventMonitorWithCgroup("/docker", 0, 0, nil)
+	monitor, err := perf.NewEventMonitor(perf.WithCgroup("/docker"), perf.WithFlags(0), perf.WithRingBufferNumPages(0))
 
 	eventName := "sched/sched_process_fork"
-	_, err = monitor.RegisterTracepoint(eventName, decodeSchedProcessFork,
-		"", nil)
+	_, err = monitor.RegisterTracepoint(eventName, decodeSchedProcessFork)
 	if err != nil {
 		glog.Fatal(err)
 	}
 
 	eventName = "sched/sched_process_exec"
-	_, err = monitor.RegisterTracepoint(eventName, decodeSchedProcessExec,
-		"", nil)
+	_, err = monitor.RegisterTracepoint(eventName, decodeSchedProcessExec)
 	if err != nil {
 		glog.Fatal(err)
 	}
 
-	_, err = monitor.RegisterKprobe(exitSymbol,
-		false, exitFetchargs, decodeDoExit, "", nil)
+	_, err = monitor.RegisterKprobe(exitSymbol, false, exitFetchargs, decodeDoExit)
 	if err != nil {
 		glog.Fatal(err)
 	}

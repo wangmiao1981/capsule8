@@ -51,7 +51,8 @@ func tcp4(port int) {
 
 	go func() {
 		glog.Infof("Accepting TCP connections on port %d", port)
-		conn, err := ln.Accept()
+		var conn net.Conn
+		conn, err = ln.Accept()
 		if err != nil {
 			glog.Errorf("Couldn't accept connection: %v", err)
 			return
@@ -62,7 +63,8 @@ func tcp4(port int) {
 
 		// Receive response
 		pong := make([]byte, 5)
-		n, err := conn.Read(pong)
+		var n int
+		n, err = conn.Read(pong)
 		if err != nil {
 			glog.Errorf("Couldn't read pong: %v", err)
 			return
@@ -118,7 +120,8 @@ func tcp6(port int) {
 
 	go func() {
 		glog.Infof("Accepting TCP6 connections on port %d", port)
-		conn, err := ln.Accept()
+		var conn net.Conn
+		conn, err = ln.Accept()
 		if err != nil {
 			glog.Errorf("Couldn't accept connection: %v", err)
 			return
@@ -129,7 +132,8 @@ func tcp6(port int) {
 
 		// Receive response
 		pong := make([]byte, 5)
-		n, err := conn.Read(pong)
+		var n int
+		n, err = conn.Read(pong)
 		if err != nil {
 			glog.Errorf("Couldn't read pong: %v", err)
 			return
@@ -185,7 +189,8 @@ func udp4(port int) {
 	go func() {
 		ping := make([]byte, 5)
 		glog.Infof("Reading PING from UDP port %d", port)
-		n, _, err := conn.ReadFromUDP(ping)
+		var n int
+		n, _, err = conn.ReadFromUDP(ping)
 		if err != nil {
 			glog.Errorf("Couldn't send ping: %v", err)
 			return
@@ -226,7 +231,8 @@ func udp6(port int) {
 	go func() {
 		ping := make([]byte, 5)
 		glog.Infof("Reading PING from UDP6 port %d", port)
-		n, _, err := conn.ReadFromUDP(ping)
+		var n int
+		n, _, err = conn.ReadFromUDP(ping)
 		if err != nil {
 			glog.Errorf("Couldn't send ping: %v", err)
 			return
