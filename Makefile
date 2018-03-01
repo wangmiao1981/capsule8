@@ -61,7 +61,8 @@ BINS=$(patsubst %,bin/%,$(CMDS)) \
 	test/functional/functional.test
 
 # All source directories that need to be checked, compiled, tested, etc.
-SRC=./cmd/... ./pkg/... ./examples/... ./test/benchmark/...
+SRC=./cmd/... ./pkg/... ./examples/... 
+CHECK_SRC=$(SRC) ./test/...
 PKG_SOURCES=$(shell find pkg 2>&1 | grep -E '.*\.go$$')
 
 #
@@ -221,11 +222,11 @@ check:
 	echo "--- Checking that all sources build"
 	$(GO_BUILD) $(SRC)
 	echo "--- Checking source code formatting"
-	$(GO_FMT) $(SRC)
+	$(GO_FMT) $(CHECK_SRC)
 	echo "--- Checking that all sources vet clean"
-	$(GO_VET) $(GO_VET_FLAGS) $(SRC)
+	$(GO_VET) $(GO_VET_FLAGS) $(CHECK_SRC)
 	echo "--- Checking sources for lint"
-	$(GO_LINT) $(SRC)
+	$(GO_LINT) $(CHECK_SRC)
 
 #
 # Run unit tests
