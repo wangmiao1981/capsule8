@@ -56,7 +56,6 @@ func main() {
 	filter := "address > 0xffff000000000000"
 	_, err = monitor.RegisterTracepoint("exceptions/page_fault_user",
 		onPageFaultUser, perf.WithFilter(filter))
-
 	if err != nil {
 		glog.Fatal(err)
 	}
@@ -64,36 +63,39 @@ func main() {
 	pageFaultsByPid = make(map[int32]uint)
 
 	glog.Info("Monitoring for meltdown exploitation attempts")
-	monitor.Run(onSample)
+	monitor.Run(onSamples)
 }
 
-func onSample(eventID uint64, sample perf.EventMonitorSample) {
-	if sample.Err != nil {
-		glog.Fatal(sample.Err)
-	}
+func onSamples(samples []perf.EventMonitorSample) {
+	for _, sample := range samples {
+		if sample.Err != nil {
+			glog.Fatal(sample.Err)
+		}
 
-	upf := sample.DecodedSample.(userPageFault)
+		upf := sample.DecodedSample.(userPageFault)
 
-	glog.V(10).Infof("%+v", sample.DecodedSample)
+		glog.V(10).Infof("%+v", sample.DecodedSample)
 
-	pageFaultsByPid[upf.pid]++
+		pageFaultsByPid[upf.pid]++
 
-	faults := pageFaultsByPid[upf.pid]
-	if faults == alarmThresholdInfo {
-		glog.Infof("pid %d kernel address page faults = %d",
-			upf.pid, faults)
-	} else if faults == alarmThresholdLow {
-		glog.Warningf("pid %d kernel address page faults = %d",
-			upf.pid, faults)
-	} else if faults == alarmThresholdMed {
-		glog.Warningf("pid %d kernel address page faults = %d",
-			upf.pid, faults)
-	} else if faults == alarmThresholdHigh {
-		glog.Errorf("pid %d kernel address page faults = %d",
-			upf.pid, faults)
-	} else if faults == alarmThresholdCritical {
-		glog.Errorf("pid %d kernel address page faults = %d",
-			upf.pid, faults)
+		faults := pageFaultsByPid[upf.pid]
+		switch {
+		case faults == alarmThresholdInfo:
+			glog.Infof("pid %d kernel address page faults = %d",
+				upf.pid, faults)
+		case faults == alarmThresholdLow:
+			glog.Warningf("pid %d kernel address page faults = %d",
+				upf.pid, faults)
+		case faults == alarmThresholdMed:
+			glog.Warningf("pid %d kernel address page faults = %d",
+				upf.pid, faults)
+		case faults == alarmThresholdHigh:
+			glog.Errorf("pid %d kernel address page faults = %d",
+				upf.pid, faults)
+		case faults == alarmThresholdCritical:
+			glog.Errorf("pid %d kernel address page faults = %d",
+				upf.pid, faults)
+		}
 	}
 }
 

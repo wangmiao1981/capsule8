@@ -24,6 +24,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -232,11 +233,29 @@ func (d externalEventSampleDecoder) decodeSample(
 	esm *EventMonitorSample,
 	monitor *EventMonitor,
 ) {
-	if d.decoderFn != nil {
-		esm.DecodedSample, esm.Err = d.decoderFn(
-			esm.RawSample.Record.(*SampleRecord),
-			esm.DecodedData)
+	if d.decoderFn == nil {
+		return
 	}
+
+	var s interface{}
+	s, esm.Err = d.decoderFn(
+		esm.RawSample.Record.(*SampleRecord),
+		esm.DecodedData)
+
+	// Yes. For maximum simplicity later, all of this nonsense is
+	// necessary here.
+	if s == nil {
+		return
+	}
+	v := reflect.ValueOf(s)
+	switch v.Kind() {
+	case reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Ptr, reflect.Slice:
+		if v.IsNil() {
+			return
+		}
+	}
+	esm.DecodedSample = s
 }
 
 // CounterEventDecoderFn is the signature of a function to call to decode a
@@ -274,8 +293,24 @@ func (d counterEventSampleDecoder) decodeSample(
 		counters[attr.Config] += v.Value
 	}
 
-	esm.DecodedSample, esm.Err = d.decoderFn(sample, counters,
+	var s interface{}
+	s, esm.Err = d.decoderFn(sample, counters,
 		sample.V.TimeEnabled, sample.V.TimeRunning)
+
+	// Yes. For maximum simplicity later, all of this nonsense is
+	// necessary here.
+	if s == nil {
+		return
+	}
+	v := reflect.ValueOf(s)
+	switch v.Kind() {
+	case reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Ptr, reflect.Slice:
+		if v.IsNil() {
+			return
+		}
+	}
+	esm.DecodedSample = s
 }
 
 type traceEventSampleDecoder struct {
@@ -285,9 +320,24 @@ func (d traceEventSampleDecoder) decodeSample(
 	esm *EventMonitorSample,
 	monitor *EventMonitor,
 ) {
-	esm.DecodedData, esm.DecodedSample, esm.Err =
-		monitor.decoders.DecodeSample(
-			esm.RawSample.Record.(*SampleRecord))
+	var s interface{}
+	esm.DecodedData, s, esm.Err = monitor.decoders.DecodeSample(
+		esm.RawSample.Record.(*SampleRecord))
+
+	// Yes. For maximum simplicity later, all of this nonsense is
+	// necessary here.
+	if s == nil {
+		return
+	}
+	v := reflect.ValueOf(s)
+	switch v.Kind() {
+	case reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+		reflect.Map, reflect.Ptr, reflect.Slice:
+		if v.IsNil() {
+			return
+		}
+	}
+	esm.DecodedSample = s
 }
 
 type registeredEvent struct {
@@ -418,9 +468,9 @@ func (group *eventMonitorGroup) perfEventOpen(
 	return newfds, nil
 }
 
-// SampleDispatchFn is the signature of a function called to dispatch a
-// sample. The first argument is the event ID, the second is the sample.
-type SampleDispatchFn func(uint64, EventMonitorSample)
+// SampleDispatchFn is the signature of a function called to dispatch samples.
+// Samples are dispatched in batches as they become available.
+type SampleDispatchFn func([]EventMonitorSample)
 
 // EventMonitor is a high-level interface to the Linux kernel's perf_event
 // infrastructure.
@@ -1326,6 +1376,10 @@ func (monitor *EventMonitor) stopWithSignal() {
 // interface. It contains the raw sample, decoded data, translated sample,
 // and any error that may have occurred while processing the sample.
 type EventMonitorSample struct {
+	// EventID is the event ID that generated the sample. This is the ID
+	// returned by one of the event registration functions.
+	EventID uint64
+
 	// RawSample is the raw sample from the perf_event interface.
 	RawSample Sample
 
@@ -1346,14 +1400,9 @@ type EventMonitorSample struct {
 	Err error
 }
 
-type externalSample struct {
-	eventID uint64
-	sample  EventMonitorSample
-}
-
 // externalSampleList implements sort.Interface and is used for sorting a list
 // of externalSample instances by time in descending order.
-type externalSampleList []externalSample
+type externalSampleList []EventMonitorSample
 
 func (l externalSampleList) Len() int {
 	return len(l)
@@ -1364,7 +1413,7 @@ func (l externalSampleList) Swap(i, j int) {
 }
 
 func (l externalSampleList) Less(i, j int) bool {
-	return l[i].sample.RawSample.Time > l[j].sample.RawSample.Time
+	return l[i].RawSample.Time > l[j].RawSample.Time
 }
 
 // EnqueueExternalSample enqueues an external sample to a registered external
@@ -1393,6 +1442,7 @@ func (monitor *EventMonitor) EnqueueExternalSample(
 	}
 
 	esm := EventMonitorSample{
+		EventID:     eventID,
 		Fields:      event.fields,
 		DecodedData: decodedData,
 	}
@@ -1407,15 +1457,11 @@ func (monitor *EventMonitor) EnqueueExternalSample(
 	esm.RawSample.TID = sampleID.TID
 	esm.RawSample.Time = sampleID.Time
 	esm.RawSample.CPU = sampleID.CPU
-	e := externalSample{
-		eventID: eventID,
-		sample:  esm,
-	}
 
 	var updateMonitorGoRoutine = false
 
 	monitor.lock.Lock()
-	monitor.externalSamples = append(monitor.externalSamples, e)
+	monitor.externalSamples = append(monitor.externalSamples, esm)
 	if monitor.nextExternalSampleTime == 0 ||
 		sampleID.Time < monitor.nextExternalSampleTime {
 		monitor.nextExternalSampleTime = sampleID.Time
@@ -1432,7 +1478,7 @@ func (monitor *EventMonitor) EnqueueExternalSample(
 	return nil
 }
 
-func (monitor *EventMonitor) processExternalSamples(timeLimit uint64) {
+func (monitor *EventMonitor) processExternalSamples(timeLimit uint64) bool {
 	if monitor.externalSamples != nil {
 		monitor.lock.Lock()
 		externalSamples := monitor.externalSamples
@@ -1446,36 +1492,40 @@ func (monitor *EventMonitor) processExternalSamples(timeLimit uint64) {
 	}
 
 	if len(monitor.pendingExternalSamples) == 0 {
-		return
+		return false
 	}
 
-	dispatchFn := monitor.dispatchFn
+	batch := make([]EventMonitorSample, 0, len(monitor.pendingExternalSamples))
 	eventMap := monitor.events.getMap()
 	for len(monitor.pendingExternalSamples) > 0 {
 		l := len(monitor.pendingExternalSamples)
-		e := monitor.pendingExternalSamples[l-1]
-		if e.sample.RawSample.Time > timeLimit {
+		esm := monitor.pendingExternalSamples[l-1]
+		if esm.RawSample.Time > timeLimit {
 			break
 		}
 		monitor.pendingExternalSamples =
 			monitor.pendingExternalSamples[:l-1]
-		if e.sample.RawSample.Time < monitor.lastSampleTimeDispatched {
+		if esm.RawSample.Time < monitor.lastSampleTimeDispatched {
 			continue
 		}
-		event, ok := eventMap[e.eventID]
+		event, ok := eventMap[esm.EventID]
 		if !ok {
 			continue
 		}
-		if e.sample.Err == nil {
-			event.decoder.decodeSample(&e.sample, monitor)
+		if esm.Err == nil {
+			event.decoder.decodeSample(&esm, monitor)
+			if esm.Err != nil || esm.DecodedSample != nil {
+				batch = append(batch, esm)
+			}
+		} else {
+			batch = append(batch, esm)
 		}
-		dispatchFn(e.eventID, e.sample)
 	}
 
 	l := len(monitor.pendingExternalSamples)
 	if l > 0 {
 		monitor.lock.Lock()
-		nextTimeout := monitor.pendingExternalSamples[l-1].sample.RawSample.Time
+		nextTimeout := monitor.pendingExternalSamples[l-1].RawSample.Time
 		monitor.nextExternalSampleTime = nextTimeout
 		monitor.lock.Unlock()
 
@@ -1485,6 +1535,12 @@ func (monitor *EventMonitor) processExternalSamples(timeLimit uint64) {
 			syscall.Write(monitor.pipe[1], buffer)
 		}
 	}
+
+	if len(batch) > 0 {
+		monitor.dispatchFn(batch)
+		return true
+	}
+	return false
 }
 
 type sampleMerger struct {
@@ -1546,6 +1602,12 @@ func (monitor *EventMonitor) dispatchSamples(samples [][]EventMonitorSample) {
 	eventIDMap := monitor.eventIDMap.getMap()
 	eventMap := monitor.events.getMap()
 
+	nsamples := 0
+	for _, s := range samples {
+		nsamples += len(s)
+	}
+	batch := make([]EventMonitorSample, 0, nsamples)
+
 	m := newSampleMerger(samples)
 	for {
 		esm, done := m.next()
@@ -1553,24 +1615,26 @@ func (monitor *EventMonitor) dispatchSamples(samples [][]EventMonitorSample) {
 			break
 		}
 
-		monitor.processExternalSamples(esm.RawSample.Time)
+		if len(monitor.externalSamples) > 0 ||
+			len(monitor.pendingExternalSamples) > 0 {
+			if len(batch) > 0 {
+				dispatchFn(batch)
+				batch = make([]EventMonitorSample, 0,
+					nsamples-len(batch))
+			}
+			monitor.processExternalSamples(esm.RawSample.Time)
+		}
 
-		streamID := esm.RawSample.SampleID.StreamID
-		eventID, ok := eventIDMap[streamID]
-		if !ok {
-			// Refresh the map in case we're dealing with a newly
-			// added event, but more likely we're here because the
-			// event has been removed while we're still processing
-			// samples from the ringbuffer.
-			eventIDMap = monitor.eventIDMap.getMap()
-			eventMap = monitor.events.getMap()
-			eventID, ok = eventIDMap[streamID]
-			if !ok {
+		if esm.EventID == 0 {
+			streamID := esm.RawSample.SampleID.StreamID
+			if eventID, ok := eventIDMap[streamID]; ok {
+				esm.EventID = eventID
+			} else {
 				continue
 			}
 		}
 
-		event, ok := eventMap[eventID]
+		event, ok := eventMap[esm.EventID]
 		if !ok {
 			// If not ok, the eventID has been removed while we're
 			// still processing samples. Drop it
@@ -1586,13 +1650,20 @@ func (monitor *EventMonitor) dispatchSamples(samples [][]EventMonitorSample) {
 		}
 		if esm.Err == nil {
 			event.decoder.decodeSample(&esm, monitor)
+			if esm.Err != nil || esm.DecodedSample != nil {
+				batch = append(batch, esm)
+			}
+		} else {
+			batch = append(batch, esm)
 		}
-		dispatchFn(eventID, esm)
 		if esm.RawSample.Time > monitor.lastSampleTimeDispatched {
 			monitor.lastSampleTimeDispatched = esm.RawSample.Time
 		}
 	}
 
+	if len(batch) > 0 {
+		dispatchFn(batch)
+	}
 	monitor.processExternalSamples(monitor.lastSampleTimeDispatched)
 }
 

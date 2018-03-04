@@ -25,7 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+	"sync"
 
 	api "github.com/capsule8/capsule8/api/v0"
 
@@ -34,9 +34,8 @@ import (
 	"github.com/capsule8/capsule8/pkg/stream"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
-	"github.com/golang/glog"
 
-	"golang.org/x/sys/unix"
+	"github.com/golang/glog"
 )
 
 // Number of random bytes to generate for Sensor Id
@@ -76,39 +75,46 @@ type Sensor struct {
 	// Mapping of event ids to data streams (subscriptions)
 	eventMap *safeSubscriptionMap
 
+	dispatchMutex     sync.Mutex
+	dispatchCond      sync.Cond
+	dispatchQueueHead *queuedSamples
+	dispatchQueueTail *queuedSamples
+	dispatchFreelist  *queuedSamples
+	dispatchRunning   bool
+	dispatchWaitGroup sync.WaitGroup
+
 	// Used by syscall events to handle syscall enter events with
 	// argument filters
 	dummySyscallEventID    uint64
 	dummySyscallEventCount int64
 }
 
+type queuedSamples struct {
+	next    *queuedSamples
+	samples []perf.EventMonitorSample
+}
+
 // NewSensor creates a new Sensor instance.
 func NewSensor() (*Sensor, error) {
 	randomBytes := make([]byte, sensorIDLengthBytes)
 	rand.Read(randomBytes)
-	sensorID := hex.EncodeToString(randomBytes[:])
-
-	ts := unix.Timespec{}
-	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
-	bootMonotimeNanos := ts.Nsec + (ts.Sec * int64(time.Second))
+	sensorID := hex.EncodeToString(randomBytes)
 
 	s := &Sensor{
 		ID:                sensorID,
-		bootMonotimeNanos: bootMonotimeNanos,
+		bootMonotimeNanos: sys.CurrentMonotonicRaw(),
 		eventMap:          newSafeSubscriptionMap(),
 	}
+	s.dispatchCond = sync.Cond{L: &s.dispatchMutex}
 
 	return s, nil
 }
 
 // Start starts a sensor instance running.
 func (s *Sensor) Start() error {
-	var err error
-
 	// We require that our run dir (usually /var/run/capsule8) exists.
 	// Ensure that now before proceeding any further.
-	err = os.MkdirAll(config.Global.RunDir, 0700)
-	if err != nil {
+	if err := os.MkdirAll(config.Global.RunDir, 0700); err != nil {
 		glog.Warningf("Couldn't mkdir %s: %s",
 			config.Global.RunDir, err)
 		return err
@@ -119,8 +125,7 @@ func (s *Sensor) Start() error {
 	if !config.Sensor.DontMountTracing && len(sys.TracingDir()) == 0 {
 		// If we couldn't find one, try mounting our own private one
 		glog.V(2).Info("Can't find mounted tracefs, mounting one")
-		err = s.mountTraceFS()
-		if err != nil {
+		if err := s.mountTraceFS(); err != nil {
 			glog.V(1).Info(err)
 			return err
 		}
@@ -132,8 +137,7 @@ func (s *Sensor) Start() error {
 	// available.
 	if !config.Sensor.DontMountPerfEvent && len(sys.PerfEventDir()) == 0 {
 		glog.V(2).Info("Can't find mounted perf_event cgroupfs, mounting one")
-		err = s.mountPerfEventCgroupFS()
-		if err != nil {
+		if err := s.mountPerfEventCgroupFS(); err != nil {
 			glog.V(1).Info(err)
 			// This is not a fatal error condition, proceed on
 		}
@@ -141,8 +145,7 @@ func (s *Sensor) Start() error {
 
 	// Create the sensor-global event monitor. This EventMonitor instance
 	// will be used for all perf_event events
-	err = s.createEventMonitor()
-	if err != nil {
+	if err := s.createEventMonitor(); err != nil {
 		s.Stop()
 		return err
 	}
@@ -163,13 +166,33 @@ func (s *Sensor) Start() error {
 
 	// Make sure that all events registered with the sensor's event monitor
 	// are active
-	s.Monitor.EnableAll()
+	s.Monitor.EnableGroup(0)
+
+	// Start dispatch goroutine(s). We'll just spin one up for now, but we
+	// can run multiples if we want. The sensor needs to keep samples in
+	// order coming from the EventMonitor in order to maintain internal
+	// consistency, but it makes no guarantees about the order in which
+	// telemetry events are emitted to external clients.
+	s.dispatchRunning = true
+	s.dispatchWaitGroup.Add(1)
+	go s.sampleDispatchLoop()
 
 	return nil
 }
 
 // Stop stops a running sensor instance.
 func (s *Sensor) Stop() {
+	if s.dispatchRunning {
+		s.dispatchMutex.Lock()
+		if s.dispatchRunning {
+			s.dispatchRunning = false
+			s.dispatchCond.Broadcast()
+			s.dispatchMutex.Unlock()
+			s.dispatchWaitGroup.Wait()
+		} else {
+			s.dispatchMutex.Unlock()
+		}
+	}
 	if s.Monitor != nil {
 		glog.V(2).Info("Stopping sensor-global EventMonitor")
 		s.Monitor.Close()
@@ -183,43 +206,6 @@ func (s *Sensor) Stop() {
 
 	if len(s.perfEventMountPoint) > 0 {
 		s.unmountPerfEventCgroupFS()
-	}
-}
-
-func (s *Sensor) dispatchSample(eventID uint64, sample perf.EventMonitorSample) {
-	if sample.Err != nil {
-		glog.Warning(sample.Err)
-	}
-
-	event, ok := sample.DecodedSample.(*api.TelemetryEvent)
-	if !ok || event == nil {
-		return
-	}
-
-	eventMap := s.eventMap.getMap()
-	subscriptions, ok := eventMap[eventID]
-	if !ok {
-		return
-	}
-
-	for _, s := range subscriptions {
-		if s.data == nil {
-			continue
-		}
-		if s.filter != nil {
-			v, err := s.filter.Evaluate(
-				expression.FieldTypeMap(sample.Fields),
-				expression.FieldValueMap(sample.DecodedData))
-			if err != nil {
-				glog.V(1).Infof("Expression evaluation error: %s", err)
-				continue
-			}
-			if !expression.IsValueTrue(v) {
-				continue
-			}
-		}
-		glog.V(2).Infof("Sending %+v", event)
-		s.data <- event
 	}
 }
 
@@ -261,29 +247,18 @@ func (s *Sensor) unmountPerfEventCgroupFS() {
 	}
 }
 
-func (s *Sensor) currentMonotimeNanos() int64 {
-	ts := unix.Timespec{}
-	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
-	d := ts.Nsec + (ts.Sec * int64(time.Second))
-	return d - s.bootMonotimeNanos
-}
-
-func (s *Sensor) nextSequenceNumber() uint64 {
-	// The first sequence number is intentionally 1 to disambiguate
-	// from no sequence number being included in the protobuf message.
-	s.sequenceNumber++
-	return s.sequenceNumber
-}
-
 // NewEvent creates a new API Event instance with common sensor-specific fields
 // correctly populated.
 func (s *Sensor) NewEvent() *api.TelemetryEvent {
-	monotime := s.currentMonotimeNanos()
-	sequenceNumber := s.nextSequenceNumber()
+	monotime := sys.CurrentMonotonicRaw() - s.bootMonotimeNanos
+
+	// The first sequence number is intentionally 1 to disambiguate
+	// from no sequence number being included in the protobuf message.
+	s.sequenceNumber++
+	sequenceNumber := s.sequenceNumber
 
 	var b []byte
 	buf := bytes.NewBuffer(b)
-
 	binary.Write(buf, binary.LittleEndian, s.ID)
 	binary.Write(buf, binary.LittleEndian, sequenceNumber)
 	binary.Write(buf, binary.LittleEndian, monotime)
@@ -452,7 +427,7 @@ func (s *Sensor) createEventMonitor() error {
 	}
 
 	go func() {
-		err := s.Monitor.Run(s.dispatchSample)
+		err := s.Monitor.Run(s.dispatchSamples)
 		if err != nil {
 			glog.Fatal(err)
 		}
@@ -494,7 +469,12 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 	glog.V(2).Infof("Subscription %d registered", subscriptionID)
 
 	go func() {
-		defer close(data)
+		// RACE CONDITION: Do not close the data channel. It's possible
+		// that a dispatch is still in progress that may try to send to
+		// this channel, which will cause a panic. There's no good way
+		// around this other than to use a mutex around s.eventMap.
+		//
+		//defer close(data)
 
 		for {
 			if _, ok := <-ctrl; !ok {
@@ -560,4 +540,111 @@ func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) 
 	s.Metrics.Subscriptions++
 
 	return eventStream, nil
+}
+
+func (s *Sensor) dispatchSamples(samples []perf.EventMonitorSample) {
+	s.dispatchMutex.Lock()
+
+	var qs *queuedSamples
+	if s.dispatchFreelist == nil {
+		qs = &queuedSamples{samples: samples}
+	} else {
+		qs = s.dispatchFreelist
+		s.dispatchFreelist = qs.next
+		qs.next = nil
+		qs.samples = samples
+	}
+
+	if s.dispatchQueueTail == nil {
+		s.dispatchQueueHead = qs
+		s.dispatchCond.Signal()
+	} else {
+		s.dispatchQueueTail.next = qs
+	}
+	s.dispatchQueueTail = qs
+
+	s.dispatchMutex.Unlock()
+}
+
+func (s *Sensor) popSamples() []perf.EventMonitorSample {
+	qs := s.dispatchQueueHead
+	samples := qs.samples
+
+	s.dispatchQueueHead = qs.next
+	if s.dispatchQueueHead == nil {
+		s.dispatchQueueTail = nil
+	}
+
+	qs.next = s.dispatchFreelist
+	qs.samples = nil
+	s.dispatchFreelist = qs
+
+	return samples
+}
+
+func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
+	eventMap := s.eventMap.getMap()
+	for _, esm := range samples {
+		if esm.Err != nil {
+			glog.Warning(esm.Err)
+			continue
+		}
+
+		event, ok := esm.DecodedSample.(*api.TelemetryEvent)
+		if !ok || event == nil {
+			continue
+		}
+
+		subscriptions, ok := eventMap[esm.EventID]
+		if !ok {
+			continue
+		}
+
+		for _, s := range subscriptions {
+			if s.data == nil {
+				continue
+			}
+			if s.filter != nil {
+				v, err := s.filter.Evaluate(
+					expression.FieldTypeMap(esm.Fields),
+					expression.FieldValueMap(esm.DecodedData))
+				if err != nil {
+					glog.V(1).Infof("Expression evaluation error: %s", err)
+					continue
+				}
+				if !expression.IsValueTrue(v) {
+					continue
+				}
+			}
+			select {
+			case s.data <- event:
+				glog.V(2).Infof("Sending %+v", event)
+			default:
+				glog.V(2).Infof("Dropped %+v", event)
+				break
+			}
+		}
+	}
+}
+
+func (s *Sensor) sampleDispatchLoop() {
+	glog.V(2).Info("Sample dispatch loop started")
+
+	s.dispatchMutex.Lock()
+	for s.dispatchRunning {
+		if s.dispatchQueueHead == nil {
+			// TODO do chargen stuff?
+			s.dispatchCond.Wait()
+			continue
+		}
+		samples := s.popSamples()
+
+		s.dispatchMutex.Unlock()
+		s.dispatchQueuedSamples(samples)
+		s.dispatchMutex.Lock()
+	}
+	s.dispatchMutex.Unlock()
+
+	glog.V(2).Info("Sample dispatch loop stopped")
+	s.dispatchWaitGroup.Done()
 }
