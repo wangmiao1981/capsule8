@@ -22,6 +22,7 @@ import (
 	"golang.org/x/net/context"
 )
 
+// Container represents a running container
 type Container struct {
 	t       *testing.T
 	Path    string
@@ -39,6 +40,7 @@ func (c *Container) dockerBuildArgs(quiet bool, buildargs []string) []string {
 	return args
 }
 
+// Build executes docker build
 func (c *Container) Build(buildargs ...string) error {
 	dockerArgs := c.dockerBuildArgs(false, buildargs)
 	docker := exec.Command("docker", dockerArgs...)
@@ -66,34 +68,40 @@ func (c *Container) dockerRunArgs(runargs []string) []string {
 	return args
 }
 
+// Start executes docker start
 func (c *Container) Start(runargs ...string) error {
 	dockerArgs := c.dockerRunArgs(runargs)
 	c.command = exec.Command("docker", dockerArgs...)
 	return c.command.Start()
 }
 
+// StartContext executes docker start with a context object
 func (c *Container) StartContext(ctx context.Context, runargs ...string) error {
 	dockerArgs := c.dockerRunArgs(runargs)
 	c.command = exec.CommandContext(ctx, "docker", dockerArgs...)
 	return c.command.Start()
 }
 
+// Wait executes docker wait
 func (c *Container) Wait() error {
 	return c.command.Wait()
 }
 
+// Run executes docker run
 func (c *Container) Run(runargs ...string) error {
 	dockerArgs := c.dockerRunArgs(runargs)
 	c.command = exec.Command("docker", dockerArgs...)
 	return c.command.Run()
 }
 
+// RunContext executes docker run with a context object
 func (c *Container) RunContext(ctx context.Context, runargs ...string) error {
 	dockerArgs := c.dockerRunArgs(runargs)
 	c.command = exec.CommandContext(ctx, "docker", dockerArgs...)
 	return c.command.Run()
 }
 
+// NewContainer returns a new container testing object
 func NewContainer(t *testing.T, path string) *Container {
 	return &Container{
 		t:    t,

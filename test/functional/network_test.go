@@ -215,18 +215,19 @@ func (nt *networkTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTeleme
 						api.NetworkAddressFamily_NETWORK_ADDRESS_FAMILY_INET,
 						event.Network.Address.Family)
 					return false
-				} else {
-					addr, have_addr := event.Network.Address.Address.(*api.NetworkAddress_Ipv4Address)
-
-					if !have_addr {
-						t.Errorf("Unexpected bind address %+v", event.Network.Address.Address)
-						return false
-					} else if addr.Ipv4Address.Port != uint32(testNetworkPortN) {
-						t.Errorf("Expected bind port %d, got %d",
-							testNetworkPortN, addr.Ipv4Address.Port)
-						return false
-					}
 				}
+
+				addr, haveAddr := event.Network.Address.Address.(*api.NetworkAddress_Ipv4Address)
+
+				if !haveAddr {
+					t.Errorf("Unexpected bind address %+v", event.Network.Address.Address)
+					return false
+				} else if addr.Ipv4Address.Port != uint32(testNetworkPortN) {
+					t.Errorf("Expected bind port %d, got %d",
+						testNetworkPortN, addr.Ipv4Address.Port)
+					return false
+				}
+
 				nt.serverSocket = event.Network.Sockfd
 
 			case api.NetworkEventType_NETWORK_EVENT_TYPE_BIND_RESULT:

@@ -32,6 +32,7 @@ var (
 	connOnce sync.Once
 )
 
+// TelemetryTest should be implemented by tests of the telemtry service
 type TelemetryTest interface {
 	// Build the container used for testing. Returns the imageID
 	// of the container image or the empty string to not filter
@@ -48,6 +49,7 @@ type TelemetryTest interface {
 	HandleTelemetryEvent(t *testing.T, te *api.ReceivedTelemetryEvent) bool
 }
 
+// TelemetryTester is used for
 type TelemetryTester struct {
 	test      TelemetryTest
 	err       error
@@ -55,6 +57,7 @@ type TelemetryTester struct {
 	imageID   string
 }
 
+// NewTelemetryTester returns a pointer to a new TelemtryTester
 func NewTelemetryTester(tt TelemetryTest) *TelemetryTester {
 	return &TelemetryTester{test: tt}
 }
@@ -159,6 +162,7 @@ func (tt *TelemetryTester) runTelemetryTest(t *testing.T) {
 	}
 }
 
+// RunTest runs the TelemetryTester's test
 func (tt *TelemetryTester) RunTest(t *testing.T) {
 	if !t.Run("buildContainer", tt.buildContainer) {
 		t.Error("Couldn't build container")
