@@ -1,0 +1,10 @@
+{
+    "event_filter": {
+        "syscall_events": [
+            {
+                "type": 2, // 1 = enter, 2 = exit
+                "id": 2    // Syscall number, 2 is the open syscall
+            }
+        ]
+    }
+}

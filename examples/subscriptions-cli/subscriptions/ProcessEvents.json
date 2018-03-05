@@ -1,0 +1,15 @@
+{
+  "event_filter": {
+      "process_events": [
+        {
+          "type": 1
+        },
+        {
+          "type": 2
+        },
+        {
+          "type": 3
+        }
+      ]
+    }
+}
