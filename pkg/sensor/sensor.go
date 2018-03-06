@@ -16,6 +16,7 @@ package sensor
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -26,12 +27,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	api "github.com/capsule8/capsule8/api/v0"
 
 	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/expression"
-	"github.com/capsule8/capsule8/pkg/stream"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
@@ -72,7 +73,7 @@ type Sensor struct {
 	dockerMonitor  *dockerMonitor
 	ociMonitor     *ociMonitor
 
-	// Mapping of event ids to data streams (subscriptions)
+	// Mapping of event ids to subscriptions
 	eventMap *safeSubscriptionMap
 
 	dispatchMutex     sync.Mutex
@@ -437,13 +438,26 @@ func (s *Sensor) createEventMonitor() error {
 	return nil
 }
 
-func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, error) {
-	eventMap := newSubscriptionMap()
+// NewSubscription creates a new telemetry subscription from the given
+// api.Subscription descriptor. Canceling the specified context will cancel
+// the subscription. For each event matching the subscription, the specified
+// dispatch functional will be called.
+func (s *Sensor) NewSubscription(
+	ctx context.Context,
+	sub *api.Subscription,
+	dispatchFn subscriptionDispatchFn,
+) error {
+	glog.V(1).Infof("Subscribing to %+v", sub)
+	if sub.EventFilter == nil {
+		return errors.New("Invalid subscription (no EventFilter)")
+	}
 
-	groupName := fmt.Sprintf("Subscription %p", sub)
+	subscriptionID, eventMap := s.eventMap.newSubscriptionMap()
+
+	groupName := fmt.Sprintf("Subscription %d", subscriptionID)
 	groupID, err := s.Monitor.RegisterEventGroup(groupName)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	registerContainerEvents(s, groupID, eventMap, sub.EventFilter.ContainerEvents)
@@ -456,90 +470,28 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 	registerTimerEvents(s, groupID, eventMap, sub.EventFilter.TickerEvents)
 
 	if len(eventMap) == 0 {
-		return nil, errors.New("Invalid subscription (no filters specified)")
+		return errors.New("Invalid subscription (no filters specified)")
 	}
 
-	ctrl := make(chan interface{})
-	data := make(chan interface{}, config.Sensor.ChannelBufferLength)
-
 	eventMap.forEach(func(eventID, subscriptionID uint64, s *subscription) {
-		s.data = data
+		s.dispatchFn = dispatchFn
 	})
-	subscriptionID := s.eventMap.subscribe(eventMap)
+	s.eventMap.subscribe(subscriptionID, eventMap)
 	glog.V(2).Infof("Subscription %d registered", subscriptionID)
 
 	go func() {
-		// RACE CONDITION: Do not close the data channel. It's possible
-		// that a dispatch is still in progress that may try to send to
-		// this channel, which will cause a panic. There's no good way
-		// around this other than to use a mutex around s.eventMap.
-		//
-		//defer close(data)
+		<-ctx.Done()
+		glog.V(2).Infof("Subscription %d control channel closed",
+			subscriptionID)
 
-		for {
-			if _, ok := <-ctrl; !ok {
-				glog.V(2).Infof("Subscription %d control channel closed",
-					subscriptionID)
-
-				s.Monitor.UnregisterEventGroup(groupID)
-				s.eventMap.unsubscribe(subscriptionID, nil)
-				return
-			}
-		}
+		s.Monitor.UnregisterEventGroup(groupID)
+		s.eventMap.unsubscribe(subscriptionID, nil)
 	}()
 
 	s.Monitor.EnableGroup(groupID)
 
-	return &stream.Stream{
-		Ctrl: ctrl,
-		Data: data,
-	}, nil
-}
-
-func (s *Sensor) applyModifiers(eventStream *stream.Stream, modifier api.Modifier) *stream.Stream {
-	if modifier.Throttle != nil {
-		eventStream = stream.Throttle(eventStream, *modifier.Throttle)
-	}
-
-	if modifier.Limit != nil {
-		eventStream = stream.Limit(eventStream, *modifier.Limit)
-	}
-
-	return eventStream
-}
-
-// NewSubscription creates a new telemetry subscription from the given
-// api.Subscription descriptor. NewSubscription returns a stream.Stream of
-// api.Events matching the specified filters. Closing the Stream cancels the
-// subscription.
-func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) {
-	glog.V(1).Infof("Subscribing to %+v", sub)
-	if sub.EventFilter == nil {
-		return nil, errors.New("Invalid subscription (no EventFilter)")
-	}
-
-	eventStream, err := s.createPerfEventStream(sub)
-	if err != nil {
-		return nil, err
-	}
-
-	if sub.ContainerFilter != nil {
-		// Filter stream as requested by subscriber in the
-		// specified ContainerFilter to restrict the events to
-		// those matching the specified container ids, names,
-		// images, etc.
-		cef := newContainerFilter(sub.ContainerFilter)
-		eventStream = stream.Filter(eventStream, cef.FilterFunc)
-		eventStream = stream.Do(eventStream, cef.DoFunc)
-	}
-
-	if sub.Modifier != nil {
-		eventStream = s.applyModifiers(eventStream, *sub.Modifier)
-	}
-
-	s.Metrics.Subscriptions++
-
-	return eventStream, nil
+	atomic.AddInt32(&s.Metrics.Subscriptions, 1)
+	return nil
 }
 
 func (s *Sensor) dispatchSamples(samples []perf.EventMonitorSample) {
@@ -601,9 +553,6 @@ func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
 		}
 
 		for _, s := range subscriptions {
-			if s.data == nil {
-				continue
-			}
 			if s.filter != nil {
 				v, err := s.filter.Evaluate(
 					expression.FieldTypeMap(esm.Fields),
@@ -616,13 +565,7 @@ func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
 					continue
 				}
 			}
-			select {
-			case s.data <- event:
-				glog.V(2).Infof("Sending %+v", event)
-			default:
-				glog.V(2).Infof("Dropped %+v", event)
-				break
-			}
+			s.dispatchFn(event)
 		}
 	}
 }
@@ -633,7 +576,6 @@ func (s *Sensor) sampleDispatchLoop() {
 	s.dispatchMutex.Lock()
 	for s.dispatchRunning {
 		if s.dispatchQueueHead == nil {
-			// TODO do chargen stuff?
 			s.dispatchCond.Wait()
 			continue
 		}

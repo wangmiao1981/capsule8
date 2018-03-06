@@ -21,20 +21,23 @@ import (
 )
 
 func TestFilterContainerId(t *testing.T) {
-	cf := newContainerFilter(&api.ContainerFilter{
+	cf, err := newContainerFilter(&api.ContainerFilter{
 		Ids: []string{
 			"alice",
 			"bob",
 		},
 	})
+	if err != nil {
+		t.Error(err)
+	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "alice",
 	}); !match {
 		t.Error("No matching container ID found for alice")
 	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "bill",
 	}); match {
 		t.Error("Unexpected matching container ID found for bill")
@@ -42,14 +45,17 @@ func TestFilterContainerId(t *testing.T) {
 }
 
 func TestFilterContainerImageId(t *testing.T) {
-	cf := newContainerFilter(&api.ContainerFilter{
+	cf, err := newContainerFilter(&api.ContainerFilter{
 		ImageIds: []string{
 			"alice",
 			"bob",
 		},
 	})
+	if err != nil {
+		t.Error(err)
+	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "pass",
 		Event: &api.TelemetryEvent_Container{
 			Container: &api.ContainerEvent{
@@ -60,7 +66,7 @@ func TestFilterContainerImageId(t *testing.T) {
 		t.Error("No matching container image ID found for alice")
 	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "fail",
 		Event: &api.TelemetryEvent_Container{
 			Container: &api.ContainerEvent{
@@ -73,14 +79,17 @@ func TestFilterContainerImageId(t *testing.T) {
 }
 
 func TestFilterContainerImageNames(t *testing.T) {
-	cf := newContainerFilter(&api.ContainerFilter{
+	cf, err := newContainerFilter(&api.ContainerFilter{
 		ImageNames: []string{
 			"alice",
 			"bob",
 		},
 	})
+	if err != nil {
+		t.Error(err)
+	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "pass",
 		Event: &api.TelemetryEvent_Container{
 			Container: &api.ContainerEvent{
@@ -91,7 +100,7 @@ func TestFilterContainerImageNames(t *testing.T) {
 		t.Error("No matching image name found for alice")
 	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "fail",
 		Event: &api.TelemetryEvent_Container{
 			Container: &api.ContainerEvent{
@@ -104,14 +113,17 @@ func TestFilterContainerImageNames(t *testing.T) {
 }
 
 func TestFilterContainerNames(t *testing.T) {
-	cf := newContainerFilter(&api.ContainerFilter{
+	cf, err := newContainerFilter(&api.ContainerFilter{
 		Names: []string{
 			"alice",
 			"bob",
 		},
 	})
+	if err != nil {
+		t.Error(err)
+	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "pass",
 		Event: &api.TelemetryEvent_Container{
 			Container: &api.ContainerEvent{
@@ -122,7 +134,7 @@ func TestFilterContainerNames(t *testing.T) {
 		t.Error("No matching container name found for alice")
 	}
 
-	if match := cf.FilterFunc(&api.TelemetryEvent{
+	if match := cf.match(&api.TelemetryEvent{
 		ContainerId: "fail",
 		Event: &api.TelemetryEvent_Container{
 			Container: &api.ContainerEvent{

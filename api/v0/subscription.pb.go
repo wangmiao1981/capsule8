@@ -89,12 +89,13 @@ type Subscription struct {
 	// the specified relative duration subtracted from the current
 	// time (recorder time). If the resulting time is in the past, then the
 	// subscription will search for historic events before streaming
-	// live ones.
+	// live ones. Sensors do not honor this field.
 	SinceDuration *google_protobuf1.Int64Value `protobuf:"bytes,10,opt,name=since_duration,json=sinceDuration" json:"since_duration,omitempty"`
 	// If not empty, then only return events that occurred before
 	// the specified relative duration added to `since_duration`.
 	// If `since_duration` is not supplied, return events from now and until
-	// the specified relative duration is hit.
+	// the specified relative duration is hit. Sensors do not honor this
+	// field.
 	ForDuration *google_protobuf1.Int64Value `protobuf:"bytes,11,opt,name=for_duration,json=forDuration" json:"for_duration,omitempty"`
 	// If not empty, apply the specified modifier to the subscription.
 	Modifier *Modifier `protobuf:"bytes,20,opt,name=modifier" json:"modifier,omitempty"`
@@ -691,7 +692,7 @@ func (m *Modifier) GetLimit() *LimitModifier {
 type ThrottleModifier struct {
 	// Required; the interval to use
 	Interval int64 `protobuf:"varint,1,opt,name=interval" json:"interval,omitempty"`
-	// Required; the intreval type (milliseconds, seconds, etc.)
+	// Required; the interval type (milliseconds, seconds, etc.)
 	IntervalType ThrottleModifier_IntervalType `protobuf:"varint,2,opt,name=interval_type,json=intervalType,enum=capsule8.api.v0.ThrottleModifier_IntervalType" json:"interval_type,omitempty"`
 }
 
@@ -716,7 +717,7 @@ func (m *ThrottleModifier) GetIntervalType() ThrottleModifier_IntervalType {
 
 // The LimitModifier cancels the subscription on each Sensor after the
 // specified number of events. The entire Subscription may return more
-// events that this depending on how many active Sensors there are.
+// events than this depending on how many active Sensors there are.
 type LimitModifier struct {
 	// Limit the number of events
 	Limit int64 `protobuf:"varint,1,opt,name=limit" json:"limit,omitempty"`

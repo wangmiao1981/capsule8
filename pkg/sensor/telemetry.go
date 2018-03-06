@@ -15,6 +15,7 @@
 package sensor
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	api "github.com/capsule8/capsule8/api/v0"
 	"github.com/capsule8/capsule8/pkg/config"
@@ -158,43 +160,112 @@ type telemetryServiceServer struct {
 
 func (t *telemetryServiceServer) GetEvents(req *api.GetEventsRequest, stream api.TelemetryService_GetEventsServer) error {
 	sub := req.Subscription
-
 	glog.V(1).Infof("GetEvents(%+v)", sub)
 
-	eventStream, err := t.sensor.NewSubscription(sub)
-	if err != nil {
+	// Validate sub.ContainerFilter
+	var containerFilter *containerFilter
+	if sub.ContainerFilter != nil {
+		var err error
+		containerFilter, err = newContainerFilter(sub.ContainerFilter)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Validate sub.Modifier
+	var (
+		maxEvents        int64
+		throttleDuration time.Duration
+	)
+	if sub.Modifier != nil {
+		if sub.Modifier.Limit != nil {
+			maxEvents = sub.Modifier.Limit.Limit
+			if maxEvents < 1 {
+				return fmt.Errorf("LimitModifier is invalid (%d)",
+					maxEvents)
+			}
+		}
+		if sub.Modifier.Throttle != nil {
+			if sub.Modifier.Throttle.Interval <= 0 {
+				return fmt.Errorf("ThrottleModifier interval is invalid (%d)",
+					sub.Modifier.Throttle.Interval)
+			}
+			throttleDuration =
+				time.Duration(sub.Modifier.Throttle.Interval)
+			switch sub.Modifier.Throttle.IntervalType {
+			case api.ThrottleModifier_MILLISECOND:
+				throttleDuration *= time.Millisecond
+			case api.ThrottleModifier_SECOND:
+				throttleDuration *= time.Second
+			case api.ThrottleModifier_MINUTE:
+				throttleDuration *= time.Minute
+			case api.ThrottleModifier_HOUR:
+				throttleDuration *= time.Hour
+			default:
+				return fmt.Errorf("ThrottleModifier interval type is invalid (%d)",
+					sub.Modifier.Throttle.IntervalType)
+			}
+		}
+	}
+
+	events := make(chan *api.TelemetryEvent,
+		config.Sensor.ChannelBufferLength)
+	f := func(e *api.TelemetryEvent) {
+		// Send the event to the data channel, but drop the event if
+		// the channel is full. Do not block the sensor from delivering
+		// telemetry to other subscribers.
+		select {
+		case events <- e:
+		default:
+		}
+	}
+
+	ctx, cancel := context.WithCancel(stream.Context())
+	defer cancel()
+
+	if err := t.sensor.NewSubscription(ctx, sub, f); err != nil {
 		glog.Errorf("Failed to get events for subscription %+v: %s",
 			sub, err.Error())
 		return err
 	}
 
-	go func() {
-		<-stream.Context().Done()
-		glog.V(1).Infof("Client disconnected, closing stream")
-		eventStream.Close()
-	}()
-
-sendLoop:
+	var nEvents int64
+	nextEventTime := time.Now()
 	for {
-		ev, ok := <-eventStream.Data
-		if !ok {
-			break sendLoop
-		}
-
-		// Send back events right away
-		te := &api.ReceivedTelemetryEvent{
-			Event: ev.(*api.TelemetryEvent),
-		}
-
-		err = stream.Send(&api.GetEventsResponse{
-			Events: []*api.ReceivedTelemetryEvent{
-				te,
-			},
-		})
-		if err != nil {
-			break sendLoop
+		select {
+		case <-ctx.Done():
+			glog.V(1).Infof("Client disconnected, closing stream")
+			return ctx.Err()
+		case e := <-events:
+			if containerFilter != nil && !containerFilter.match(e) {
+				break
+			}
+			if throttleDuration != 0 {
+				now := time.Now()
+				if now.Before(nextEventTime) {
+					break
+				}
+				nextEventTime = now
+				nextEventTime.Add(throttleDuration)
+			}
+			r := &api.GetEventsResponse{
+				Events: []*api.ReceivedTelemetryEvent{
+					&api.ReceivedTelemetryEvent{Event: e},
+				},
+			}
+			if err := stream.Send(r); err != nil {
+				return err
+			}
+			if maxEvents > 0 {
+				nEvents++
+				if nEvents == maxEvents {
+					return fmt.Errorf("Event limit reached (%d)",
+						maxEvents)
+				}
+			}
 		}
 	}
 
+	// unreachable
 	return nil
 }

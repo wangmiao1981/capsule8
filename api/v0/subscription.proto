@@ -38,13 +38,14 @@ message Subscription {
         // the specified relative duration subtracted from the current
         // time (recorder time). If the resulting time is in the past, then the
         // subscription will search for historic events before streaming
-        // live ones.
+        // live ones. Sensors do not honor this field.
         google.protobuf.Int64Value since_duration = 10;
 
         // If not empty, then only return events that occurred before
         // the specified relative duration added to `since_duration`.
         // If `since_duration` is not supplied, return events from now and until
-        // the specified relative duration is hit.
+        // the specified relative duration is hit. Sensors do not honor this
+        // field.
         google.protobuf.Int64Value for_duration = 11;
 
         // If not empty, apply the specified modifier to the subscription.
@@ -310,13 +311,13 @@ message ThrottleModifier {
                 HOUR = 3;
         }
 
-        // Required; the intreval type (milliseconds, seconds, etc.)
+        // Required; the interval type (milliseconds, seconds, etc.)
         IntervalType interval_type = 2;
 }
 
 // The LimitModifier cancels the subscription on each Sensor after the
 // specified number of events. The entire Subscription may return more
-// events that this depending on how many active Sensors there are.
+// events than this depending on how many active Sensors there are.
 message LimitModifier {
         // Limit the number of events
         int64 limit = 1;
