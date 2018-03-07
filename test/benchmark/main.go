@@ -58,23 +58,6 @@ func init() {
 
 	flag.BoolVar(&config.verbose, "verbose", false,
 		"verbose (print events received)")
-
-	manager = services.NewServiceManager()
-
-	if len(sensorConfig.Sensor.ListenAddr) > 0 {
-		sensorInstance, err := sensor.NewSensor()
-		if err != nil {
-			glog.Fatalf("Could not create sensor: %s", err.Error())
-		}
-		testSensor = sensorInstance
-
-		if err := testSensor.Start(); err != nil {
-			glog.Fatalf("Could not start sensor: %s", err.Error())
-		}
-		defer testSensor.Stop()
-		service := sensor.NewTelemetryService(testSensor, sensorConfig.Sensor.ListenAddr)
-		manager.RegisterService(service)
-	}
 }
 
 // Custom gRPC Dialer that understands "unix:/path/to/sock" as well as TCP addrs
@@ -238,6 +221,25 @@ func main() {
 	// Log version and build at "Starting ..." for debugging
 	version.InitialBuildLog("benchmark")
 
+	manager = services.NewServiceManager()
+
+	if len(sensorConfig.Sensor.ListenAddr) > 0 {
+		var err error
+		testSensor, err = sensor.NewSensor()
+		if err != nil {
+			glog.Fatalf("Could not create sensor: %s", err)
+		}
+
+		if err := testSensor.Start(); err != nil {
+			glog.Fatalf("Could not start sensor: %s", err)
+		}
+		defer testSensor.Stop()
+
+		service := sensor.NewTelemetryService(testSensor,
+			sensorConfig.Sensor.ListenAddr)
+		manager.RegisterService(service)
+	}
+
 	go func() {
 		manager.Run()
 	}()
@@ -259,7 +261,6 @@ func main() {
 	stream, err := c.GetEvents(ctx, &api.GetEventsRequest{
 		Subscription: createSubscription(),
 	})
-
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "GetEvents: %s\n", err)
 		os.Exit(1)
