@@ -1,3 +1,30 @@
+## 0.8.0-alpha (Mar 7, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Add support for running the sensor on CentOS 6 ([#145](https://github.com/capsule8/capsule8/pull/145))
+
+IMPROVEMENTS:
+
+  * Fix the architecture image to reflect telemetry service existing in pkg/sensor ([#161](https://github.com/capsule8/capsule8/pull/161))
+  * Add link in README to api protocol docs ([#160](https://github.com/capsule8/capsule8/pull/160))
+  * Add documentation ([#149](https://github.com/capsule8/capsule8/pull/149))
+  * Use monotonic clocks for computing timeouts ([#156](https://github.com/capsule8/capsule8/pull/156))
+  * Add support for counter-based hardware perf events to EventMonitor ([#155](https://github.com/capsule8/capsule8/pull/155))
+  * Remove inotify support for triggers and recursive directory monitoring ([#158](https://github.com/capsule8/capsule8/pull/158))
+  * Add api proto definitions telemetry docs ([#159](https://github.com/capsule8/capsule8/pull/159))
+  * Make the process cache better handle out-of-order events ([#151](https://github.com/capsule8/capsule8/pull/151))
+
+BUG FIXES:
+
+  * Update benchmark test to latest changes of subscription logic ([#157](https://github.com/capsule8/capsule8/pull/157))
+  * Do not emit telemetry events for samples coming from the sensor itself ([#152](https://github.com/capsule8/capsule8/pull/152))
+  * Handle timestamp type in expression package ([#154](https://github.com/capsule8/capsule8/pull/154))
+
 ## 0.7.0-alpha (Feb 21, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
