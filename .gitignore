@@ -33,6 +33,7 @@ bin/*
 examples/telemetry/telemetry
 examples/kprobe/kprobe
 examples/kinesis-firehose-forwarder/kinesis-firehose-forwarder
+test/benchmark/benchmark
 
 # Ignore log files
 *.log
