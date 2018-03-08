@@ -2,6 +2,8 @@
 
 This document step by step examines code for retrieving different kinds of telemetry events using this repositories internal packages. 
 
+Check out the [command-line-tool example](../examples/command-line-tool) for a faster approach to getting telemetry.
+
   * [Subscriptions and Filters](#subscipritons-and-filters)
   * [Getting Telemetry](#getting-telemetry-events)
   * [Further Reading](#further-reading)
