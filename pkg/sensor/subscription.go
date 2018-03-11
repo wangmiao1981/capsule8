@@ -18,14 +18,17 @@ import (
 	"sync"
 	"sync/atomic"
 
+	api "github.com/capsule8/capsule8/api/v0"
+
 	"github.com/capsule8/capsule8/pkg/expression"
 )
 
+type subscriptionDispatchFn func(event *api.TelemetryEvent)
 type subscriptionUnregisterFn func(eventID uint64, sub *subscription)
 
 type subscription struct {
 	eventID    uint64
-	data       chan interface{}
+	dispatchFn subscriptionDispatchFn
 	unregister subscriptionUnregisterFn
 	filter     *expression.Expression
 }
@@ -82,6 +85,15 @@ func newSafeSubscriptionMap() *safeSubscriptionMap {
 	return &safeSubscriptionMap{}
 }
 
+func (ssm *safeSubscriptionMap) newSubscriptionMap() (uint64, subscriptionMap) {
+	ssm.Lock()
+	ssm.nextSubscriptionID++
+	subscriptionID := ssm.nextSubscriptionID
+	ssm.Unlock()
+
+	return subscriptionID, newSubscriptionMap()
+}
+
 func (ssm *safeSubscriptionMap) getMap() subscriptionMap {
 	value := ssm.active.Load()
 	if value == nil {
@@ -90,12 +102,12 @@ func (ssm *safeSubscriptionMap) getMap() subscriptionMap {
 	return value.(subscriptionMap)
 }
 
-func (ssm *safeSubscriptionMap) subscribe(fm subscriptionMap) uint64 {
+func (ssm *safeSubscriptionMap) subscribe(
+	subscriptionID uint64,
+	fm subscriptionMap,
+) {
 	ssm.Lock()
 	defer ssm.Unlock()
-
-	ssm.nextSubscriptionID++
-	subscriptionID := ssm.nextSubscriptionID
 
 	om := ssm.getMap()
 	nm := make(subscriptionMap, len(om)+len(fm))
@@ -122,7 +134,6 @@ func (ssm *safeSubscriptionMap) subscribe(fm subscriptionMap) uint64 {
 	}
 
 	ssm.active.Store(nm)
-	return subscriptionID
 }
 
 func (ssm *safeSubscriptionMap) unsubscribe(

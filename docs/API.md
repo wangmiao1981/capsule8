@@ -880,7 +880,7 @@ kernel function call.
 ### LimitModifier
 The LimitModifier cancels the subscription on each Sensor after the
 specified number of events. The entire Subscription may return more
-events that this depending on how many active Sensors there are.
+events than this depending on how many active Sensors there are.
 
 
 | Field | Type | Label | Description |
@@ -960,8 +960,8 @@ telemetry events.
 | ----- | ---- | ----- | ----------- |
 | event_filter | [EventFilter](#capsule8.api.v0.EventFilter) |  | Return events matching one or more of the specified event filters. If no event filters are specified, then no events will be returned. |
 | container_filter | [ContainerFilter](#capsule8.api.v0.ContainerFilter) |  | If not empty, then only return events from containers matched by one or more of the specified container filters. |
-| since_duration | [.google.protobuf.Int64Value](#capsule8.api.v0..google.protobuf.Int64Value) |  | If not empty, then only return events that occurred after the specified relative duration subtracted from the current time (recorder time). If the resulting time is in the past, then the subscription will search for historic events before streaming live ones. |
-| for_duration | [.google.protobuf.Int64Value](#capsule8.api.v0..google.protobuf.Int64Value) |  | If not empty, then only return events that occurred before the specified relative duration added to `since_duration`. If `since_duration` is not supplied, return events from now and until the specified relative duration is hit. |
+| since_duration | [.google.protobuf.Int64Value](#capsule8.api.v0..google.protobuf.Int64Value) |  | If not empty, then only return events that occurred after the specified relative duration subtracted from the current time (recorder time). If the resulting time is in the past, then the subscription will search for historic events before streaming live ones. Sensors do not honor this field. |
+| for_duration | [.google.protobuf.Int64Value](#capsule8.api.v0..google.protobuf.Int64Value) |  | If not empty, then only return events that occurred before the specified relative duration added to `since_duration`. If `since_duration` is not supplied, return events from now and until the specified relative duration is hit. Sensors do not honor this field. |
 | modifier | [Modifier](#capsule8.api.v0.Modifier) |  | If not empty, apply the specified modifier to the subscription. |
 
 
@@ -1005,7 +1005,7 @@ time interval specified.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | interval | [int64](#int64) |  | Required; the interval to use |
-| interval_type | [ThrottleModifier.IntervalType](#capsule8.api.v0.ThrottleModifier.IntervalType) |  | Required; the intreval type (milliseconds, seconds, etc.) |
+| interval_type | [ThrottleModifier.IntervalType](#capsule8.api.v0.ThrottleModifier.IntervalType) |  | Required; the interval type (milliseconds, seconds, etc.) |
 
 
 

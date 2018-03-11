@@ -53,8 +53,8 @@ func decodeDoExit(sample *perf.SampleRecord, data perf.TraceEventSampleData) (in
 	return nil, nil
 }
 
-func onSample(eventID uint64, sample perf.EventMonitorSample) {
-	nSamples++
+func onSamples(samples []perf.EventMonitorSample) {
+	nSamples += uint(len(samples))
 	// Do nothing
 }
 
@@ -96,7 +96,7 @@ func main() {
 	monitor.EnableAll()
 
 	glog.Info("Running monitor")
-	monitor.Run(onSample)
+	monitor.Run(onSamples)
 	glog.Info("Monitor stopped")
 
 	glog.Infof("Received %d samples, %d events",

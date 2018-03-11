@@ -15,6 +15,7 @@
 package sensor
 
 import (
+	"errors"
 	"reflect"
 	"sync"
 	"unicode"
@@ -469,7 +470,12 @@ func registerContainerEvents(
 
 ///////////////////////////////////////////////////////////////////////////////
 
-func newContainerFilter(ecf *api.ContainerFilter) *containerFilter {
+func newContainerFilter(ecf *api.ContainerFilter) (*containerFilter, error) {
+	if len(ecf.Ids) == 0 && len(ecf.Names) == 0 &&
+		len(ecf.ImageIds) == 0 && len(ecf.ImageNames) == 0 {
+		return nil, errors.New("Container filter is empty")
+	}
+
 	cf := &containerFilter{}
 
 	for _, v := range ecf.Ids {
@@ -488,7 +494,7 @@ func newContainerFilter(ecf *api.ContainerFilter) *containerFilter {
 		cf.addImageName(v)
 	}
 
-	return cf
+	return cf, nil
 }
 
 type containerFilter struct {
@@ -547,26 +553,19 @@ func (c *containerFilter) addImageName(iname string) {
 	}
 }
 
-func (c *containerFilter) FilterFunc(i interface{}) bool {
-	e := i.(*api.TelemetryEvent)
-
-	//
+// match evaluates the container filter for an event and determines whether the
+// event matches the criteria set forth by the filter.
+func (c *containerFilter) match(e *api.TelemetryEvent) bool {
 	// Fast path: Check if containerId is in containerIds map
-	//
-	if c.containerIds != nil && c.containerIds[e.ContainerId] {
+	if c.containerIds[e.ContainerId] {
 		return true
 	}
 
-	switch e.Event.(type) {
+	// Slow path: Check if other identifiers are in maps. If they are, add
+	// the containerId to containerIds map to take fast path next time.
+	switch ev := e.Event.(type) {
 	case *api.TelemetryEvent_Container:
-		cev := e.GetContainer()
-
-		//
-		// Slow path: Check if other identifiers are in maps. If they
-		// are, add the containerId to containerIds map to take fast
-		// path next time.
-		//
-
+		cev := ev.Container
 		if c.containerNames[cev.Name] {
 			c.addContainerID(e.ContainerId)
 			return true
@@ -588,16 +587,4 @@ func (c *containerFilter) FilterFunc(i interface{}) bool {
 	}
 
 	return false
-}
-
-func (c *containerFilter) DoFunc(i interface{}) {
-	e := i.(*api.TelemetryEvent)
-
-	switch e.Event.(type) {
-	case *api.TelemetryEvent_Container:
-		cev := e.GetContainer()
-		if cev.Type == api.ContainerEventType_CONTAINER_EVENT_TYPE_DESTROYED {
-			c.removeContainerID(e.ContainerId)
-		}
-	}
 }

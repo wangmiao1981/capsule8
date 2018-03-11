@@ -17,83 +17,101 @@ package sensor
 import (
 	api "github.com/capsule8/capsule8/api/v0"
 
-	"github.com/capsule8/capsule8/pkg/stream"
+	"github.com/capsule8/capsule8/pkg/expression"
+	"github.com/capsule8/capsule8/pkg/sys"
+	"github.com/capsule8/capsule8/pkg/sys/perf"
+
+	"github.com/golang/glog"
 )
 
-type chargen struct {
-	ctrl    chan interface{}
-	data    chan interface{}
-	sensor  *Sensor
-	filter  *api.ChargenEventFilter
-	chargen *stream.Stream
-	index   uint64
-	length  uint64
-	payload []byte
+var chargenEventTypes = expression.FieldTypeMap{
+	"index":      int32(api.ValueType_UINT64),
+	"characters": int32(api.ValueType_STRING),
 }
 
-func (c *chargen) newChargenEvent(index uint64, characters string) *api.TelemetryEvent {
+type chargenFilter struct {
+	sensor *Sensor
+}
+
+func (c *chargenFilter) decodeChargenEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
 	e := c.sensor.NewEvent()
 	e.Event = &api.TelemetryEvent_Chargen{
 		Chargen: &api.ChargenEvent{
-			Index:      index,
-			Characters: characters,
+			Index:      data["index"].(uint64),
+			Characters: data["characters"].(string),
 		},
 	}
 
-	return e
+	return e, nil
 }
 
-func (c *chargen) emitNextEvent(e interface{}) {
-	i := c.index % uint64(c.length)
-	str := e.(string)
-	c.payload[i] = str[0]
-
-	c.index++
-
-	if (c.index % uint64(c.length)) == 0 {
-		c.data <- c.newChargenEvent(c.index, string(c.payload))
+func generateCharacters(start, length uint64) string {
+	bytes := make([]byte, length)
+	for i := uint64(0); i < length; i++ {
+		bytes[i] = ' ' + byte((start+i)%95)
 	}
+	return string(bytes)
 }
 
-func newChargenSource(sensor *Sensor, filter *api.ChargenEventFilter) (*stream.Stream, error) {
-	// Each call to New creates a new session with the Sensor. It is the
-	// Sensor's responsibility to handle all of its sessions in the most
-	// high-performance way possible. For example, a Sensor may install
-	// kernel probes for the union of all sessions, but then demux the
-	// results through individual goroutines forwarding events over
-	// their own channels.
-
-	c := &chargen{
-		ctrl:    make(chan interface{}),
-		data:    make(chan interface{}),
-		sensor:  sensor,
-		filter:  filter,
-		chargen: stream.Chargen(),
-		index:   0,
-		length:  filter.Length,
-		payload: make([]byte, filter.Length),
+func registerChargenEvents(
+	sensor *Sensor,
+	groupID int32,
+	eventMap subscriptionMap,
+	events []*api.ChargenEventFilter,
+) {
+	f := chargenFilter{sensor: sensor}
+	eventID, err := sensor.Monitor.RegisterExternalEvent("chargen",
+		f.decodeChargenEvent, chargenEventTypes)
+	if err != nil {
+		glog.V(1).Infof("Could not register chargen event: %v", err)
+		return
 	}
 
-	go func() {
-		for {
-			select {
-			case _, ok := <-c.ctrl:
-				if !ok {
-					close(c.data)
-					return
-				}
-
-			case e, ok := <-c.chargen.Data:
-				if !ok {
-					return
-				}
-				c.emitNextEvent(e)
-			}
+	done := make(chan struct{})
+	nchargens := 0
+	for _, e := range events {
+		// XXX there should be a maximum bound here too ...
+		if e.Length == 0 || e.Length > 1<<16 {
+			glog.V(1).Info("Chargen length out of range (%d)", e.Length)
+			continue
 		}
-	}()
+		nchargens++
 
-	return &stream.Stream{
-		Ctrl: c.ctrl,
-		Data: c.data,
-	}, nil
+		go func() {
+			index := uint64(0)
+			length := e.Length
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					monoNow := sys.CurrentMonotonicRaw()
+					sampleID := perf.SampleID{
+						Time: uint64(monoNow),
+					}
+					s := generateCharacters(index, length)
+					data := perf.TraceEventSampleData{
+						"index":      index,
+						"characters": s,
+					}
+					index += length
+					sensor.Monitor.EnqueueExternalSample(
+						eventID, sampleID, data)
+				}
+			}
+		}()
+	}
+	if nchargens == 0 {
+		sensor.Monitor.UnregisterEvent(eventID)
+		return
+	}
+
+	s := eventMap.subscribe(eventID)
+	s.unregister = func(eventID uint64, s *subscription) {
+		sensor.Monitor.UnregisterEvent(eventID)
+		close(done)
+	}
 }

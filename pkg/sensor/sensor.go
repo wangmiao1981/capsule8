@@ -16,26 +16,27 @@ package sensor
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+	"sync"
+	"sync/atomic"
 
 	api "github.com/capsule8/capsule8/api/v0"
 
 	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/expression"
-	"github.com/capsule8/capsule8/pkg/stream"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
-	"github.com/golang/glog"
 
-	"golang.org/x/sys/unix"
+	"github.com/golang/glog"
 )
 
 // Number of random bytes to generate for Sensor Id
@@ -72,8 +73,16 @@ type Sensor struct {
 	dockerMonitor  *dockerMonitor
 	ociMonitor     *ociMonitor
 
-	// Mapping of event ids to data streams (subscriptions)
+	// Mapping of event ids to subscriptions
 	eventMap *safeSubscriptionMap
+
+	dispatchMutex     sync.Mutex
+	dispatchCond      sync.Cond
+	dispatchQueueHead *queuedSamples
+	dispatchQueueTail *queuedSamples
+	dispatchFreelist  *queuedSamples
+	dispatchRunning   bool
+	dispatchWaitGroup sync.WaitGroup
 
 	// Used by syscall events to handle syscall enter events with
 	// argument filters
@@ -81,33 +90,32 @@ type Sensor struct {
 	dummySyscallEventCount int64
 }
 
+type queuedSamples struct {
+	next    *queuedSamples
+	samples []perf.EventMonitorSample
+}
+
 // NewSensor creates a new Sensor instance.
 func NewSensor() (*Sensor, error) {
 	randomBytes := make([]byte, sensorIDLengthBytes)
 	rand.Read(randomBytes)
-	sensorID := hex.EncodeToString(randomBytes[:])
-
-	ts := unix.Timespec{}
-	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
-	bootMonotimeNanos := ts.Nsec + (ts.Sec * int64(time.Second))
+	sensorID := hex.EncodeToString(randomBytes)
 
 	s := &Sensor{
 		ID:                sensorID,
-		bootMonotimeNanos: bootMonotimeNanos,
+		bootMonotimeNanos: sys.CurrentMonotonicRaw(),
 		eventMap:          newSafeSubscriptionMap(),
 	}
+	s.dispatchCond = sync.Cond{L: &s.dispatchMutex}
 
 	return s, nil
 }
 
 // Start starts a sensor instance running.
 func (s *Sensor) Start() error {
-	var err error
-
 	// We require that our run dir (usually /var/run/capsule8) exists.
 	// Ensure that now before proceeding any further.
-	err = os.MkdirAll(config.Global.RunDir, 0700)
-	if err != nil {
+	if err := os.MkdirAll(config.Global.RunDir, 0700); err != nil {
 		glog.Warningf("Couldn't mkdir %s: %s",
 			config.Global.RunDir, err)
 		return err
@@ -118,8 +126,7 @@ func (s *Sensor) Start() error {
 	if !config.Sensor.DontMountTracing && len(sys.TracingDir()) == 0 {
 		// If we couldn't find one, try mounting our own private one
 		glog.V(2).Info("Can't find mounted tracefs, mounting one")
-		err = s.mountTraceFS()
-		if err != nil {
+		if err := s.mountTraceFS(); err != nil {
 			glog.V(1).Info(err)
 			return err
 		}
@@ -131,8 +138,7 @@ func (s *Sensor) Start() error {
 	// available.
 	if !config.Sensor.DontMountPerfEvent && len(sys.PerfEventDir()) == 0 {
 		glog.V(2).Info("Can't find mounted perf_event cgroupfs, mounting one")
-		err = s.mountPerfEventCgroupFS()
-		if err != nil {
+		if err := s.mountPerfEventCgroupFS(); err != nil {
 			glog.V(1).Info(err)
 			// This is not a fatal error condition, proceed on
 		}
@@ -140,8 +146,7 @@ func (s *Sensor) Start() error {
 
 	// Create the sensor-global event monitor. This EventMonitor instance
 	// will be used for all perf_event events
-	err = s.createEventMonitor()
-	if err != nil {
+	if err := s.createEventMonitor(); err != nil {
 		s.Stop()
 		return err
 	}
@@ -162,13 +167,33 @@ func (s *Sensor) Start() error {
 
 	// Make sure that all events registered with the sensor's event monitor
 	// are active
-	s.Monitor.EnableAll()
+	s.Monitor.EnableGroup(0)
+
+	// Start dispatch goroutine(s). We'll just spin one up for now, but we
+	// can run multiples if we want. The sensor needs to keep samples in
+	// order coming from the EventMonitor in order to maintain internal
+	// consistency, but it makes no guarantees about the order in which
+	// telemetry events are emitted to external clients.
+	s.dispatchRunning = true
+	s.dispatchWaitGroup.Add(1)
+	go s.sampleDispatchLoop()
 
 	return nil
 }
 
 // Stop stops a running sensor instance.
 func (s *Sensor) Stop() {
+	if s.dispatchRunning {
+		s.dispatchMutex.Lock()
+		if s.dispatchRunning {
+			s.dispatchRunning = false
+			s.dispatchCond.Broadcast()
+			s.dispatchMutex.Unlock()
+			s.dispatchWaitGroup.Wait()
+		} else {
+			s.dispatchMutex.Unlock()
+		}
+	}
 	if s.Monitor != nil {
 		glog.V(2).Info("Stopping sensor-global EventMonitor")
 		s.Monitor.Close()
@@ -182,43 +207,6 @@ func (s *Sensor) Stop() {
 
 	if len(s.perfEventMountPoint) > 0 {
 		s.unmountPerfEventCgroupFS()
-	}
-}
-
-func (s *Sensor) dispatchSample(eventID uint64, sample perf.EventMonitorSample) {
-	if sample.Err != nil {
-		glog.Warning(sample.Err)
-	}
-
-	event, ok := sample.DecodedSample.(*api.TelemetryEvent)
-	if !ok || event == nil {
-		return
-	}
-
-	eventMap := s.eventMap.getMap()
-	subscriptions, ok := eventMap[eventID]
-	if !ok {
-		return
-	}
-
-	for _, s := range subscriptions {
-		if s.data == nil {
-			continue
-		}
-		if s.filter != nil {
-			v, err := s.filter.Evaluate(
-				expression.FieldTypeMap(sample.Fields),
-				expression.FieldValueMap(sample.DecodedData))
-			if err != nil {
-				glog.V(1).Infof("Expression evaluation error: %s", err)
-				continue
-			}
-			if !expression.IsValueTrue(v) {
-				continue
-			}
-		}
-		glog.V(2).Infof("Sending %+v", event)
-		s.data <- event
 	}
 }
 
@@ -260,29 +248,18 @@ func (s *Sensor) unmountPerfEventCgroupFS() {
 	}
 }
 
-func (s *Sensor) currentMonotimeNanos() int64 {
-	ts := unix.Timespec{}
-	unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts)
-	d := ts.Nsec + (ts.Sec * int64(time.Second))
-	return d - s.bootMonotimeNanos
-}
-
-func (s *Sensor) nextSequenceNumber() uint64 {
-	// The first sequence number is intentionally 1 to disambiguate
-	// from no sequence number being included in the protobuf message.
-	s.sequenceNumber++
-	return s.sequenceNumber
-}
-
 // NewEvent creates a new API Event instance with common sensor-specific fields
 // correctly populated.
 func (s *Sensor) NewEvent() *api.TelemetryEvent {
-	monotime := s.currentMonotimeNanos()
-	sequenceNumber := s.nextSequenceNumber()
+	monotime := sys.CurrentMonotonicRaw() - s.bootMonotimeNanos
+
+	// The first sequence number is intentionally 1 to disambiguate
+	// from no sequence number being included in the protobuf message.
+	s.sequenceNumber++
+	sequenceNumber := s.sequenceNumber
 
 	var b []byte
 	buf := bytes.NewBuffer(b)
-
 	binary.Write(buf, binary.LittleEndian, s.ID)
 	binary.Write(buf, binary.LittleEndian, sequenceNumber)
 	binary.Write(buf, binary.LittleEndian, monotime)
@@ -451,7 +428,7 @@ func (s *Sensor) createEventMonitor() error {
 	}
 
 	go func() {
-		err := s.Monitor.Run(s.dispatchSample)
+		err := s.Monitor.Run(s.dispatchSamples)
 		if err != nil {
 			glog.Fatal(err)
 		}
@@ -461,13 +438,26 @@ func (s *Sensor) createEventMonitor() error {
 	return nil
 }
 
-func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, error) {
-	eventMap := newSubscriptionMap()
+// NewSubscription creates a new telemetry subscription from the given
+// api.Subscription descriptor. Canceling the specified context will cancel
+// the subscription. For each event matching the subscription, the specified
+// dispatch functional will be called.
+func (s *Sensor) NewSubscription(
+	ctx context.Context,
+	sub *api.Subscription,
+	dispatchFn subscriptionDispatchFn,
+) error {
+	glog.V(1).Infof("Subscribing to %+v", sub)
+	if sub.EventFilter == nil {
+		return errors.New("Invalid subscription (no EventFilter)")
+	}
 
-	groupName := fmt.Sprintf("Subscription %p", sub)
+	subscriptionID, eventMap := s.eventMap.newSubscriptionMap()
+
+	groupName := fmt.Sprintf("Subscription %d", subscriptionID)
 	groupID, err := s.Monitor.RegisterEventGroup(groupName)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	registerContainerEvents(s, groupID, eventMap, sub.EventFilter.ContainerEvents)
@@ -476,125 +466,127 @@ func (s *Sensor) createPerfEventStream(sub *api.Subscription) (*stream.Stream, e
 	registerNetworkEvents(s, groupID, eventMap, sub.EventFilter.NetworkEvents)
 	registerProcessEvents(s, groupID, eventMap, sub.EventFilter.ProcessEvents)
 	registerSyscallEvents(s, groupID, eventMap, sub.EventFilter.SyscallEvents)
+	registerChargenEvents(s, groupID, eventMap, sub.EventFilter.ChargenEvents)
+	registerTimerEvents(s, groupID, eventMap, sub.EventFilter.TickerEvents)
 
 	if len(eventMap) == 0 {
-		return nil, nil
+		return errors.New("Invalid subscription (no filters specified)")
 	}
 
-	ctrl := make(chan interface{})
-	data := make(chan interface{}, config.Sensor.ChannelBufferLength)
-
 	eventMap.forEach(func(eventID, subscriptionID uint64, s *subscription) {
-		s.data = data
+		s.dispatchFn = dispatchFn
 	})
-	subscriptionID := s.eventMap.subscribe(eventMap)
+	s.eventMap.subscribe(subscriptionID, eventMap)
 	glog.V(2).Infof("Subscription %d registered", subscriptionID)
 
 	go func() {
-		defer close(data)
+		<-ctx.Done()
+		glog.V(2).Infof("Subscription %d control channel closed",
+			subscriptionID)
 
-		for {
-			_, ok := <-ctrl
-			if !ok {
-				glog.V(2).Infof("Subscription %d control channel closed",
-					subscriptionID)
-
-				s.Monitor.UnregisterEventGroup(groupID)
-				s.eventMap.unsubscribe(subscriptionID,
-					func(eventID uint64) {
-						/*
-							t, ok := s.Monitor.RegisteredEventType(eventID)
-							if ok && t != perf.EventTypeExternal {
-								s.Monitor.UnregisterEvent(eventID)
-							}
-						*/
-					})
-				return
-			}
-		}
+		s.Monitor.UnregisterEventGroup(groupID)
+		s.eventMap.unsubscribe(subscriptionID, nil)
 	}()
 
 	s.Monitor.EnableGroup(groupID)
 
-	return &stream.Stream{
-		Ctrl: ctrl,
-		Data: data,
-	}, nil
+	atomic.AddInt32(&s.Metrics.Subscriptions, 1)
+	return nil
 }
 
-func (s *Sensor) applyModifiers(eventStream *stream.Stream, modifier api.Modifier) *stream.Stream {
-	if modifier.Throttle != nil {
-		eventStream = stream.Throttle(eventStream, *modifier.Throttle)
+func (s *Sensor) dispatchSamples(samples []perf.EventMonitorSample) {
+	s.dispatchMutex.Lock()
+
+	var qs *queuedSamples
+	if s.dispatchFreelist == nil {
+		qs = &queuedSamples{samples: samples}
+	} else {
+		qs = s.dispatchFreelist
+		s.dispatchFreelist = qs.next
+		qs.next = nil
+		qs.samples = samples
 	}
 
-	if modifier.Limit != nil {
-		eventStream = stream.Limit(eventStream, *modifier.Limit)
+	if s.dispatchQueueTail == nil {
+		s.dispatchQueueHead = qs
+		s.dispatchCond.Signal()
+	} else {
+		s.dispatchQueueTail.next = qs
 	}
+	s.dispatchQueueTail = qs
 
-	return eventStream
+	s.dispatchMutex.Unlock()
 }
 
-// NewSubscription creates a new telemetry subscription from the given
-// api.Subscription descriptor. NewSubscription returns a stream.Stream of
-// api.Events matching the specified filters. Closing the Stream cancels the
-// subscription.
-func (s *Sensor) NewSubscription(sub *api.Subscription) (*stream.Stream, error) {
-	glog.V(1).Infof("Subscribing to %+v", sub)
+func (s *Sensor) popSamples() []perf.EventMonitorSample {
+	qs := s.dispatchQueueHead
+	samples := qs.samples
 
-	eventStream, joiner := stream.NewJoiner()
-	joiner.Off()
+	s.dispatchQueueHead = qs.next
+	if s.dispatchQueueHead == nil {
+		s.dispatchQueueTail = nil
+	}
 
-	if len(sub.EventFilter.ContainerEvents) > 0 ||
-		len(sub.EventFilter.FileEvents) > 0 ||
-		len(sub.EventFilter.KernelEvents) > 0 ||
-		len(sub.EventFilter.NetworkEvents) > 0 ||
-		len(sub.EventFilter.ProcessEvents) > 0 ||
-		len(sub.EventFilter.SyscallEvents) > 0 {
+	qs.next = s.dispatchFreelist
+	qs.samples = nil
+	s.dispatchFreelist = qs
 
-		pes, err := s.createPerfEventStream(sub)
-		if err != nil {
-			joiner.Close()
-			return nil, err
+	return samples
+}
+
+func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
+	eventMap := s.eventMap.getMap()
+	for _, esm := range samples {
+		if esm.Err != nil {
+			glog.Warning(esm.Err)
+			continue
 		}
-		if pes != nil {
-			joiner.Add(pes)
+
+		event, ok := esm.DecodedSample.(*api.TelemetryEvent)
+		if !ok || event == nil {
+			continue
+		}
+
+		subscriptions, ok := eventMap[esm.EventID]
+		if !ok {
+			continue
+		}
+
+		for _, s := range subscriptions {
+			if s.filter != nil {
+				v, err := s.filter.Evaluate(
+					expression.FieldTypeMap(esm.Fields),
+					expression.FieldValueMap(esm.DecodedData))
+				if err != nil {
+					glog.V(1).Infof("Expression evaluation error: %s", err)
+					continue
+				}
+				if !expression.IsValueTrue(v) {
+					continue
+				}
+			}
+			s.dispatchFn(event)
 		}
 	}
+}
 
-	for _, cf := range sub.EventFilter.ChargenEvents {
-		cs, err := newChargenSource(s, cf)
-		if err != nil {
-			joiner.Close()
-			return nil, err
+func (s *Sensor) sampleDispatchLoop() {
+	glog.V(2).Info("Sample dispatch loop started")
+
+	s.dispatchMutex.Lock()
+	for s.dispatchRunning {
+		if s.dispatchQueueHead == nil {
+			s.dispatchCond.Wait()
+			continue
 		}
-		joiner.Add(cs)
+		samples := s.popSamples()
+
+		s.dispatchMutex.Unlock()
+		s.dispatchQueuedSamples(samples)
+		s.dispatchMutex.Lock()
 	}
+	s.dispatchMutex.Unlock()
 
-	for _, tf := range sub.EventFilter.TickerEvents {
-		ts, err := newTickerSource(s, tf)
-		if err != nil {
-			joiner.Close()
-			return nil, err
-		}
-		joiner.Add(ts)
-	}
-
-	if sub.ContainerFilter != nil {
-		// Filter stream as requested by subscriber in the
-		// specified ContainerFilter to restrict the events to
-		// those matching the specified container ids, names,
-		// images, etc.
-		cef := newContainerFilter(sub.ContainerFilter)
-		eventStream = stream.Filter(eventStream, cef.FilterFunc)
-		eventStream = stream.Do(eventStream, cef.DoFunc)
-	}
-
-	if sub.Modifier != nil {
-		eventStream = s.applyModifiers(eventStream, *sub.Modifier)
-	}
-
-	s.Metrics.Subscriptions++
-	joiner.On()
-
-	return eventStream, nil
+	glog.V(2).Info("Sample dispatch loop stopped")
+	s.dispatchWaitGroup.Done()
 }
