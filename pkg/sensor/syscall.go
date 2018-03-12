@@ -25,7 +25,8 @@ import (
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
-	"github.com/golang/glog"
+	"google.golang.org/genproto/googleapis/rpc/code"
+	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 type syscallFilter struct {
@@ -196,7 +197,9 @@ func registerSyscallEvents(
 	groupID int32,
 	eventMap subscriptionMap,
 	events []*api.SyscallEventFilter,
-) {
+) []*google_rpc.Status {
+	var status []*google_rpc.Status
+
 	enterFilters := make(map[string]bool)
 	exitFilters := make(map[string]bool)
 
@@ -206,17 +209,30 @@ func registerSyscallEvents(
 
 		if !containsIDFilter(sef.FilterExpression) {
 			// No wildcard filters for now
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: "Wildcard syscall filter ignored",
+				})
 			continue
 		}
 
 		expr, err := expression.NewExpression(sef.FilterExpression)
 		if err != nil {
-			glog.V(1).Infof("Invalid syscall event filter: %s", err)
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("Invalid syscall event filter: %v", err),
+				})
 			continue
 		}
 		err = expr.ValidateKernelFilter()
 		if err != nil {
-			glog.V(1).Infof("Invalid syscall event filter as kernel filter: %s", err)
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("Invalid syscall event filter as kernel filter: %v", err),
+				})
 			continue
 		}
 		s := expr.KernelFilterString()
@@ -227,6 +243,11 @@ func registerSyscallEvents(
 		case api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT:
 			exitFilters[s] = true
 		default:
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("SyscallEventType %d is invalid", sef.Type),
+				})
 			continue
 		}
 	}
@@ -264,7 +285,11 @@ func registerSyscallEvents(
 				perf.WithEventGroup(groupID),
 				perf.WithFilter("id == 0x7fffffff"))
 			if err != nil {
-				glog.V(1).Infof("Couldn't register dummy syscall event %s: %v", eventName, err)
+				status = append(status,
+					&google_rpc.Status{
+						Code:    int32(code.Code_UNKNOWN),
+						Message: fmt.Sprintf("Could not register dummy syscall event %s: %v", eventName, err),
+					})
 			}
 		} else if atomic.AddInt64(&sensor.dummySyscallEventCount, 1) == 1 {
 			eventID, err = sensor.Monitor.RegisterTracepoint(
@@ -272,7 +297,11 @@ func registerSyscallEvents(
 				perf.WithEventGroup(0),
 				perf.WithFilter("id == 0x7fffffff"))
 			if err != nil {
-				glog.V(1).Infof("Couldn't register dummy syscall event %s: %v", eventName, err)
+				status = append(status,
+					&google_rpc.Status{
+						Code:    int32(code.Code_UNKNOWN),
+						Message: fmt.Sprintf("Could not register dummy syscall event %s: %v", eventName, err),
+					})
 				atomic.AddInt64(&sensor.dummySyscallEventCount, -1)
 			} else {
 				sensor.dummySyscallEventID = eventID
@@ -286,22 +315,28 @@ func registerSyscallEvents(
 		// fetchargs doesn't have to change. Try the new probe first,
 		// because the old probe will also set in the newer kernels,
 		// but it won't fire.
+		kprobeSymbol := syscallNewEnterKprobeAddress
 		eventID, err = sensor.Monitor.RegisterKprobe(
-			syscallNewEnterKprobeAddress, false,
+			kprobeSymbol, false,
 			syscallEnterKprobeFetchargs,
 			f.decodeSyscallTraceEnter,
 			perf.WithEventGroup(groupID),
 			perf.WithFilter(filter))
 		if err != nil {
+			kprobeSymbol = syscallOldEnterKprobeAddress
 			eventID, err = sensor.Monitor.RegisterKprobe(
-				syscallOldEnterKprobeAddress, false,
+				kprobeSymbol, false,
 				syscallEnterKprobeFetchargs,
 				f.decodeSyscallTraceEnter,
 				perf.WithEventGroup(groupID),
 				perf.WithFilter(filter))
 		}
 		if err != nil {
-			glog.V(1).Infof("Couldn't register syscall enter kprobe: %v", err)
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_UNKNOWN),
+					Message: fmt.Sprintf("Could not register syscall enter kprobe %s: %v", kprobeSymbol, err),
+				})
 		} else {
 			s := eventMap.subscribe(eventID)
 			if major >= 3 {
@@ -328,9 +363,15 @@ func registerSyscallEvents(
 			perf.WithEventGroup(groupID),
 			perf.WithFilter(filter))
 		if err != nil {
-			glog.V(1).Infof("Couldn't get %s event id: %v", eventName, err)
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_UNKNOWN),
+					Message: fmt.Sprintf("Could not register tracepoint %s: %v", eventName, err),
+				})
 		} else {
 			eventMap.subscribe(eventID)
 		}
 	}
+
+	return status
 }

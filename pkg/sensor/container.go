@@ -16,6 +16,7 @@ package sensor
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"unicode"
@@ -29,6 +30,9 @@ import (
 	"github.com/golang/glog"
 
 	"golang.org/x/sys/unix"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
+	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 var containerEventTypes = expression.FieldTypeMap{
@@ -412,8 +416,9 @@ func registerContainerEvents(
 	groupID int32,
 	eventMap subscriptionMap,
 	events []*api.ContainerEventFilter,
-) {
+) []*google_rpc.Status {
 	var (
+		status        []*google_rpc.Status
 		filters       [6]*api.Expression
 		subscriptions [6]*subscription
 	)
@@ -421,6 +426,11 @@ func registerContainerEvents(
 	for _, cef := range events {
 		t := cef.Type
 		if t < 1 || t > 5 {
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("ContainerEventType %d is invalid", t),
+				})
 			continue
 		}
 		if subscriptions[t] == nil {
@@ -451,7 +461,11 @@ func registerContainerEvents(
 		expr, err := expression.NewExpression(filters[i])
 		if err != nil {
 			// Bad filter. Remove subscription
-			glog.V(1).Infof("Invalid container filter expression: %s", err)
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("Invalid container filter expression: %v", err),
+				})
 			eventMap.unsubscribe(s.eventID)
 			continue
 		}
@@ -459,13 +473,19 @@ func registerContainerEvents(
 		err = expr.Validate(containerEventTypes)
 		if err != nil {
 			// Bad filter. Remove subscription
-			glog.V(1).Infof("Invalid container filter expression: %s", err)
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("Invalid container filter expression: %v", err),
+				})
 			eventMap.unsubscribe(s.eventID)
 			continue
 		}
 
 		s.filter = expr
 	}
+
+	return status
 }
 
 ///////////////////////////////////////////////////////////////////////////////

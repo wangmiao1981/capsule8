@@ -22,7 +22,9 @@ import (
 
 	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
-	"github.com/golang/glog"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
+	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 const (
@@ -93,13 +95,21 @@ func registerFileEvents(
 	groupID int32,
 	eventMap subscriptionMap,
 	events []*api.FileEventFilter,
-) {
-	var filterString string
+) []*google_rpc.Status {
+	var (
+		status       []*google_rpc.Status
+		filterString string
+	)
 
 	wildcard := false
 	filters := make(map[string]bool, len(events))
 	for _, fef := range events {
 		if fef.Type != api.FileEventType_FILE_EVENT_TYPE_OPEN {
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("FileEventType %d is invalid", fef.Type),
+				})
 			continue
 		}
 
@@ -111,12 +121,20 @@ func registerFileEvents(
 		} else {
 			expr, err := expression.NewExpression(fef.FilterExpression)
 			if err != nil {
-				glog.V(1).Infof("Invalid file event filter: %s", err)
+				status = append(status,
+					&google_rpc.Status{
+						Code:    int32(code.Code_INVALID_ARGUMENT),
+						Message: fmt.Sprintf("Invalid file event filter: %v", err),
+					})
 				continue
 			}
 			err = expr.ValidateKernelFilter()
 			if err != nil {
-				glog.V(1).Infof("Invalid file event filter as kernel filter: %s", err)
+				status = append(status,
+					&google_rpc.Status{
+						Code:    int32(code.Code_INVALID_ARGUMENT),
+						Message: fmt.Sprintf("Invalid file event filter as kernel filter: %v", err),
+					})
 				continue
 			}
 			s := expr.KernelFilterString()
@@ -126,7 +144,7 @@ func registerFileEvents(
 
 	if !wildcard {
 		if len(filters) == 0 {
-			return
+			return status
 		}
 
 		parts := make([]string, 0, len(filters))
@@ -135,7 +153,7 @@ func registerFileEvents(
 		}
 		filterString = strings.Join(parts, " || ")
 	} else if len(events) == 0 {
-		return
+		return status
 	}
 
 	f := fileOpenFilter{
@@ -148,10 +166,14 @@ func registerFileEvents(
 		perf.WithEventGroup(groupID),
 		perf.WithFilter(filterString))
 	if err != nil {
-		glog.Warning("Couldn't register kprobe %s: %s",
-			fsDoSysOpenKprobeAddress, err)
-		return
+		status = append(status,
+			&google_rpc.Status{
+				Code:    int32(code.Code_UNKNOWN),
+				Message: fmt.Sprintf("Could not register kprobe %s: %v", fsDoSysOpenKprobeAddress, err),
+			})
+		return status
 	}
 
 	eventMap.subscribe(eventID)
+	return status
 }

@@ -22,6 +22,7 @@ package capsule8.api.v0;
 import "capsule8/api/v0/subscription.proto";
 import "capsule8/api/v0/telemetry_event.proto";
 import "google/api/annotations.proto";
+import "google/rpc/status.proto";
 
 //
 // Capsule8 Telemetry API
@@ -51,6 +52,9 @@ message GetEventsRequest {
 message GetEventsResponse {
         // Can publish one or more message(s) at a time
         repeated ReceivedTelemetryEvent events = 1;
+
+        // Can publish one or more status(es) at a time
+        repeated google.rpc.Status statuses = 2;
 }
 
 // A telemetry event received from a Sensor or Recorder.

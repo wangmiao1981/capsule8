@@ -24,7 +24,8 @@ import (
 	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
-	"github.com/golang/glog"
+	"google.golang.org/genproto/googleapis/rpc/code"
+	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 type kprobeFilter struct {
@@ -37,11 +38,11 @@ type kprobeFilter struct {
 
 var validSymbolRegex = regexp.MustCompile("^[A-Za-z_]{1}[\\w]*$")
 
-func newKprobeFilter(kef *api.KernelFunctionCallFilter) *kprobeFilter {
+func newKprobeFilter(kef *api.KernelFunctionCallFilter) (*kprobeFilter, error) {
 	// The symbol must begin with [A-Za-z_] and contain only [A-Za-z0-9_]
 	// We do not accept addresses or offsets
 	if !validSymbolRegex.MatchString(kef.Symbol) {
-		return nil
+		return nil, fmt.Errorf("Kprobe symbol %q is invalid", kef.Symbol)
 	}
 
 	var filterString string
@@ -49,8 +50,7 @@ func newKprobeFilter(kef *api.KernelFunctionCallFilter) *kprobeFilter {
 	if kef.FilterExpression != nil {
 		expr, err := expression.NewExpression(kef.FilterExpression)
 		if err != nil {
-			glog.V(1).Infof("Bad kprobe filter expression: %s", err)
-			return nil
+			return nil, fmt.Errorf("Bad kprobe filter expression: %v", err)
 		}
 
 		filterString = expr.KernelFilterString()
@@ -68,10 +68,11 @@ func newKprobeFilter(kef *api.KernelFunctionCallFilter) *kprobeFilter {
 	case api.KernelFunctionCallEventType_KERNEL_FUNCTION_CALL_EVENT_TYPE_EXIT:
 		filter.onReturn = true
 	default:
-		return nil
+		return nil, fmt.Errorf("KernelFunctionCallEventType %d is invalid",
+			kef.Type)
 	}
 
-	return filter
+	return filter, nil
 }
 
 func (f *kprobeFilter) decodeKprobe(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
@@ -141,11 +142,17 @@ func registerKernelEvents(
 	groupID int32,
 	eventMap subscriptionMap,
 	events []*api.KernelFunctionCallFilter,
-) {
+) []*google_rpc.Status {
+	var status []*google_rpc.Status
+
 	for _, kef := range events {
-		f := newKprobeFilter(kef)
-		if f == nil {
-			glog.V(1).Infof("Invalid kprobe symbol: %s", kef.Symbol)
+		f, err := newKprobeFilter(kef)
+		if err != nil {
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_INVALID_ARGUMENT),
+					Message: fmt.Sprintf("Invalid kprobe filter %s: %v", kef.Symbol, err),
+				})
 			continue
 		}
 
@@ -163,10 +170,15 @@ func registerKernelEvents(
 				loc = "entry"
 			}
 
-			glog.V(1).Infof("Couldn't register kprobe on %s %s [%s]: %v",
-				f.symbol, loc, f.fetchargs(), err)
+			status = append(status,
+				&google_rpc.Status{
+					Code:    int32(code.Code_UNKNOWN),
+					Message: fmt.Sprintf("Couldn't register kprobe on %s %s [%s]: %v", f.symbol, loc, f.fetchargs(), err),
+				})
 			continue
 		}
 		eventMap.subscribe(eventID)
 	}
+
+	return status
 }
