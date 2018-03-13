@@ -503,11 +503,10 @@ type EventMonitor struct {
 	// struct.
 	dispatchFn SampleDispatchFn
 
+	// Used by dispatch
 	dispatchQueueHead       *queuedSamples
 	dispatchQueueTail       *queuedSamples
 	dispatchFreeList        *queuedSamples
-	dispatchMutex           sync.Mutex
-	dispatchCond            sync.Cond
 	dispatchExternalSamples bool
 
 	// Mutable only by the dispatchSampleLoop goroutine. As external
@@ -518,7 +517,8 @@ type EventMonitor struct {
 	lastSampleTimeDispatched uint64
 
 	// This lock protects everything mutable below this point.
-	lock *sync.Mutex
+	lock sync.Mutex
+	cond sync.Cond
 
 	// Mutable only by the monitor goroutine, but readable by others
 	isRunning bool
@@ -545,8 +545,7 @@ type EventMonitor struct {
 	pids               []int
 
 	// Used only once during shutdown
-	cond *sync.Cond
-	wg   sync.WaitGroup
+	wg sync.WaitGroup
 }
 
 type queuedSamples struct {
@@ -1683,7 +1682,11 @@ func (monitor *EventMonitor) dispatchSampleLoop() {
 	for monitor.isRunning {
 		var samples [][]EventMonitorSample
 
-		monitor.dispatchMutex.Lock()
+		monitor.lock.Lock()
+		if !monitor.isRunning {
+			monitor.lock.Unlock()
+			break
+		}
 		qs := monitor.dispatchQueueHead
 		if qs != nil {
 			samples = qs.samples
@@ -1696,10 +1699,10 @@ func (monitor *EventMonitor) dispatchSampleLoop() {
 			qs.samples = nil
 			monitor.dispatchFreeList = qs
 		} else if !monitor.dispatchExternalSamples {
-			monitor.dispatchCond.Wait()
+			monitor.cond.Wait()
 		}
 		monitor.dispatchExternalSamples = false
-		monitor.dispatchMutex.Unlock()
+		monitor.lock.Unlock()
 
 		if len(samples) > 0 {
 			monitor.dispatchSamples(samples)
@@ -1715,7 +1718,7 @@ func (monitor *EventMonitor) enqueueSamples(samples [][]EventMonitorSample) {
 		return
 	}
 
-	monitor.dispatchMutex.Lock()
+	monitor.lock.Lock()
 
 	qs := monitor.dispatchFreeList
 	if qs == nil {
@@ -1733,8 +1736,8 @@ func (monitor *EventMonitor) enqueueSamples(samples [][]EventMonitorSample) {
 	}
 	monitor.dispatchQueueTail = qs
 
-	monitor.dispatchCond.Signal()
-	monitor.dispatchMutex.Unlock()
+	monitor.cond.Broadcast()
+	monitor.lock.Unlock()
 }
 
 func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
@@ -1887,7 +1890,6 @@ func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 		monitor.pipe[0], &event)
 
 	monitor.dispatchFn = fn
-	monitor.dispatchCond = sync.Cond{L: &monitor.dispatchMutex}
 
 	monitor.wg.Add(1)
 	go monitor.dispatchSampleLoop()
@@ -1934,10 +1936,10 @@ runloop:
 
 		if n == 0 {
 			if monitor.nextExternalSampleTime != 0 {
-				monitor.dispatchMutex.Lock()
+				monitor.lock.Lock()
 				monitor.dispatchExternalSamples = true
-				monitor.dispatchCond.Broadcast()
-				monitor.dispatchMutex.Unlock()
+				monitor.cond.Broadcast()
+				monitor.lock.Unlock()
 			}
 		} else if n > 0 {
 			readyfds := make([]int, 0, n)
@@ -1990,12 +1992,8 @@ runloop:
 	}
 	monitor.lock.Unlock()
 
-	monitor.dispatchMutex.Lock()
-	monitor.dispatchCond.Broadcast()
-	monitor.dispatchMutex.Unlock()
-	monitor.wg.Wait()
-
 	monitor.stopWithSignal()
+
 	return err
 }
 
@@ -2006,9 +2004,9 @@ runloop:
 // which the caller may learn whether the EventMonitor is stopped.
 func (monitor *EventMonitor) Stop(wait bool) {
 	monitor.lock.Lock()
-	defer monitor.lock.Unlock()
 
 	if !monitor.isRunning {
+		monitor.lock.Unlock()
 		return
 	}
 
@@ -2018,11 +2016,17 @@ func (monitor *EventMonitor) Stop(wait bool) {
 		unix.Close(fd)
 	}
 
-	if wait {
+	if !wait {
+		monitor.lock.Unlock()
+	} else {
 		for monitor.isRunning {
 			// Wait for condition to signal that Run() is done
 			monitor.cond.Wait()
 		}
+		monitor.lock.Unlock()
+
+		// Wait for other goroutines to exit
+		monitor.wg.Wait()
 	}
 }
 
@@ -2466,8 +2470,7 @@ func NewEventMonitor(options ...EventMonitorOption) (*EventMonitor, error) {
 		ringBufferNumPages: opts.ringBufferNumPages,
 		perfEventOpenFlags: opts.flags,
 	}
-	monitor.lock = &sync.Mutex{}
-	monitor.cond = sync.NewCond(monitor.lock)
+	monitor.cond = sync.Cond{L: &monitor.lock}
 
 	if len(opts.cgroups) > 0 {
 		cgroups := make(map[string]bool, len(opts.cgroups))
