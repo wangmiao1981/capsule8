@@ -34,7 +34,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/capsule8/capsule8/pkg/config"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/golang/glog"
 
@@ -481,8 +480,7 @@ type EventMonitor struct {
 
 	// Immutable items. No protection required. These fields are all set
 	// when the EventMonitor is created and never changed after that.
-	dispatchChan chan [][]EventMonitorSample
-	epollFD      int
+	epollFD int
 
 	// Mutable by various goroutines, and also needed by the monitor
 	// goroutine. All of these are thread-safe mutable without a lock.
@@ -504,6 +502,13 @@ type EventMonitor struct {
 	// Load once there and cache locally to avoid cache misses on this
 	// struct.
 	dispatchFn SampleDispatchFn
+
+	dispatchQueueHead       *queuedSamples
+	dispatchQueueTail       *queuedSamples
+	dispatchFreeList        *queuedSamples
+	dispatchMutex           sync.Mutex
+	dispatchCond            sync.Cond
+	dispatchExternalSamples bool
 
 	// Mutable only by the dispatchSampleLoop goroutine. As external
 	// samples are pulled from externalSamples, they're entered into this
@@ -542,6 +547,11 @@ type EventMonitor struct {
 	// Used only once during shutdown
 	cond *sync.Cond
 	wg   sync.WaitGroup
+}
+
+type queuedSamples struct {
+	next    *queuedSamples
+	samples [][]EventMonitorSample
 }
 
 func fixupEventAttr(eventAttr *EventAttr) {
@@ -1671,22 +1681,60 @@ func (monitor *EventMonitor) dispatchSampleLoop() {
 	defer monitor.wg.Done()
 
 	for monitor.isRunning {
-		select {
-		case samples, ok := <-monitor.dispatchChan:
-			if !ok {
-				// Channel is closed; stop dispatch
-				monitor.dispatchChan = nil
-				return
+		var samples [][]EventMonitorSample
+
+		monitor.dispatchMutex.Lock()
+		qs := monitor.dispatchQueueHead
+		if qs != nil {
+			samples = qs.samples
+			monitor.dispatchQueueHead = qs.next
+			if monitor.dispatchQueueHead == nil {
+				monitor.dispatchQueueTail = nil
 			}
 
-			if len(samples) > 0 {
-				monitor.dispatchSamples(samples)
-			} else {
-				now := sys.CurrentMonotonicRaw()
-				monitor.processExternalSamples(uint64(now))
-			}
+			qs.next = monitor.dispatchFreeList
+			qs.samples = nil
+			monitor.dispatchFreeList = qs
+		} else if !monitor.dispatchExternalSamples {
+			monitor.dispatchCond.Wait()
+		}
+		monitor.dispatchExternalSamples = false
+		monitor.dispatchMutex.Unlock()
+
+		if len(samples) > 0 {
+			monitor.dispatchSamples(samples)
+		} else {
+			now := sys.CurrentMonotonicRaw()
+			monitor.processExternalSamples(uint64(now))
 		}
 	}
+}
+
+func (monitor *EventMonitor) enqueueSamples(samples [][]EventMonitorSample) {
+	if len(samples) == 0 {
+		return
+	}
+
+	monitor.dispatchMutex.Lock()
+
+	qs := monitor.dispatchFreeList
+	if qs == nil {
+		qs = &queuedSamples{}
+	} else {
+		monitor.dispatchFreeList = qs.next
+		qs.next = nil
+	}
+	qs.samples = samples
+
+	if monitor.dispatchQueueTail == nil {
+		monitor.dispatchQueueHead = qs
+	} else {
+		monitor.dispatchQueueTail.next = qs
+	}
+	monitor.dispatchQueueTail = qs
+
+	monitor.dispatchCond.Signal()
+	monitor.dispatchMutex.Unlock()
 }
 
 func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
@@ -1784,9 +1832,7 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 		}()
 	}
 
-	if len(samples) > 0 {
-		monitor.dispatchChan <- samples
-	}
+	monitor.enqueueSamples(samples)
 }
 
 func (monitor *EventMonitor) flushPendingSamples() {
@@ -1803,9 +1849,7 @@ func (monitor *EventMonitor) flushPendingSamples() {
 	}
 
 	monitor.hasPendingSamples = false
-	if len(samples) > 0 {
-		monitor.dispatchChan <- samples
-	}
+	monitor.enqueueSamples(samples)
 }
 
 // Go does not provide fcntl(). We need to provide it for ourselves
@@ -1842,9 +1886,8 @@ func (monitor *EventMonitor) Run(fn SampleDispatchFn) error {
 	err = unix.EpollCtl(monitor.epollFD, unix.EPOLL_CTL_ADD,
 		monitor.pipe[0], &event)
 
-	monitor.dispatchChan = make(chan [][]EventMonitorSample,
-		config.Sensor.ChannelBufferLength)
 	monitor.dispatchFn = fn
+	monitor.dispatchCond = sync.Cond{L: &monitor.dispatchMutex}
 
 	monitor.wg.Add(1)
 	go monitor.dispatchSampleLoop()
@@ -1891,7 +1934,10 @@ runloop:
 
 		if n == 0 {
 			if monitor.nextExternalSampleTime != 0 {
-				monitor.dispatchChan <- nil
+				monitor.dispatchMutex.Lock()
+				monitor.dispatchExternalSamples = true
+				monitor.dispatchCond.Broadcast()
+				monitor.dispatchMutex.Unlock()
 			}
 		} else if n > 0 {
 			readyfds := make([]int, 0, n)
@@ -1933,10 +1979,6 @@ runloop:
 		}
 	}
 
-	if monitor.dispatchChan != nil {
-		close(monitor.dispatchChan)
-	}
-
 	monitor.lock.Lock()
 	if monitor.pipe[1] != -1 {
 		unix.Close(monitor.pipe[1])
@@ -1948,10 +1990,10 @@ runloop:
 	}
 	monitor.lock.Unlock()
 
-	if monitor.dispatchChan != nil {
-		// Wait for dispatchSampleLoop goroutine to exit
-		monitor.wg.Wait()
-	}
+	monitor.dispatchMutex.Lock()
+	monitor.dispatchCond.Broadcast()
+	monitor.dispatchMutex.Unlock()
+	monitor.wg.Wait()
 
 	monitor.stopWithSignal()
 	return err
