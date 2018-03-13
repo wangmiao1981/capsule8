@@ -15,13 +15,16 @@
 package functional
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
 	api "github.com/capsule8/capsule8/api/v0"
+
 	"github.com/golang/glog"
-	"golang.org/x/net/context"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
 	"google.golang.org/grpc"
 )
 
@@ -114,31 +117,42 @@ func (tt *TelemetryTester) runTelemetryTest(t *testing.T) {
 		return
 	}
 
-	receiverStarted := sync.WaitGroup{}
-	receiverStarted.Add(1)
+	// The sensor will always send a StartupEvent as the first event. The
+	// event is guaranteed and does not count against any modifiers in the
+	// subscription. Wait for the receipt of this event before continuing.
+	response, err := stream.Recv()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if len(response.Events) != 0 {
+		t.Errorf("Expected GetEventsResponse with only status; got %+v", response)
+		return
+	}
+	if len(response.Statuses) != 1 {
+		t.Errorf("Expected GetEventsResponse with OK status; got %+v", response)
+		return
+	}
+	if response.Statuses[0].Code != int32(code.Code_OK) {
+		t.Errorf("Expected GetEventsResponse with OK status; got %+v", response)
+		return
+	}
 
 	tt.waitGroup.Add(1)
 	go func() {
-		// There is no deterministic way to sychronously know
-		// when the telemetry subscription is active, so we
-		// need a decent sized sleep here.
-		time.Sleep(1 * time.Second)
-		receiverStarted.Done()
+		defer tt.waitGroup.Done()
 
 		for {
 			response, err := stream.Recv()
 			if err != nil {
 				tt.err = err
-				tt.waitGroup.Done()
 				return
 			}
 
-			for _, telemetryEvent := range response.Events {
-				glog.V(2).Infof("Telemetry event %+v",
-					telemetryEvent)
-				if !tt.test.HandleTelemetryEvent(t, telemetryEvent) {
+			for _, e := range response.Events {
+				glog.V(2).Infof("Telemetry event %+v", e)
+				if !tt.test.HandleTelemetryEvent(t, e) {
 					cancel()
-					tt.waitGroup.Done()
 					return
 				}
 			}
@@ -147,10 +161,6 @@ func (tt *TelemetryTester) runTelemetryTest(t *testing.T) {
 
 	tt.waitGroup.Add(1)
 	go func() {
-		// Wait for receiver goroutine to have started before starting
-		// starting container
-		receiverStarted.Wait()
-
 		tt.test.RunContainer(t)
 		tt.waitGroup.Done()
 	}()

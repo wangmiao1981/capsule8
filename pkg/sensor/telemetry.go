@@ -158,14 +158,19 @@ type telemetryServiceServer struct {
 	sensor *Sensor
 }
 
-func (t *telemetryServiceServer) GetEvents(req *api.GetEventsRequest, stream api.TelemetryService_GetEventsServer) error {
+func (t *telemetryServiceServer) GetEvents(
+	req *api.GetEventsRequest,
+	stream api.TelemetryService_GetEventsServer,
+) error {
 	sub := req.Subscription
 	glog.V(1).Infof("GetEvents(%+v)", sub)
 
 	// Validate sub.ContainerFilter
-	var containerFilter *containerFilter
+	var (
+		err             error
+		containerFilter *containerFilter
+	)
 	if sub.ContainerFilter != nil {
-		var err error
 		containerFilter, err = newContainerFilter(sub.ContainerFilter)
 		if err != nil {
 			return err
@@ -223,9 +228,13 @@ func (t *telemetryServiceServer) GetEvents(req *api.GetEventsRequest, stream api
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
-	if err := t.sensor.NewSubscription(ctx, sub, f); err != nil {
+	r := &api.GetEventsResponse{}
+	if r.Statuses, err = t.sensor.NewSubscription(ctx, sub, f); err != nil {
 		glog.Errorf("Failed to get events for subscription %+v: %s",
 			sub, err.Error())
+		return err
+	}
+	if err = stream.Send(r); err != nil {
 		return err
 	}
 
@@ -248,12 +257,12 @@ func (t *telemetryServiceServer) GetEvents(req *api.GetEventsRequest, stream api
 				nextEventTime = now
 				nextEventTime.Add(throttleDuration)
 			}
-			r := &api.GetEventsResponse{
+			r = &api.GetEventsResponse{
 				Events: []*api.ReceivedTelemetryEvent{
 					&api.ReceivedTelemetryEvent{Event: e},
 				},
 			}
-			if err := stream.Send(r); err != nil {
+			if err = stream.Send(r); err != nil {
 				return err
 			}
 			if maxEvents > 0 {

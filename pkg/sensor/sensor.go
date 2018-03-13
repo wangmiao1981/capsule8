@@ -37,6 +37,9 @@ import (
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"github.com/golang/glog"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
+	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 // Number of random bytes to generate for Sensor Id
@@ -255,8 +258,7 @@ func (s *Sensor) NewEvent() *api.TelemetryEvent {
 
 	// The first sequence number is intentionally 1 to disambiguate
 	// from no sequence number being included in the protobuf message.
-	s.sequenceNumber++
-	sequenceNumber := s.sequenceNumber
+	sequenceNumber := atomic.AddUint64(&s.sequenceNumber, 1)
 
 	var b []byte
 	buf := bytes.NewBuffer(b)
@@ -267,7 +269,7 @@ func (s *Sensor) NewEvent() *api.TelemetryEvent {
 	h := sha256.Sum256(buf.Bytes())
 	eventID := hex.EncodeToString(h[:])
 
-	s.Metrics.Events++
+	atomic.AddUint64(&s.Metrics.Events, 1)
 
 	return &api.TelemetryEvent{
 		Id:                   eventID,
@@ -446,31 +448,49 @@ func (s *Sensor) NewSubscription(
 	ctx context.Context,
 	sub *api.Subscription,
 	dispatchFn subscriptionDispatchFn,
-) error {
-	glog.V(1).Infof("Subscribing to %+v", sub)
+) ([]*google_rpc.Status, error) {
 	if sub.EventFilter == nil {
-		return errors.New("Invalid subscription (no EventFilter)")
+		glog.V(1).Infof("Invalid subscription: %+v", sub)
+		return nil, errors.New("Invalid subscription (no EventFilter)")
 	}
 
 	subscriptionID, eventMap := s.eventMap.newSubscriptionMap()
+	glog.V(1).Infof("Subscription %d: %+v", subscriptionID, sub)
 
 	groupName := fmt.Sprintf("Subscription %d", subscriptionID)
 	groupID, err := s.Monitor.RegisterEventGroup(groupName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	registerContainerEvents(s, groupID, eventMap, sub.EventFilter.ContainerEvents)
-	registerFileEvents(s, groupID, eventMap, sub.EventFilter.FileEvents)
-	registerKernelEvents(s, groupID, eventMap, sub.EventFilter.KernelEvents)
-	registerNetworkEvents(s, groupID, eventMap, sub.EventFilter.NetworkEvents)
-	registerProcessEvents(s, groupID, eventMap, sub.EventFilter.ProcessEvents)
-	registerSyscallEvents(s, groupID, eventMap, sub.EventFilter.SyscallEvents)
-	registerChargenEvents(s, groupID, eventMap, sub.EventFilter.ChargenEvents)
-	registerTimerEvents(s, groupID, eventMap, sub.EventFilter.TickerEvents)
+	var status []*google_rpc.Status
+	status = append(status,
+		registerContainerEvents(s, groupID, eventMap, sub.EventFilter.ContainerEvents)...)
+	status = append(status,
+		registerFileEvents(s, groupID, eventMap, sub.EventFilter.FileEvents)...)
+	status = append(status,
+		registerKernelEvents(s, groupID, eventMap, sub.EventFilter.KernelEvents)...)
+	status = append(status,
+		registerNetworkEvents(s, groupID, eventMap, sub.EventFilter.NetworkEvents)...)
+	status = append(status,
+		registerProcessEvents(s, groupID, eventMap, sub.EventFilter.ProcessEvents)...)
+	status = append(status,
+		registerSyscallEvents(s, groupID, eventMap, sub.EventFilter.SyscallEvents)...)
+	status = append(status,
+		registerChargenEvents(s, groupID, eventMap, sub.EventFilter.ChargenEvents)...)
+	status = append(status,
+		registerTimerEvents(s, groupID, eventMap, sub.EventFilter.TickerEvents)...)
+	if len(status) > 0 {
+		for _, s := range status {
+			glog.V(1).Infof("Subscription %d: [%s] %s",
+				subscriptionID, code.Code_name[s.Code], s.Message)
+		}
+	} else {
+		status = []*google_rpc.Status{{Code: int32(code.Code_OK)}}
+	}
 
 	if len(eventMap) == 0 {
-		return errors.New("Invalid subscription (no filters specified)")
+		return status, errors.New("Invalid subscription (no filters specified)")
 	}
 
 	eventMap.forEach(func(eventID, subscriptionID uint64, s *subscription) {
@@ -491,7 +511,7 @@ func (s *Sensor) NewSubscription(
 	s.Monitor.EnableGroup(groupID)
 
 	atomic.AddInt32(&s.Metrics.Subscriptions, 1)
-	return nil
+	return status, nil
 }
 
 func (s *Sensor) dispatchSamples(samples []perf.EventMonitorSample) {

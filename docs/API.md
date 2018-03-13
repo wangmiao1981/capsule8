@@ -1095,6 +1095,7 @@ A response message containing telemetry events
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | events | [ReceivedTelemetryEvent](#capsule8.api.v0.ReceivedTelemetryEvent) | repeated | Can publish one or more message(s) at a time |
+| statuses | [.google.rpc.Status](#capsule8.api.v0..google.rpc.Status) | repeated | Can publish one or more status(es) at a time |
 
 
 
