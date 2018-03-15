@@ -443,6 +443,7 @@ func registerContainerEvents(
 				eventID = sensor.ContainerCache.ContainerUpdatedEventID
 			}
 			subscriptions[t] = subscr.addEventSink(eventID)
+			subscriptions[t].containerView = cef.View
 		}
 		filters[t] = expression.LogicalOr(filters[t], cef.FilterExpression)
 	}

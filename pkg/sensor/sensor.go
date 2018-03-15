@@ -590,6 +590,16 @@ func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
 				!s.containerFilter.match(event) {
 				continue
 			}
+			if cef, ok := event.Event.(*api.TelemetryEvent_Container); ok {
+				if es.containerView != api.ContainerEventView_FULL {
+					if len(eventSinks) > 1 {
+						event = copyTelemetryEvent(event)
+						cef = event.Event.(*api.TelemetryEvent_Container)
+					}
+					cef.Container.DockerConfigJson = ""
+					cef.Container.OciConfigJson = ""
+				}
+			}
 			s.dispatchFn(event)
 		}
 	}
@@ -614,4 +624,34 @@ func (s *Sensor) sampleDispatchLoop() {
 
 	glog.V(2).Info("Sample dispatch loop stopped")
 	s.dispatchWaitGroup.Done()
+}
+
+func copyTelemetryEvent(oldEvent *api.TelemetryEvent) *api.TelemetryEvent {
+	newEvent := *oldEvent
+	switch event := newEvent.Event.(type) {
+	case *api.TelemetryEvent_Chargen:
+		newChargen := *event.Chargen
+		newEvent.Event.(*api.TelemetryEvent_Chargen).Chargen = &newChargen
+	case *api.TelemetryEvent_Container:
+		newContainer := *event.Container
+		newEvent.Event.(*api.TelemetryEvent_Container).Container = &newContainer
+	case *api.TelemetryEvent_File:
+		newFile := *event.File
+		newEvent.Event.(*api.TelemetryEvent_File).File = &newFile
+	case *api.TelemetryEvent_KernelCall:
+		newKernelCall := *event.KernelCall
+		newEvent.Event.(*api.TelemetryEvent_KernelCall).KernelCall = &newKernelCall
+	case *api.TelemetryEvent_Network:
+		newNetwork := *event.Network
+		newEvent.Event.(*api.TelemetryEvent_Network).Network = &newNetwork
+	case *api.TelemetryEvent_Process:
+		newProcess := *event.Process
+		newEvent.Event.(*api.TelemetryEvent_Process).Process = &newProcess
+	case *api.TelemetryEvent_Syscall:
+		newSyscall := *event.Syscall
+		newEvent.Event.(*api.TelemetryEvent_Syscall).Syscall = &newSyscall
+	default:
+		glog.Fatal("Unable to copy event: %+v", oldEvent)
+	}
+	return &newEvent
 }

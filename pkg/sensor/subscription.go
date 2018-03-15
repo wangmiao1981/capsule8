@@ -38,10 +38,11 @@ type eventSinkDispatchFn func(event *api.TelemetryEvent)
 type eventSinkUnregisterFn func(es *eventSink)
 
 type eventSink struct {
-	subscription *subscription
-	eventID      uint64
-	unregister   eventSinkUnregisterFn
-	filter       *expression.Expression
+	subscription  *subscription
+	eventID       uint64
+	unregister    eventSinkUnregisterFn
+	filter        *expression.Expression
+	containerView api.ContainerEventView
 }
 
 func (s *subscription) addEventSink(eventID uint64) *eventSink {
