@@ -165,18 +165,6 @@ func (t *telemetryServiceServer) GetEvents(
 	sub := req.Subscription
 	glog.V(1).Infof("GetEvents(%+v)", sub)
 
-	// Validate sub.ContainerFilter
-	var (
-		err             error
-		containerFilter *containerFilter
-	)
-	if sub.ContainerFilter != nil {
-		containerFilter, err = newContainerFilter(sub.ContainerFilter)
-		if err != nil {
-			return err
-		}
-	}
-
 	// Validate sub.Modifier
 	var (
 		maxEvents        int64
@@ -228,6 +216,7 @@ func (t *telemetryServiceServer) GetEvents(
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
+	var err error
 	r := &api.GetEventsResponse{}
 	if r.Statuses, err = t.sensor.NewSubscription(ctx, sub, f); err != nil {
 		glog.Errorf("Failed to get events for subscription %+v: %s",
@@ -246,9 +235,6 @@ func (t *telemetryServiceServer) GetEvents(
 			glog.V(1).Infof("Client disconnected, closing stream")
 			return ctx.Err()
 		case e := <-events:
-			if containerFilter != nil && !containerFilter.match(e) {
-				break
-			}
 			if throttleDuration != 0 {
 				now := time.Now()
 				if now.Before(nextEventTime) {

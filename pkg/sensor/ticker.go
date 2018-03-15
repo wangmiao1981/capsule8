@@ -24,7 +24,6 @@ import (
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
-	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 var tickerEventTypes = expression.FieldTypeMap{
@@ -52,33 +51,27 @@ func (t *tickerFilter) decodeTickerEvent(
 
 func registerTimerEvents(
 	sensor *Sensor,
-	groupID int32,
-	eventMap subscriptionMap,
+	subscr *subscription,
 	events []*api.TickerEventFilter,
-) []*google_rpc.Status {
-	var status []*google_rpc.Status
+) {
 
 	f := tickerFilter{sensor: sensor}
 	eventID, err := sensor.Monitor.RegisterExternalEvent("ticker",
 		f.decodeTickerEvent, tickerEventTypes)
 	if err != nil {
-		status = append(status,
-			&google_rpc.Status{
-				Code:    int32(code.Code_UNKNOWN),
-				Message: fmt.Sprintf("Could not register ticker event: %v", err),
-			})
-		return status
+		subscr.logStatus(
+			code.Code_UNKNOWN,
+			fmt.Sprintf("Could not register ticker event: %v", err))
+		return
 	}
 
 	done := make(chan struct{})
 	ntickers := 0
 	for _, e := range events {
 		if e.Interval <= 0 {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("Invalid ticker interval: %d", e.Interval),
-				})
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("Invalid ticker interval: %d", e.Interval))
 			continue
 		}
 		ticker := time.NewTicker(time.Duration(e.Interval))
@@ -109,12 +102,10 @@ func registerTimerEvents(
 	if ntickers == 0 {
 		sensor.Monitor.UnregisterEvent(eventID)
 	} else {
-		s := eventMap.subscribe(eventID)
-		s.unregister = func(eventID uint64, s *subscription) {
-			sensor.Monitor.UnregisterEvent(eventID)
+		es := subscr.addEventSink(eventID)
+		es.unregister = func(es *eventSink) {
+			sensor.Monitor.UnregisterEvent(es.eventID)
 			close(done)
 		}
 	}
-
-	return status
 }

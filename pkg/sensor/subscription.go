@@ -21,77 +21,71 @@ import (
 	api "github.com/capsule8/capsule8/api/v0"
 
 	"github.com/capsule8/capsule8/pkg/expression"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
+	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
-type subscriptionDispatchFn func(event *api.TelemetryEvent)
-type subscriptionUnregisterFn func(eventID uint64, sub *subscription)
-
 type subscription struct {
-	eventID    uint64
-	dispatchFn subscriptionDispatchFn
-	unregister subscriptionUnregisterFn
-	filter     *expression.Expression
+	eventGroupID    int32
+	containerFilter *containerFilter
+	eventSinks      map[uint64]*eventSink
+	status          []*google_rpc.Status
+	dispatchFn      eventSinkDispatchFn
+}
+
+type eventSinkDispatchFn func(event *api.TelemetryEvent)
+type eventSinkUnregisterFn func(es *eventSink)
+
+type eventSink struct {
+	subscription *subscription
+	eventID      uint64
+	unregister   eventSinkUnregisterFn
+	filter       *expression.Expression
+}
+
+func (s *subscription) addEventSink(eventID uint64) *eventSink {
+	es := &eventSink{
+		subscription: s,
+		eventID:      eventID,
+	}
+	if s.eventSinks == nil {
+		s.eventSinks = make(map[uint64]*eventSink)
+	}
+	s.eventSinks[eventID] = es
+	return es
+}
+
+func (s *subscription) removeEventSink(es *eventSink) {
+	delete(s.eventSinks, es.eventID)
+}
+
+func (s *subscription) logStatus(code code.Code, message string) {
+	s.status = append(s.status,
+		&google_rpc.Status{
+			Code:    int32(code),
+			Message: message,
+		})
 }
 
 //
 // safeSubscriptionMap
-// map[uint64]map[uint64]*subscription
+// map[uint64]map[int32]*eventSink
 //
 
-type subscriptionMap map[uint64]map[uint64]*subscription
+type subscriptionMap map[uint64]map[int32]*eventSink
 
 func newSubscriptionMap() subscriptionMap {
 	return make(subscriptionMap)
 }
 
-const dummySubscriptionID = ^uint64(0) // 0xffffffffffffffff
-
-func (sm subscriptionMap) subscribe(eventID uint64) *subscription {
-	im, ok := sm[eventID]
-	if !ok {
-		im = make(map[uint64]*subscription)
-		sm[eventID] = im
-	}
-	if s, ok := im[dummySubscriptionID]; ok {
-		return s
-	}
-
-	s := &subscription{
-		eventID: eventID,
-	}
-	im[dummySubscriptionID] = s
-	return s
-}
-
-func (sm subscriptionMap) unsubscribe(eventID uint64) {
-	delete(sm, eventID)
-}
-
-func (sm subscriptionMap) forEach(f func(uint64, uint64, *subscription)) {
-	for eventID, im := range sm {
-		for subscriptionID, s := range im {
-			f(eventID, subscriptionID, s)
-		}
-	}
-}
-
 type safeSubscriptionMap struct {
-	sync.Mutex                      // used only by writers
-	active             atomic.Value // map[uint64]map[uint64]*subscription
-	nextSubscriptionID uint64
+	sync.Mutex              // used only by writers
+	active     atomic.Value // map[uint64]map[int32]*eventSink
 }
 
 func newSafeSubscriptionMap() *safeSubscriptionMap {
 	return &safeSubscriptionMap{}
-}
-
-func (ssm *safeSubscriptionMap) newSubscriptionMap() (uint64, subscriptionMap) {
-	ssm.Lock()
-	ssm.nextSubscriptionID++
-	subscriptionID := ssm.nextSubscriptionID
-	ssm.Unlock()
-
-	return subscriptionID, newSubscriptionMap()
 }
 
 func (ssm *safeSubscriptionMap) getMap() subscriptionMap {
@@ -102,19 +96,16 @@ func (ssm *safeSubscriptionMap) getMap() subscriptionMap {
 	return value.(subscriptionMap)
 }
 
-func (ssm *safeSubscriptionMap) subscribe(
-	subscriptionID uint64,
-	fm subscriptionMap,
-) {
+func (ssm *safeSubscriptionMap) subscribe(subscr *subscription) {
 	ssm.Lock()
 	defer ssm.Unlock()
 
 	om := ssm.getMap()
-	nm := make(subscriptionMap, len(om)+len(fm))
+	nm := make(subscriptionMap, len(om)+len(subscr.eventSinks))
 
 	if om != nil {
 		for k, v := range om {
-			c := make(map[uint64]*subscription, len(v))
+			c := make(map[int32]*eventSink, len(v))
 			for k2, v2 := range v {
 				c[k2] = v2
 			}
@@ -122,26 +113,27 @@ func (ssm *safeSubscriptionMap) subscribe(
 		}
 	}
 
-	for eventID, newSubscriptionMap := range fm {
+	for eventID, es := range subscr.eventSinks {
 		subscriptionMap, ok := nm[eventID]
 		if !ok {
-			subscriptionMap = make(map[uint64]*subscription)
+			subscriptionMap = make(map[int32]*eventSink)
 			nm[eventID] = subscriptionMap
 		}
-		for _, s := range newSubscriptionMap {
-			subscriptionMap[subscriptionID] = s
-		}
+		subscriptionMap[subscr.eventGroupID] = es
 	}
 
 	ssm.active.Store(nm)
 }
 
 func (ssm *safeSubscriptionMap) unsubscribe(
-	subscriptionID uint64,
+	subscr *subscription,
 	f func(uint64),
 ) {
-	var deadEventIDs []uint64
-	deadSubscriptions := make(map[uint64]*subscription)
+	var (
+		deadEventIDs   []uint64
+		deadEventSinks []*eventSink
+	)
+	subscriptionID := subscr.eventGroupID
 
 	ssm.Lock()
 
@@ -149,15 +141,16 @@ func (ssm *safeSubscriptionMap) unsubscribe(
 	if om != nil {
 		nm := make(subscriptionMap, len(om))
 		for eventID, v := range om {
-			var m map[uint64]*subscription
-			for ID, s := range v {
+			var m map[int32]*eventSink
+			for ID, es := range v {
 				if ID != subscriptionID {
 					if m == nil {
-						m = make(map[uint64]*subscription)
+						m = make(map[int32]*eventSink)
 					}
-					m[ID] = s
-				} else if s.unregister != nil {
-					deadSubscriptions[eventID] = s
+					m[ID] = es
+				} else if es.unregister != nil {
+					deadEventSinks = append(deadEventSinks,
+						es)
 				}
 			}
 			if m == nil {
@@ -171,8 +164,8 @@ func (ssm *safeSubscriptionMap) unsubscribe(
 
 	ssm.Unlock()
 
-	for eventID, s := range deadSubscriptions {
-		s.unregister(eventID, s)
+	for _, es := range deadEventSinks {
+		es.unregister(es)
 	}
 	if f != nil {
 		for _, eventID := range deadEventIDs {

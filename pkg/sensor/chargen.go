@@ -24,7 +24,6 @@ import (
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
-	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 var chargenEventTypes = expression.FieldTypeMap{
@@ -61,22 +60,17 @@ func generateCharacters(start, length uint64) string {
 
 func registerChargenEvents(
 	sensor *Sensor,
-	groupID int32,
-	eventMap subscriptionMap,
+	subscr *subscription,
 	events []*api.ChargenEventFilter,
-) []*google_rpc.Status {
-	var status []*google_rpc.Status
-
+) {
 	f := chargenFilter{sensor: sensor}
 	eventID, err := sensor.Monitor.RegisterExternalEvent("chargen",
 		f.decodeChargenEvent, chargenEventTypes)
 	if err != nil {
-		status = append(status,
-			&google_rpc.Status{
-				Code:    int32(code.Code_UNKNOWN),
-				Message: fmt.Sprintf("Could not register chargen event: %v", err),
-			})
-		return status
+		subscr.logStatus(
+			code.Code_UNKNOWN,
+			fmt.Sprintf("Could not register chargen event: %v", err))
+		return
 	}
 
 	done := make(chan struct{})
@@ -84,11 +78,9 @@ func registerChargenEvents(
 	for _, e := range events {
 		// XXX there should be a maximum bound here too ...
 		if e.Length == 0 || e.Length > 1<<16 {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("Chargen length out of range (%d)", e.Length),
-				})
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("Chargen length out of range (%d)", e.Length))
 			continue
 		}
 		nchargens++
@@ -120,12 +112,10 @@ func registerChargenEvents(
 	if nchargens == 0 {
 		sensor.Monitor.UnregisterEvent(eventID)
 	} else {
-		s := eventMap.subscribe(eventID)
-		s.unregister = func(eventID uint64, s *subscription) {
-			sensor.Monitor.UnregisterEvent(eventID)
+		es := subscr.addEventSink(eventID)
+		es.unregister = func(es *eventSink) {
+			sensor.Monitor.UnregisterEvent(es.eventID)
 			close(done)
 		}
 	}
-
-	return status
 }

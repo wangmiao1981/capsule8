@@ -22,7 +22,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,6 +176,8 @@ func (s *Sensor) Start() error {
 	// order coming from the EventMonitor in order to maintain internal
 	// consistency, but it makes no guarantees about the order in which
 	// telemetry events are emitted to external clients.
+	// NOTE: if more than one dispatch goroutine is spun up, then there
+	// needs to be synchronization in containerFilter
 	s.dispatchRunning = true
 	s.dispatchWaitGroup.Add(1)
 	go s.sampleDispatchLoop()
@@ -447,65 +448,64 @@ func (s *Sensor) createEventMonitor() error {
 func (s *Sensor) NewSubscription(
 	ctx context.Context,
 	sub *api.Subscription,
-	dispatchFn subscriptionDispatchFn,
+	dispatchFn eventSinkDispatchFn,
 ) ([]*google_rpc.Status, error) {
 	if sub.EventFilter == nil {
 		glog.V(1).Infof("Invalid subscription: %+v", sub)
 		return nil, errors.New("Invalid subscription (no EventFilter)")
 	}
 
-	subscriptionID, eventMap := s.eventMap.newSubscriptionMap()
-	glog.V(1).Infof("Subscription %d: %+v", subscriptionID, sub)
-
-	groupName := fmt.Sprintf("Subscription %d", subscriptionID)
-	groupID, err := s.Monitor.RegisterEventGroup(groupName)
+	groupID, err := s.Monitor.RegisterEventGroup("")
 	if err != nil {
 		return nil, err
 	}
+	subscr := &subscription{
+		eventGroupID: groupID,
+		dispatchFn:   dispatchFn,
+	}
+	glog.V(1).Infof("Subscription %d: %+v", groupID, sub)
 
-	var status []*google_rpc.Status
-	status = append(status,
-		registerContainerEvents(s, groupID, eventMap, sub.EventFilter.ContainerEvents)...)
-	status = append(status,
-		registerFileEvents(s, groupID, eventMap, sub.EventFilter.FileEvents)...)
-	status = append(status,
-		registerKernelEvents(s, groupID, eventMap, sub.EventFilter.KernelEvents)...)
-	status = append(status,
-		registerNetworkEvents(s, groupID, eventMap, sub.EventFilter.NetworkEvents)...)
-	status = append(status,
-		registerProcessEvents(s, groupID, eventMap, sub.EventFilter.ProcessEvents)...)
-	status = append(status,
-		registerSyscallEvents(s, groupID, eventMap, sub.EventFilter.SyscallEvents)...)
-	status = append(status,
-		registerChargenEvents(s, groupID, eventMap, sub.EventFilter.ChargenEvents)...)
-	status = append(status,
-		registerTimerEvents(s, groupID, eventMap, sub.EventFilter.TickerEvents)...)
+	if sub.ContainerFilter != nil {
+		subscr.containerFilter, err = newContainerFilter(sub.ContainerFilter)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	registerChargenEvents(s, subscr, sub.EventFilter.ChargenEvents)
+	registerContainerEvents(s, subscr, sub.EventFilter.ContainerEvents)
+	registerFileEvents(s, subscr, sub.EventFilter.FileEvents)
+	registerKernelEvents(s, subscr, sub.EventFilter.KernelEvents)
+	registerNetworkEvents(s, subscr, sub.EventFilter.NetworkEvents)
+	registerProcessEvents(s, subscr, sub.EventFilter.ProcessEvents)
+	registerSyscallEvents(s, subscr, sub.EventFilter.SyscallEvents)
+	registerTimerEvents(s, subscr, sub.EventFilter.TickerEvents)
+
+	status := subscr.status
+	subscr.status = nil
 	if len(status) > 0 {
 		for _, s := range status {
 			glog.V(1).Infof("Subscription %d: [%s] %s",
-				subscriptionID, code.Code_name[s.Code], s.Message)
+				groupID, code.Code_name[s.Code], s.Message)
 		}
 	} else {
 		status = []*google_rpc.Status{{Code: int32(code.Code_OK)}}
 	}
 
-	if len(eventMap) == 0 {
+	if len(subscr.eventSinks) == 0 {
 		return status, errors.New("Invalid subscription (no filters specified)")
 	}
 
-	eventMap.forEach(func(eventID, subscriptionID uint64, s *subscription) {
-		s.dispatchFn = dispatchFn
-	})
-	s.eventMap.subscribe(subscriptionID, eventMap)
-	glog.V(2).Infof("Subscription %d registered", subscriptionID)
+	s.eventMap.subscribe(subscr)
+	glog.V(2).Infof("Subscription %d registered", subscr.eventGroupID)
 
 	go func() {
 		<-ctx.Done()
 		glog.V(2).Infof("Subscription %d control channel closed",
-			subscriptionID)
+			groupID)
 
 		s.Monitor.UnregisterEventGroup(groupID)
-		s.eventMap.unsubscribe(subscriptionID, nil)
+		s.eventMap.unsubscribe(subscr, nil)
 	}()
 
 	s.Monitor.EnableGroup(groupID)
@@ -567,14 +567,14 @@ func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
 			continue
 		}
 
-		subscriptions, ok := eventMap[esm.EventID]
+		eventSinks, ok := eventMap[esm.EventID]
 		if !ok {
 			continue
 		}
 
-		for _, s := range subscriptions {
-			if s.filter != nil {
-				v, err := s.filter.Evaluate(
+		for _, es := range eventSinks {
+			if es.filter != nil {
+				v, err := es.filter.Evaluate(
 					expression.FieldTypeMap(esm.Fields),
 					expression.FieldValueMap(esm.DecodedData))
 				if err != nil {
@@ -584,6 +584,11 @@ func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
 				if !expression.IsValueTrue(v) {
 					continue
 				}
+			}
+			s := es.subscription
+			if s.containerFilter != nil &&
+				!s.containerFilter.match(event) {
+				continue
 			}
 			s.dispatchFn(event)
 		}

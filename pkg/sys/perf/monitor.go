@@ -2276,6 +2276,10 @@ func (monitor *EventMonitor) RegisterEventGroup(name string) (int32, error) {
 	monitor.registerNewEventGroup(group)
 	monitor.lock.Unlock()
 
+	if len(group.name) == 0 {
+		group.name = fmt.Sprintf("EventGroup %d", group.groupID)
+	}
+
 	return group.groupID, nil
 }
 
