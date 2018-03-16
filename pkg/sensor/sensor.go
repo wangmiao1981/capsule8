@@ -314,7 +314,7 @@ func (s *Sensor) NewEventFromSample(
 
 	e.ProcessPid = pid
 	if pid != 0 {
-		e.ProcessId = leader.ProcessID()
+		e.ProcessId = task.ProcessID
 		e.ProcessTgid = int32(task.TGID)
 
 		if c := task.Creds; c != nil {

@@ -53,8 +53,8 @@ func (f *processFilter) decodeSchedProcessFork(sample *perf.SampleRecord, data p
 		},
 	}
 
-	if _, l := f.sensor.ProcessCache.LookupTaskAndLeader(int(childPid)); l != nil {
-		ev.GetProcess().ForkChildId = l.ProcessID()
+	if t := f.sensor.ProcessCache.LookupTask(int(childPid)); t != nil {
+		ev.GetProcess().ForkChildId = t.ProcessID
 	}
 
 	return ev, nil
