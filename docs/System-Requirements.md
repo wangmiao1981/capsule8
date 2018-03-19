@@ -2,7 +2,7 @@
 
 The Capsule8 sensor requires kernel support for KProbes and Perf
 
-_Note: We can't guarentee the Capsule8 sensor will run on every version of every distribution,
+_Note: We can't guarantee the Capsule8 sensor will run on every version of every distribution,
 the requirements below should be viewed as general guidelines. If you're having
 issues running the Capsule8 sensor on your system we'd love to hear about it so we can
 improve! Feel free to make an issue on this repo containing all of your system's 
