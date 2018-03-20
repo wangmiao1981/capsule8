@@ -32,7 +32,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
-	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 var containerEventTypes = expression.FieldTypeMap{
@@ -413,24 +412,20 @@ func (info *ContainerInfo) Update(
 
 func registerContainerEvents(
 	sensor *Sensor,
-	groupID int32,
-	eventMap subscriptionMap,
+	subscr *subscription,
 	events []*api.ContainerEventFilter,
-) []*google_rpc.Status {
+) {
 	var (
-		status        []*google_rpc.Status
 		filters       [6]*api.Expression
-		subscriptions [6]*subscription
+		subscriptions [6]*eventSink
 	)
 
 	for _, cef := range events {
 		t := cef.Type
 		if t < 1 || t > 5 {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("ContainerEventType %d is invalid", t),
-				})
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("ContainerEventType %d is invalid", t))
 			continue
 		}
 		if subscriptions[t] == nil {
@@ -447,7 +442,8 @@ func registerContainerEvents(
 			case api.ContainerEventType_CONTAINER_EVENT_TYPE_UPDATED:
 				eventID = sensor.ContainerCache.ContainerUpdatedEventID
 			}
-			subscriptions[t] = eventMap.subscribe(eventID)
+			subscriptions[t] = subscr.addEventSink(eventID)
+			subscriptions[t].containerView = cef.View
 		}
 		filters[t] = expression.LogicalOr(filters[t], cef.FilterExpression)
 	}
@@ -461,31 +457,25 @@ func registerContainerEvents(
 		expr, err := expression.NewExpression(filters[i])
 		if err != nil {
 			// Bad filter. Remove subscription
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("Invalid container filter expression: %v", err),
-				})
-			eventMap.unsubscribe(s.eventID)
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("Invalid container filter expression: %v", err))
+			subscr.removeEventSink(s)
 			continue
 		}
 
 		err = expr.Validate(containerEventTypes)
 		if err != nil {
 			// Bad filter. Remove subscription
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("Invalid container filter expression: %v", err),
-				})
-			eventMap.unsubscribe(s.eventID)
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("Invalid container filter expression: %v", err))
+			subscr.removeEventSink(s)
 			continue
 		}
 
 		s.filter = expr
 	}
-
-	return status
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -25,7 +25,6 @@ import (
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
-	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 type kprobeFilter struct {
@@ -139,20 +138,15 @@ func (f *kprobeFilter) fetchargs() string {
 
 func registerKernelEvents(
 	sensor *Sensor,
-	groupID int32,
-	eventMap subscriptionMap,
+	subscr *subscription,
 	events []*api.KernelFunctionCallFilter,
-) []*google_rpc.Status {
-	var status []*google_rpc.Status
-
+) {
 	for _, kef := range events {
 		f, err := newKprobeFilter(kef)
 		if err != nil {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("Invalid kprobe filter %s: %v", kef.Symbol, err),
-				})
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("Invalid kprobe filter %s: %v", kef.Symbol, err))
 			continue
 		}
 
@@ -160,7 +154,7 @@ func registerKernelEvents(
 		eventID, err := sensor.Monitor.RegisterKprobe(
 			f.symbol, f.onReturn, f.fetchargs(),
 			f.decodeKprobe,
-			perf.WithEventGroup(groupID),
+			perf.WithEventGroup(subscr.eventGroupID),
 			perf.WithFilter(f.filter))
 		if err != nil {
 			var loc string
@@ -170,15 +164,11 @@ func registerKernelEvents(
 				loc = "entry"
 			}
 
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_UNKNOWN),
-					Message: fmt.Sprintf("Couldn't register kprobe on %s %s [%s]: %v", f.symbol, loc, f.fetchargs(), err),
-				})
+			subscr.logStatus(
+				code.Code_UNKNOWN,
+				fmt.Sprintf("Couldn't register kprobe on %s %s [%s]: %v", f.symbol, loc, f.fetchargs(), err))
 			continue
 		}
-		eventMap.subscribe(eventID)
+		subscr.addEventSink(eventID)
 	}
-
-	return status
 }

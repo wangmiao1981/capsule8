@@ -24,7 +24,6 @@ import (
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
-	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 const (
@@ -92,24 +91,18 @@ func rewriteFileEventFilter(fef *api.FileEventFilter) {
 
 func registerFileEvents(
 	sensor *Sensor,
-	groupID int32,
-	eventMap subscriptionMap,
+	subscr *subscription,
 	events []*api.FileEventFilter,
-) []*google_rpc.Status {
-	var (
-		status       []*google_rpc.Status
-		filterString string
-	)
+) {
+	var filterString string
 
 	wildcard := false
 	filters := make(map[string]bool, len(events))
 	for _, fef := range events {
 		if fef.Type != api.FileEventType_FILE_EVENT_TYPE_OPEN {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("FileEventType %d is invalid", fef.Type),
-				})
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("FileEventType %d is invalid", fef.Type))
 			continue
 		}
 
@@ -121,20 +114,16 @@ func registerFileEvents(
 		} else {
 			expr, err := expression.NewExpression(fef.FilterExpression)
 			if err != nil {
-				status = append(status,
-					&google_rpc.Status{
-						Code:    int32(code.Code_INVALID_ARGUMENT),
-						Message: fmt.Sprintf("Invalid file event filter: %v", err),
-					})
+				subscr.logStatus(
+					code.Code_INVALID_ARGUMENT,
+					fmt.Sprintf("Invalid file event filter: %v", err))
 				continue
 			}
 			err = expr.ValidateKernelFilter()
 			if err != nil {
-				status = append(status,
-					&google_rpc.Status{
-						Code:    int32(code.Code_INVALID_ARGUMENT),
-						Message: fmt.Sprintf("Invalid file event filter as kernel filter: %v", err),
-					})
+				subscr.logStatus(
+					code.Code_INVALID_ARGUMENT,
+					fmt.Sprintf("Invalid file event filter as kernel filter: %v", err))
 				continue
 			}
 			s := expr.KernelFilterString()
@@ -144,7 +133,7 @@ func registerFileEvents(
 
 	if !wildcard {
 		if len(filters) == 0 {
-			return status
+			return
 		}
 
 		parts := make([]string, 0, len(filters))
@@ -153,7 +142,7 @@ func registerFileEvents(
 		}
 		filterString = strings.Join(parts, " || ")
 	} else if len(events) == 0 {
-		return status
+		return
 	}
 
 	f := fileOpenFilter{
@@ -163,17 +152,14 @@ func registerFileEvents(
 	eventID, err := sensor.Monitor.RegisterKprobe(
 		fsDoSysOpenKprobeAddress, false,
 		fsDoSysOpenKprobeFetchargs, f.decodeDoSysOpen,
-		perf.WithEventGroup(groupID),
+		perf.WithEventGroup(subscr.eventGroupID),
 		perf.WithFilter(filterString))
 	if err != nil {
-		status = append(status,
-			&google_rpc.Status{
-				Code:    int32(code.Code_UNKNOWN),
-				Message: fmt.Sprintf("Could not register kprobe %s: %v", fsDoSysOpenKprobeAddress, err),
-			})
-		return status
+		subscr.logStatus(
+			code.Code_UNKNOWN,
+			fmt.Sprintf("Could not register kprobe %s: %v", fsDoSysOpenKprobeAddress, err))
+		return
 	}
 
-	eventMap.subscribe(eventID)
-	return status
+	subscr.addEventSink(eventID)
 }

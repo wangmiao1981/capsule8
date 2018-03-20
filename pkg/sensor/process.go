@@ -28,7 +28,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
-	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
 
 const (
@@ -173,12 +172,9 @@ func rewriteProcessEventFilter(pef *api.ProcessEventFilter) {
 
 func registerProcessEvents(
 	sensor *Sensor,
-	groupID int32,
-	eventMap subscriptionMap,
+	subscr *subscription,
 	events []*api.ProcessEventFilter,
-) []*google_rpc.Status {
-	var status []*google_rpc.Status
-
+) {
 	forkFilter := false
 	execFilters := make(map[string]bool)
 	execWildcard := false
@@ -198,20 +194,16 @@ func registerProcessEvents(
 			} else {
 				expr, err := expression.NewExpression(pef.FilterExpression)
 				if err != nil {
-					status = append(status,
-						&google_rpc.Status{
-							Code:    int32(code.Code_INVALID_ARGUMENT),
-							Message: fmt.Sprintf("Invalid process exec event filter: %v", err),
-						})
+					subscr.logStatus(
+						code.Code_INVALID_ARGUMENT,
+						fmt.Sprintf("Invalid process exec event filter: %v", err))
 					continue
 				}
 				err = expr.ValidateKernelFilter()
 				if err != nil {
-					status = append(status,
-						&google_rpc.Status{
-							Code:    int32(code.Code_INVALID_ARGUMENT),
-							Message: fmt.Sprintf("Invalid process exec event filter as kernel filter: %v", err),
-						})
+					subscr.logStatus(
+						code.Code_INVALID_ARGUMENT,
+						fmt.Sprintf("Invalid process exec event filter as kernel filter: %v", err))
 					continue
 				}
 				s := expr.KernelFilterString()
@@ -223,31 +215,25 @@ func registerProcessEvents(
 			} else {
 				expr, err := expression.NewExpression(pef.FilterExpression)
 				if err != nil {
-					status = append(status,
-						&google_rpc.Status{
-							Code:    int32(code.Code_INVALID_ARGUMENT),
-							Message: fmt.Sprintf("Invalid process exit event filter: %v", err),
-						})
+					subscr.logStatus(
+						code.Code_INVALID_ARGUMENT,
+						fmt.Sprintf("Invalid process exit event filter: %v", err))
 					continue
 				}
 				err = expr.ValidateKernelFilter()
 				if err != nil {
-					status = append(status,
-						&google_rpc.Status{
-							Code:    int32(code.Code_INVALID_ARGUMENT),
-							Message: fmt.Sprintf("Invalid process exit event filter as kernel filter: %v", err),
-						})
+					subscr.logStatus(
+						code.Code_INVALID_ARGUMENT,
+						fmt.Sprintf("Invalid process exit event filter as kernel filter: %v", err))
 					continue
 				}
 				s := expr.KernelFilterString()
 				exitFilters[s] = true
 			}
 		default:
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_INVALID_ARGUMENT),
-					Message: fmt.Sprintf("ProcessEventType %d is invalid", pef.Type),
-				})
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("ProcessEventType %d is invalid", pef.Type))
 			continue
 		}
 	}
@@ -260,15 +246,13 @@ func registerProcessEvents(
 		eventName := "sched/sched_process_fork"
 		eventID, err := sensor.Monitor.RegisterTracepoint(eventName,
 			f.decodeSchedProcessFork,
-			perf.WithEventGroup(groupID))
+			perf.WithEventGroup(subscr.eventGroupID))
 		if err != nil {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_UNKNOWN),
-					Message: fmt.Sprintf("Could not register tracepoint %s: %v", eventName, err),
-				})
+			subscr.logStatus(
+				code.Code_UNKNOWN,
+				fmt.Sprintf("Could not register tracepoint %s: %v", eventName, err))
 		} else {
-			eventMap.subscribe(eventID)
+			subscr.addEventSink(eventID)
 		}
 	}
 
@@ -278,16 +262,14 @@ func registerProcessEvents(
 		eventName := "sched/sched_process_exec"
 		eventID, err := sensor.Monitor.RegisterTracepoint(eventName,
 			f.decodeSchedProcessExec,
-			perf.WithEventGroup(groupID),
+			perf.WithEventGroup(subscr.eventGroupID),
 			perf.WithFilter(filterString))
 		if err != nil {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_UNKNOWN),
-					Message: fmt.Sprintf("Could not register tracepoint %s: %v", eventName, err),
-				})
+			subscr.logStatus(
+				code.Code_UNKNOWN,
+				fmt.Sprintf("Could not register tracepoint %s: %v", eventName, err))
 		} else {
-			eventMap.subscribe(eventID)
+			subscr.addEventSink(eventID)
 		}
 	}
 
@@ -296,18 +278,14 @@ func registerProcessEvents(
 
 		eventID, err := sensor.Monitor.RegisterKprobe(exitSymbol,
 			false, exitFetchargs, f.decodeDoExit,
-			perf.WithEventGroup(groupID),
+			perf.WithEventGroup(subscr.eventGroupID),
 			perf.WithFilter(filterString))
 		if err != nil {
-			status = append(status,
-				&google_rpc.Status{
-					Code:    int32(code.Code_UNKNOWN),
-					Message: fmt.Sprintf("Could not register probe %s: %v", exitSymbol, err),
-				})
+			subscr.logStatus(
+				code.Code_UNKNOWN,
+				fmt.Sprintf("Could not register probe %s: %v", exitSymbol, err))
 		} else {
-			eventMap.subscribe(eventID)
+			subscr.addEventSink(eventID)
 		}
 	}
-
-	return status
 }
