@@ -1,3 +1,27 @@
+## 0.9.0-alpha (Mar 22, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Add an event sent to a client after processing its subscription ([#169](https://github.com/capsule8/capsule8/pull/169))
+
+IMPROVEMENTS:
+
+  * Filter docker/oci config from events based on ContainerView in subscriptions ([#171](https://github.com/capsule8/capsule8/pull/171))
+  * Remove the use of channels in EventMonitor ([#167](https://github.com/capsule8/capsule8/pull/167))
+  * Remove the use of the streams package from the sensor ([#163](https://github.com/capsule8/capsule8/pull/163))
+  * Add example CLI for easily subscribing to telemetry ([#162](https://github.com/capsule8/capsule8/pull/162))
+
+BUG FIXES:
+
+  * Spell guarantee correctly in system docs ([#173](https://github.com/capsule8/capsule8/pull/173))
+  * Fix an intermittent problem with EventMonitor.Close hanging ([#170](https://github.com/capsule8/capsule8/pull/170))
+  * Update vendor submodule to latest hash ([#168](https://github.com/capsule8/capsule8/pull/168))
+  * Fix benchmark crash on startup introduced in #157 ([#166](https://github.com/capsule8/capsule8/pull/166))
+
 ## 0.8.0-alpha (Mar 7, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
