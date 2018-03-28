@@ -27,6 +27,9 @@ import (
 )
 
 const (
+	networkKprobeMoveAddrToUserSymbol    = "move_addr_to_user"
+	networkKprobeMoveAddrToUserFetchargs = "sa_family=+0(%di):u16 sin_port=+2(%di):u16 sin_addr=+4(%di):u32 sun_path=+2(%di):string sin6_port=+2(%di):u16 sin6_addr_high=+8(%di):u64 sin6_addr_low=+16(%di):u64"
+
 	networkKprobeBindSymbol    = "sys_bind"
 	networkKprobeBindFetchargs = "fd=%di sa_family=+0(%si):u16 sin_port=+2(%si):u16 sin_addr=+4(%si):u32 sun_path=+2(%si):string sin6_port=+2(%si):u16 sin6_addr_high=+8(%si):u64 sin6_addr_low=+16(%si):u64"
 
@@ -41,6 +44,10 @@ const (
 )
 
 type networkFilter struct {
+	// Cache of kprobe events for deferred association of network address info.
+	// All caches are kprobe specific and are a mapping of `common_pid` -> cached event
+	acceptCache map[int32]*api.TelemetryEvent
+
 	sensor *Sensor
 }
 
@@ -130,11 +137,28 @@ func (f *networkFilter) newNetworkEvent(
 
 func (f *networkFilter) decodeSysEnterAccept(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
 	event := f.newNetworkEvent(api.NetworkEventType_NETWORK_EVENT_TYPE_ACCEPT_ATTEMPT, sample, data)
-	return event, nil
+	// Cache this sys_accept event for deferred data correlation
+	f.acceptCache[data["common_pid"].(int32)] = event
+	// Return nil here since we are deferring data correlation
+	return nil, nil
 }
 
 func (f *networkFilter) decodeSysExitAccept(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
 	event := f.newNetworkEvent(api.NetworkEventType_NETWORK_EVENT_TYPE_ACCEPT_RESULT, sample, data)
+	// Remove sys_accept event from cache after we've seen the exit event
+	delete(f.acceptCache, data["common_pid"].(int32))
+	return event, nil
+}
+
+// Attempt to correlate data to a sys enter accept event
+func (f *networkFilter) correlateSysEnterAcceptData(sample *perf.SampleRecord, data perf.TraceEventSampleData) (interface{}, error) {
+	originalEvent, ok := f.acceptCache[data["common_pid"].(int32)]
+	if !ok {
+		return nil, nil
+	}
+	event := f.newNetworkEvent(api.NetworkEventType_NETWORK_EVENT_TYPE_ACCEPT_ATTEMPT, sample, data)
+	// The only field we want from the original event is `fd`
+	event.GetNetwork().Sockfd = originalEvent.GetNetwork().Sockfd
 	return event, nil
 }
 
@@ -373,13 +397,17 @@ func registerNetworkEvents(
 	}
 
 	f := networkFilter{
-		sensor: sensor,
+		acceptCache: make(map[int32]*api.TelemetryEvent),
+		sensor:      sensor,
 	}
 
 	registerEvent(sensor.Monitor, subscr, "syscalls/sys_enter_accept", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
 	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_accept", f.decodeSysExitAccept, nfs.acceptResultFilters)
 	registerEvent(sensor.Monitor, subscr, "syscalls/sys_enter_accept4", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
 	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_accept4", f.decodeSysExitAccept, nfs.acceptResultFilters)
+	// TODO: This will have to change if we want to use the network cache to correlate data to recvfrom events
+	// Pass in acceptAttemptFilters here to allow for filtering of accept attempt based on network address data
+	registerKprobe(sensor.Monitor, subscr, networkKprobeMoveAddrToUserSymbol, networkKprobeMoveAddrToUserFetchargs, f.correlateSysEnterAcceptData, nfs.acceptAttemptFilters)
 
 	registerKprobe(sensor.Monitor, subscr, networkKprobeBindSymbol, networkKprobeBindFetchargs, f.decodeSysBind, nfs.bindAttemptFilters)
 	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_bind", f.decodeSysExitBind, nfs.bindResultFilters)
