@@ -253,7 +253,11 @@ func (nt *networkTest) HandleTelemetryEvent(t *testing.T, te *api.ReceivedTeleme
 
 			case api.NetworkEventType_NETWORK_EVENT_TYPE_ACCEPT_ATTEMPT:
 				if nt.serverSocket != 0 && event.Network.Sockfd != nt.serverSocket {
-					// This is not the accept() attempt we are looking for
+					// Only evaluate server ACCEPT syscalls
+					if event.Network.Address == nil {
+						t.Error("Expected network address to present")
+						return false
+					}
 					return true
 				}
 
