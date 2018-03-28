@@ -18,9 +18,71 @@ import (
 	"testing"
 
 	"github.com/golang/glog"
+	"github.com/stretchr/testify/assert"
 )
 
-func TestMounts(t *testing.T) {
+var mockMounts = []struct {
+	mount     Mount
+	mountLine string
+}{
+	{
+		Mount{
+			MountID:        uint(260),
+			ParentID:       uint(89),
+			Major:          uint(253),
+			Minor:          uint(6),
+			Root:           "/containers/ab63f6eab155cf698a20e7d5e03298dd8baf442ff6e4e20e2dff320f3e2fee3e/mounts",
+			MountPoint:     "/var/lib/docker/containers/ab63f6eab155cf698a20e7d5e03298dd8baf442ff6e4e20e2dff320f3e2fee3e/mounts",
+			MountOptions:   []string{"rw", "relatime"},
+			OptionalFields: map[string]string{"unbindable": ""},
+			FilesystemType: "xfs",
+			MountSource:    "/dev/mapper/rootvg-docker_lv",
+			SuperOptions: map[string]string{
+				"attr2":    "",
+				"inode64":  "",
+				"noquota":  "",
+				"rw":       "",
+				"seclabel": "",
+			},
+		},
+		"260 89 253:6 /containers/ab63f6eab155cf698a20e7d5e03298dd8baf442ff6e4e20e2dff320f3e2fee3e/mounts /var/lib/docker/containers/ab63f6eab155cf698a20e7d5e03298dd8baf442ff6e4e20e2dff320f3e2fee3e/mounts rw,relatime unbindable - xfs /dev/mapper/rootvg-docker_lv rw,seclabel,attr2,inode64,noquota",
+	},
+	{
+		Mount{
+			MountID:        uint(287),
+			ParentID:       uint(26),
+			Major:          uint(0),
+			Minor:          uint(47),
+			Root:           "/",
+			MountPoint:     "/run/user/42",
+			MountOptions:   []string{"rw", "nosuid", "nodev", "relatime"},
+			OptionalFields: map[string]string{"shared": "226"},
+			FilesystemType: "tmpfs",
+			MountSource:    "tmpfs",
+			SuperOptions: map[string]string{
+				"gid":      "42",
+				"mode":     "700",
+				"rw":       "",
+				"seclabel": "",
+				"size":     "1632548k",
+				"uid":      "42",
+			},
+		},
+		"287 26 0:47 / /run/user/42 rw,nosuid,nodev,relatime shared:226 - tmpfs tmpfs rw,seclabel,size=1632548k,mode=700,uid=42,gid=42",
+	},
+}
+
+func TestMockMounts(t *testing.T) {
+	for _, m := range mockMounts {
+		obtainedMount, err := parseMount(m.mountLine)
+		if err != nil {
+			t.Error("Could not parse mount, got: ", err)
+		}
+		assert.Equal(t, m.mount, obtainedMount)
+	}
+}
+
+func TestLiveMounts(t *testing.T) {
 	mounts := Mounts()
 
 	if len(mounts) == 0 {

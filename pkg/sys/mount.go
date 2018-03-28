@@ -16,6 +16,7 @@ package sys
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,6 +50,74 @@ type Mount struct {
 	SuperOptions   map[string]string
 }
 
+func parseMount(line string) (Mount, error) {
+	fields := strings.Split(line, " ")
+
+	mountID, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return Mount{}, fmt.Errorf("Couldn't parse mountID %s", fields[0])
+	}
+
+	parentID, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return Mount{}, fmt.Errorf("Couldn't parse parentID %s", fields[1])
+	}
+
+	mm := strings.Split(fields[2], ":")
+	major, err := strconv.Atoi(mm[0])
+	if err != nil {
+		return Mount{}, fmt.Errorf("Couldn't parse major %s", mm[0])
+	}
+
+	minor, err := strconv.Atoi(mm[1])
+	if err != nil {
+		return Mount{}, fmt.Errorf("Couldn't parse minor %s", mm[1])
+	}
+
+	mountOptions := strings.Split(fields[5], ",")
+
+	optionalFieldsMap := make(map[string]string)
+	var i int
+	for i = 6; fields[i] != "-"; i++ {
+		tagValue := strings.Split(fields[i], ":")
+		if len(tagValue) == 2 {
+			optionalFieldsMap[tagValue[0]] = tagValue[1]
+		} else if len(tagValue) == 1 {
+			optionalFieldsMap[tagValue[0]] = ""
+		}
+	}
+
+	filesystemType := fields[i+1]
+	mountSource := fields[i+2]
+	superOptions := fields[i+3]
+
+	superOptionsMap := make(map[string]string)
+	for _, option := range strings.Split(superOptions, ",") {
+		nameValue := strings.Split(option, "=")
+		if len(nameValue) > 1 {
+			superOptionsMap[nameValue[0]] = nameValue[1]
+		} else {
+			superOptionsMap[nameValue[0]] = ""
+		}
+	}
+
+	m := Mount{
+		MountID:        uint(mountID),
+		ParentID:       uint(parentID),
+		Major:          uint(major),
+		Minor:          uint(minor),
+		Root:           fields[3],
+		MountPoint:     fields[4],
+		MountOptions:   mountOptions,
+		OptionalFields: optionalFieldsMap,
+		FilesystemType: filesystemType,
+		MountSource:    mountSource,
+		SuperOptions:   superOptionsMap,
+	}
+
+	return m, nil
+}
+
 func readMounts() []Mount {
 	//
 	// We don't return an error, we just crash if the data format from the
@@ -65,66 +134,10 @@ func readMounts() []Mount {
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
 		line := scanner.Text()
-		fields := strings.Split(line, " ")
-
-		mountID, err := strconv.Atoi(fields[0])
+		m, err := parseMount(line)
 		if err != nil {
-			glog.Fatalf("Couldn't parse mountID %s", fields[0])
+			glog.Fatal(err)
 		}
-
-		parentID, err := strconv.Atoi(fields[1])
-		if err != nil {
-			glog.Fatalf("Couldn't parse parentID %s", fields[1])
-		}
-
-		mm := strings.Split(fields[2], ":")
-		major, err := strconv.Atoi(mm[0])
-		if err != nil {
-			glog.Fatalf("Couldn't parse major %s", mm[0])
-		}
-
-		minor, err := strconv.Atoi(mm[1])
-		if err != nil {
-			glog.Fatalf("Couldn't parse minor %s", mm[1])
-		}
-
-		mountOptions := strings.Split(fields[5], ",")
-
-		optionalFieldsMap := make(map[string]string)
-		var i int
-		for i = 6; fields[i] != "-"; i++ {
-			tagValue := strings.Split(fields[i], ":")
-			optionalFieldsMap[tagValue[0]] = tagValue[1]
-		}
-
-		filesystemType := fields[i+1]
-		mountSource := fields[i+2]
-		superOptions := fields[i+3]
-
-		superOptionsMap := make(map[string]string)
-		for _, option := range strings.Split(superOptions, ",") {
-			nameValue := strings.Split(option, "=")
-			if len(nameValue) > 1 {
-				superOptionsMap[nameValue[0]] = nameValue[1]
-			} else {
-				superOptionsMap[nameValue[0]] = ""
-			}
-		}
-
-		m := Mount{
-			MountID:        uint(mountID),
-			ParentID:       uint(parentID),
-			Major:          uint(major),
-			Minor:          uint(minor),
-			Root:           fields[3],
-			MountPoint:     fields[4],
-			MountOptions:   mountOptions,
-			OptionalFields: optionalFieldsMap,
-			FilesystemType: filesystemType,
-			MountSource:    mountSource,
-			SuperOptions:   superOptionsMap,
-		}
-
 		mounts = append(mounts, m)
 	}
 
