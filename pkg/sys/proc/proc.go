@@ -361,14 +361,14 @@ func setValueFromString(v reflect.Value, name, s string) error {
 
 // UniqueID returns a reproducible namespace-independent
 // unique identifier for the process indicated by the given PID.
-func UniqueID(pid int) string {
-	return FS().UniqueID(pid)
+func UniqueID(tgid, pid int) string {
+	return FS().UniqueID(tgid, pid)
 }
 
 // UniqueID returns a reproducible namespace-independent
 // unique identifier for the process indicated by the given PID.
-func (fs *FileSystem) UniqueID(pid int) string {
-	ps := fs.Stat(pid)
+func (fs *FileSystem) UniqueID(tgid, pid int) string {
+	ps := fs.Stat(tgid, pid)
 	if ps == nil {
 		return ""
 	}
@@ -379,8 +379,8 @@ func (fs *FileSystem) UniqueID(pid int) string {
 // Stat reads the given process's status and returns a ProcessStatus
 // with methods to parse and return information from that status as
 // needed.
-func Stat(pid int) *ProcessStatus {
-	return FS().Stat(pid)
+func Stat(tgid, pid int) *ProcessStatus {
+	return FS().Stat(tgid, pid)
 }
 
 // statFields parses the contents of a /proc/PID/stat field into fields.
@@ -408,8 +408,14 @@ func statFields(stat string) []string {
 // Stat reads the given process's status from the ProcFS receiver and
 // returns a ProcessStatus with methods to parse and return
 // information from that status as needed.
-func (fs *FileSystem) Stat(pid int) *ProcessStatus {
-	stat, err := fs.ReadFile(fmt.Sprintf("%d/stat", pid))
+func (fs *FileSystem) Stat(tgid, pid int) *ProcessStatus {
+	var filename string
+	if tgid == pid {
+		filename = fmt.Sprintf("%d/stat", pid)
+	} else {
+		filename = fmt.Sprintf("%d/task/%d/stat", tgid, pid)
+	}
+	stat, err := fs.ReadFile(filename)
 	if err != nil {
 		return nil
 	}
@@ -505,15 +511,15 @@ func (ps *ProcessStatus) StartStack() uint64 {
 // process indicated by the given PID.
 func (ps *ProcessStatus) UniqueID() string {
 	if len(ps.uniqueID) == 0 {
-		ps.uniqueID = DeriveUniqueID(ps.PID(), ps.ParentPID())
+		ps.uniqueID = DeriveUniqueID(ps.PID(), ps.StartTime())
 	}
 
 	return ps.uniqueID
 }
 
 // DeriveUniqueID returns a unique ID for thye process with the given
-// PID and parent PID
-func DeriveUniqueID(pid, ppid int) string {
+// PID and start time
+func DeriveUniqueID(pid int, startTime uint64) string {
 	// Hash the bootID, PID, and parent PID to create a
 	// unique process identifier that can also be calculated
 	// from perf records and trace events
@@ -530,7 +536,7 @@ func DeriveUniqueID(pid, ppid int) string {
 		glog.Fatal(err)
 	}
 
-	err = binary.Write(h, binary.LittleEndian, int32(ppid))
+	err = binary.Write(h, binary.LittleEndian, startTime)
 	if err != nil {
 		glog.Fatal(err)
 	}

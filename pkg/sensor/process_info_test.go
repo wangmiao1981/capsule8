@@ -36,10 +36,10 @@ const arrayTaskCacheSize = 32768
 const mapTaskCacheSize = 32768
 
 var values = []Task{
-	{1, 2, "foo", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, "", nil, 0},
-	{1, 2, "bar", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, "", nil, 0},
-	{1, 2, "baz", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, "", nil, 0},
-	{1, 2, "qux", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, "", nil, 0},
+	{1, 2, "foo", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, 0, "", nil, 0},
+	{1, 2, "bar", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, 0, "", nil, 0},
+	{1, 2, "baz", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, 0, "", nil, 0},
+	{1, 2, "qux", nil, nil, "6e250051f33e0988aa6e549daa6c36de5ddf296bced4f31cf1b8249556f27ed2", nil, 0, 0, "", nil, 0},
 }
 
 func TestCaches(t *testing.T) {
@@ -94,7 +94,7 @@ func BenchmarkStatCacheMiss(b *testing.B) {
 	pid := os.Getpid()
 
 	for i := 0; i < b.N; i++ {
-		_ = procFS.Stat(pid)
+		_ = procFS.Stat(pid, pid)
 	}
 }
 
@@ -103,7 +103,7 @@ func BenchmarkStatCacheMissParallel(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = procFS.Stat(pid)
+			_ = procFS.Stat(pid, pid)
 		}
 	})
 }

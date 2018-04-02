@@ -152,11 +152,14 @@ type Task struct {
 	// the container to which the task belongs, if any.
 	ContainerInfo *ContainerInfo
 
+	// StartTime is the time at which a task started.
+	StartTime int64
+
 	// ExitTime is the time at which a task exited.
 	ExitTime int64
 
-	// processID is a cached unique ID for the process.
-	processID string
+	// ProcessID is a unique ID for the task.
+	ProcessID string
 
 	// parent is an internal reference to the parent of this task, which
 	// could be either the thread group leader or another process. Use
@@ -196,21 +199,13 @@ func (t *Task) Parent() *Task {
 	return t.parent
 }
 
-// ProcessID returns the unique ID for a task. Normally this is used on the
-// thread group leader for a process. The process ID is identical whether it
-// is derived inside or outside a container.
-func (t *Task) ProcessID() string {
-	if t.processID == "" {
-		t.processID = proc.DeriveUniqueID(t.PID, t.Parent().PID)
-	}
-	return t.processID
-}
-
 // Update updates a task instance with new data. It returns true if any data
 // was actually changed.
-func (t *Task) Update(data map[string]interface{}) bool {
+func (t *Task) Update(data map[string]interface{}, timestamp uint64) bool {
 	dataChanged := false
 	changedContainerInfo := false
+	changedPID := false
+	changedStartTime := false
 
 	s := reflect.ValueOf(t).Elem()
 	st := s.Type()
@@ -236,11 +231,10 @@ func (t *Task) Update(data map[string]interface{}) bool {
 			s.Field(i).Set(reflect.ValueOf(v))
 
 			switch f.Name {
-			case "Parent":
-				// The cached processID depends on PID and PPID.
-				// If either changes, invalidate the cached
-				// value.
-				t.processID = ""
+			case "PID", "TGID":
+				changedPID = true
+			case "StartTime":
+				changedStartTime = true
 			case "ContainerID":
 				// Invalidate ContainerInfo if it hasn't
 				// already been changed in this update.
@@ -250,6 +244,22 @@ func (t *Task) Update(data map[string]interface{}) bool {
 			case "ContainerInfo":
 				changedContainerInfo = true
 			}
+		}
+	}
+
+	if changedPID || changedStartTime {
+		if !changedStartTime {
+			if ps := procFS.Stat(t.TGID, t.PID); ps != nil {
+				t.StartTime = int64(ps.StartTime())
+			} else {
+				t.StartTime = int64(timestamp)
+			}
+		}
+		if t.StartTime > 0 {
+			t.ProcessID = proc.DeriveUniqueID(t.PID,
+				uint64(t.StartTime))
+		} else {
+			t.ProcessID = ""
 		}
 	}
 
@@ -510,12 +520,18 @@ func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
 		return fmt.Errorf("Couldn't read pid %d status: %s",
 			pid, err)
 	}
+	ps := procFS.Stat(tgid, pid)
 
 	t := pc.cache.LookupTask(s.PID)
 	t.TGID = s.TGID
 	t.Command = s.Name
 	t.Creds = newCredentials(s.UID[0], s.UID[1], s.UID[2], s.UID[3],
 		s.GID[0], s.GID[1], s.GID[2], s.GID[3])
+	if ps != nil {
+		t.StartTime = int64(ps.StartTime())
+	} else {
+		t.StartTime = sys.CurrentMonotonicRaw()
+	}
 	if t.PID != t.TGID {
 		t.parent = pc.cache.LookupTask(t.TGID)
 	} else {
@@ -645,6 +661,7 @@ func (pc *ProcessInfoCache) handleSysClone(
 	parentTask, parentLeader, childTask *Task,
 	cloneFlags uint64,
 	childComm string,
+	timestamp uint64,
 ) {
 	changes := map[string]interface{}{
 		"Command": childComm,
@@ -660,7 +677,7 @@ func (pc *ProcessInfoCache) handleSysClone(
 	}
 
 	childTask.parent = parentTask
-	childTask.Update(changes)
+	childTask.Update(changes, timestamp)
 }
 
 func (pc *ProcessInfoCache) decodeNewTask(
@@ -677,7 +694,7 @@ func (pc *ProcessInfoCache) decodeNewTask(
 		childTask := pc.LookupTask(childPid)
 
 		pc.handleSysClone(parentTask, parentLeader, childTask,
-			cloneFlags, childComm)
+			cloneFlags, childComm, sample.Time)
 	})
 
 	return nil, nil
@@ -699,7 +716,7 @@ func (pc *ProcessInfoCache) decodeSchedProcessExit(
 
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
-		t.Update(changes)
+		t.Update(changes, sample.Time)
 	})
 
 	return nil, nil
@@ -730,7 +747,7 @@ func (pc *ProcessInfoCache) decodeCommitCreds(
 
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
-		t.Update(changes)
+		t.Update(changes, sample.Time)
 	})
 
 	return nil, nil
@@ -754,7 +771,7 @@ func (pc *ProcessInfoCache) decodeRuncTaskRename(
 			changes := map[string]interface{}{
 				"ContainerID": containerID,
 			}
-			leader.Update(changes)
+			leader.Update(changes, sample.Time)
 		}
 	})
 
@@ -782,7 +799,7 @@ func (pc *ProcessInfoCache) decodeExecve(
 	}
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
-		t.Update(changes)
+		t.Update(changes, sample.Time)
 	})
 
 	return nil, nil
@@ -847,7 +864,7 @@ func (pc *ProcessInfoCache) decodeSchedProcessFork(
 		childTask := pc.LookupTask(childPid)
 
 		pc.handleSysClone(parentTask, parentLeader, childTask,
-			parentTask.pendingCloneFlags, childComm)
+			parentTask.pendingCloneFlags, childComm, sample.Time)
 	})
 
 	return nil, nil
