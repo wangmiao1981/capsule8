@@ -1,3 +1,21 @@
+## 0.10.0-alpha (Apr 5, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  * Stabilize ProcessId by using boot id, pid, and start time ([#172](https://github.com/capsule8/capsule8/pull/172))
+
+BUG FIXES:
+
+  * Fix mounts parsing ([#177](https://github.com/capsule8/capsule8/pull/177))
+
 ## 0.9.0-alpha (Mar 22, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
