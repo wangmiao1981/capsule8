@@ -3,4 +3,4 @@ ignored = ["github.com/google/protobuf/examples/tutorial"]
 
 [[constraint]]
   name = "google.golang.org/grpc"
-  version = "=1.9.2"
+  version = "=1.11.2"
