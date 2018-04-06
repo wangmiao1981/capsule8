@@ -374,7 +374,6 @@ type perfGroupLeader struct {
 	// Mutable only by the monitor goroutine while running. No
 	// synchronization is required.
 	pendingSamples []EventMonitorSample
-	processed      bool
 }
 
 func (pgl *perfGroupLeader) cleanup() {
@@ -1740,33 +1739,33 @@ func (monitor *EventMonitor) enqueueSamples(samples [][]EventMonitorSample) {
 	monitor.lock.Unlock()
 }
 
-func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
+func (monitor *EventMonitor) readRingBuffers() {
 	// Clear the monitor's hasPendingSamples flag immediately. All samples
 	// pending at this time will be included for processing. New pending
 	// samples may be added and so this flag will be updated later.
 	monitor.hasPendingSamples = false
 
 	var lastTimestamp uint64
-	samples := make([][]EventMonitorSample, 0, len(readyfds))
-	for _, fd := range readyfds {
-		// It is not necessary to read from the ready fd, because the
-		// kernel fabricates that information on demand. We're not
-		// interested in it, so don't bother. Emptying the ringbuffer
-		// is what clears the fd's ready state.
-
+	fds := make(map[int]bool)
+	groupLeaders := monitor.groupLeaders.getMap()
+	samples := make([][]EventMonitorSample, 0, len(groupLeaders))
+	for _, pgl := range groupLeaders {
 		var groupSamples, newPendingSamples []EventMonitorSample
-		pgl, ok := monitor.groupLeaders.lookup(fd)
-		if !ok {
-			continue
-		}
+
 		// If the pgl's state is not active, skip it. Either we need to
 		// to clean it up later or it has already been cleaned up.
 		// Either way, we're not interested in its ringbuffer (and in
 		// the latter case, we'd segfault)
-		if atomic.LoadInt32(&pgl.state) != perfGroupLeaderStateActive {
+		switch atomic.LoadInt32(&pgl.state) {
+		case perfGroupLeaderStateActive:
+			break
+		case perfGroupLeaderStateClosing:
+			fds[pgl.fd] = true
+			pgl.cleanup()
+			continue
+		default:
 			continue
 		}
-		pgl.processed = true
 
 		pgl.rb.read(func(data []byte) {
 			attrMap := monitor.eventAttrMap.getMap()
@@ -1816,19 +1815,6 @@ func (monitor *EventMonitor) readRingBuffers(readyfds []int) {
 		samples = append(samples, groupSamples)
 	}
 
-	fds := make(map[int]bool)
-	for _, pgl := range monitor.groupLeaders.getMap() {
-		if atomic.LoadInt32(&pgl.state) == perfGroupLeaderStateClosing {
-			fds[pgl.fd] = true
-			pgl.cleanup()
-			continue
-		}
-		if !pgl.processed && len(pgl.pendingSamples) > 0 {
-			samples = append(samples, pgl.pendingSamples)
-			pgl.pendingSamples = nil
-		}
-		pgl.processed = false
-	}
 	if len(fds) > 0 {
 		go func() {
 			monitor.groupLeaders.remove(fds)
@@ -1942,7 +1928,7 @@ runloop:
 				monitor.lock.Unlock()
 			}
 		} else if n > 0 {
-			readyfds := make([]int, 0, n)
+			ringBuffersReady := false
 			for i := 0; i < n; i++ {
 				e := events[i]
 				if e.Fd == -1 {
@@ -1970,11 +1956,11 @@ runloop:
 						}
 					}
 				} else if (e.Events & unix.EPOLLIN) != 0 {
-					readyfds = append(readyfds, int(e.Fd))
+					ringBuffersReady = true
 				}
 			}
-			if len(readyfds) > 0 {
-				monitor.readRingBuffers(readyfds)
+			if ringBuffersReady {
+				monitor.readRingBuffers()
 			} else if monitor.hasPendingSamples {
 				monitor.flushPendingSamples()
 			}
