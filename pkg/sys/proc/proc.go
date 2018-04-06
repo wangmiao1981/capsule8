@@ -101,6 +101,8 @@ func FS() *FileSystem {
 // FileSystem represents data accessible through the proc pseudo-filesystem.
 type FileSystem struct {
 	MountPoint string
+
+	NCPU int
 }
 
 // Open opens the procfs file indicated by the given relative path.
@@ -118,6 +120,35 @@ func ReadFile(relativePath string) ([]byte, error) {
 // given relative path.
 func (fs *FileSystem) ReadFile(relativePath string) ([]byte, error) {
 	return ioutil.ReadFile(filepath.Join(fs.MountPoint, relativePath))
+}
+
+// NumCPU returns the number of CPUs on the system. This differs from
+// runtime.NumCPU in that runtime.NumCPU returns the number of logical CPUs
+// available to the calling process.
+func (fs *FileSystem) NumCPU() (int, error) {
+	if fs.NCPU == 0 {
+		rawBytes, err := fs.ReadFile("cpuinfo")
+		if err != nil {
+			return 0, err
+		}
+
+		ncpu := 0
+		scanner := bufio.NewScanner(bytes.NewReader(rawBytes))
+		for scanner.Scan() {
+			x := strings.Split(scanner.Text(), ":")
+			if len(x) == 2 && strings.TrimSpace(x[0]) == "processor" {
+				ncpu++
+			}
+
+		}
+		if err = scanner.Err(); err != nil {
+			return 0, err
+		}
+
+		fs.NCPU = ncpu
+	}
+
+	return fs.NCPU, nil
 }
 
 // CommandLine gets the full command-line arguments for the process

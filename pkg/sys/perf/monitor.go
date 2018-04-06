@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -2099,7 +2098,10 @@ func collectReferenceSamples(ncpu int) (int64, int64, []int64, error) {
 }
 
 func calculateTimeOffsets() error {
-	ncpu := runtime.NumCPU()
+	ncpu, err := sys.HostProcFS().NumCPU()
+	if err != nil {
+		return err
+	}
 	timeOffsets = make([]int64, ncpu)
 	if haveClockID {
 		return nil
@@ -2132,13 +2134,15 @@ func (monitor *EventMonitor) initializeGroupLeaders(
 	flags uintptr,
 	attr *EventAttr,
 ) ([]*perfGroupLeader, error) {
-	var err error
-
 	if attr == nil {
 		attr = &groupEventAttr
 	}
 
-	ncpu := runtime.NumCPU()
+	ncpu, err := sys.HostProcFS().NumCPU()
+	if err != nil {
+		return nil, err
+	}
+
 	pgls := make([]*perfGroupLeader, ncpu)
 	for cpu := 0; cpu < ncpu; cpu++ {
 		var fd int
@@ -2187,7 +2191,12 @@ func (monitor *EventMonitor) initializeGroupLeaders(
 func (monitor *EventMonitor) newEventGroup(
 	attr *EventAttr,
 ) (*eventMonitorGroup, error) {
-	nleaders := (len(monitor.cgroups) + len(monitor.pids)) * runtime.NumCPU()
+	ncpu, err := sys.HostProcFS().NumCPU()
+	if err != nil {
+		return nil, err
+	}
+
+	nleaders := (len(monitor.cgroups) + len(monitor.pids)) * ncpu
 	leaders := make([]*perfGroupLeader, 0, nleaders)
 
 	if monitor.cgroups != nil {
