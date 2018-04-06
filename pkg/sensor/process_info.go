@@ -35,12 +35,36 @@ import (
 	"unicode"
 	"unsafe"
 
+	api "github.com/capsule8/capsule8/api/v0"
+
 	"github.com/capsule8/capsule8/pkg/config"
+	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 	"github.com/capsule8/capsule8/pkg/sys/proc"
+
 	"github.com/golang/glog"
+
+	"golang.org/x/sys/unix"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
 )
+
+var processExecEventTypes = expression.FieldTypeMap{
+	"filename": int32(api.ValueType_STRING),
+}
+
+var processForkEventTypes = expression.FieldTypeMap{
+	"fork_child_pid": int32(api.ValueType_SINT32),
+	"fork_child_id":  int32(api.ValueType_STRING),
+}
+
+var processExitEventTypes = expression.FieldTypeMap{
+	"code":             int32(api.ValueType_SINT32),
+	"exit_status":      int32(api.ValueType_UINT32),
+	"exit_signal":      int32(api.ValueType_UINT32),
+	"exit_core_dumped": int32(api.ValueType_BOOL),
+}
 
 const taskReuseThreshold = int64(10 * time.Millisecond)
 
@@ -59,6 +83,9 @@ const (
 	doExecveatCommonAddress = "do_execveat_common"
 	sysExecveAddress        = "sys_execve"
 	sysExecveatAddress      = "sys_execveat"
+
+	doExitAddress = "do_exit"
+	doExitArgs    = "code=%di:s64"
 
 	doForkAddress   = "do_fork"
 	doForkFetchargs = "clone_flags=%di:u64"
@@ -180,9 +207,19 @@ func newTask(pid int) *Task {
 	}
 }
 
+var sensorPID = os.Getpid()
+
 // IsSensor returns true if the task belongs to the sensor process.
 func (t *Task) IsSensor() bool {
-	return t.TGID == os.Getpid()
+	return t.TGID == sensorPID
+}
+
+// Leader returns a reference to a task's leader task.
+func (t *Task) Leader() *Task {
+	if t.PID == t.TGID {
+		return t
+	}
+	return t.Parent()
 }
 
 // Parent returns a reference to a task's parent task.
@@ -291,8 +328,9 @@ func (c *arrayTaskCache) LookupTask(pid int) *Task {
 
 		t = c.entries[pid-1]
 		if t != nil {
-			now := sys.CurrentMonotonicRaw()
-			if t.ExitTime == 0 || now-t.ExitTime < taskReuseThreshold {
+			if t.ExitTime == 0 ||
+				sys.CurrentMonotonicRaw()-t.ExitTime <
+					taskReuseThreshold {
 				break
 			}
 			old = t
@@ -331,8 +369,8 @@ func (c *mapTaskCache) LookupTask(pid int) *Task {
 
 	c.Lock()
 	t, ok := c.entries[pid]
-	now := sys.CurrentMonotonicRaw()
-	if !ok || (t.ExitTime != 0 && now-t.ExitTime >= taskReuseThreshold) {
+	if !ok || (t.ExitTime != 0 &&
+		sys.CurrentMonotonicRaw()-t.ExitTime >= taskReuseThreshold) {
 		t = newTask(pid)
 		c.entries[pid] = t
 	}
@@ -347,6 +385,15 @@ type ProcessInfoCache struct {
 	cache taskCache
 
 	sensor *Sensor
+
+	// These are external event IDs registered with the sensor's event
+	// monitor instance. The cache will enqueue these events as appropriate
+	// as the cache is updated.
+	ProcessExecEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC
+	ProcessForkEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_FORK
+	ProcessExitEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT
+
+	haveSchedProcessExecTracepoint bool
 
 	scanningLock  sync.Mutex
 	scanning      bool
@@ -378,9 +425,37 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		cache.cache = newArrayTaskCache(maxPid)
 	}
 
+	var err error
+	cache.ProcessExecEventID, err = sensor.Monitor.RegisterExternalEvent(
+		"PROCESS_EXEC",
+		cache.decodeProcessExecEvent,
+		processExecEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
+	}
+
+	cache.ProcessForkEventID, err = sensor.Monitor.RegisterExternalEvent(
+		"PROCESS_FORK",
+		cache.decodeProcessForkEvent,
+		processForkEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
+	}
+
+	cache.ProcessExitEventID, err = sensor.Monitor.RegisterExternalEvent(
+		"PROCESS_EXIT",
+		cache.decodeProcessExitEvent,
+		processExitEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
+	}
+
 	// Register with the sensor's global event monitor...
 	eventName := "task/task_newtask"
-	_, err := sensor.Monitor.RegisterTracepoint(eventName,
+	_, err = sensor.Monitor.RegisterTracepoint(eventName,
 		cache.decodeNewTask,
 		perf.WithEventEnabled())
 	if err != nil {
@@ -412,9 +487,9 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 			perf.WithEventEnabled())
 	}
 
-	eventName = "sched/sched_process_exit"
-	_, err = sensor.Monitor.RegisterTracepoint(eventName,
-		cache.decodeSchedProcessExit,
+	eventName = doExitAddress
+	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+		doExitArgs, cache.decodeDoExit,
 		perf.WithEventEnabled())
 	if err != nil {
 		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
@@ -425,19 +500,34 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		commitCredsArgs, cache.decodeCommitCreds,
 		perf.WithEventEnabled())
 
-	major, _, _ := sys.KernelVersion()
-	if major >= 3 {
-		// Attach a probe for task_rename involving the runc
-		// init processes to trigger containerID lookups
-		f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
-		eventName = "task/task_rename"
-		_, err = sensor.Monitor.RegisterTracepoint(eventName,
-			cache.decodeRuncTaskRename,
-			perf.WithFilter(f),
-			perf.WithEventEnabled())
-		if err != nil {
-			glog.Fatalf("Couldn't register event %s: %s", eventName, err)
+	eventName = cgroupProcsWriteAddress
+	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+		cgroupProcsWriteArgs, cache.decodeCgroupProcsWrite,
+		perf.WithEventEnabled())
+	if err != nil {
+		major, _, _ := sys.KernelVersion()
+		if major >= 3 {
+			// Attach a probe for task_rename involving the runc
+			// init processes to trigger containerID lookups
+			f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
+			eventName = "task/task_rename"
+			_, err = sensor.Monitor.RegisterTracepoint(eventName,
+				cache.decodeRuncTaskRename,
+				perf.WithFilter(f),
+				perf.WithEventEnabled())
+			if err != nil {
+				glog.Fatalf("Couldn't register event %s: %s",
+					eventName, err)
+			}
 		}
+	}
+
+	eventName = "sched/sched_process_exec"
+	_, err = sensor.Monitor.RegisterTracepoint(eventName,
+		cache.decodeSchedProcessExec,
+		perf.WithEventEnabled())
+	if err == nil {
+		cache.haveSchedProcessExecTracepoint = true
 	}
 
 	// Attach a probe to capture exec events in the kernel. Different
@@ -616,10 +706,7 @@ func (pc *ProcessInfoCache) LookupTask(pid int) *Task {
 // thread group leader.
 func (pc *ProcessInfoCache) LookupTaskAndLeader(pid int) (*Task, *Task) {
 	t := pc.cache.LookupTask(pid)
-	if pid == t.TGID {
-		return t, t
-	}
-	return t, t.Parent()
+	return t, t.Leader()
 }
 
 // LookupTaskContainerInfo returns the container info for a task, possibly
@@ -657,11 +744,78 @@ func (pc *ProcessInfoCache) maybeDeferAction(f func()) {
 	f()
 }
 
+func (pc *ProcessInfoCache) newProcessEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+	eventType api.ProcessEventType,
+) (*api.TelemetryEvent, error) {
+	event := pc.sensor.NewEventFromSample(sample, data)
+	if event == nil {
+		return nil, nil
+	}
+
+	pev := &api.ProcessEvent{
+		Type: eventType,
+	}
+
+	switch eventType {
+	case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:
+		pev.ExecFilename = data["filename"].(string)
+		pev.ExecCommandLine = data["exec_command_line"].([]string)
+	case api.ProcessEventType_PROCESS_EVENT_TYPE_FORK:
+		pev.ForkChildPid = data["fork_child_pid"].(int32)
+		pev.ForkChildId = data["fork_child_id"].(string)
+	case api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT:
+		pev.ExitCode = data["code"].(int32)
+		pev.ExitStatus = data["exit_status"].(uint32)
+		pev.ExitSignal = data["exit_signal"].(uint32)
+		pev.ExitCoreDumped = data["exit_core_dumped"].(bool)
+	}
+
+	event.Event = &api.TelemetryEvent_Process{
+		Process: pev,
+	}
+	return event, nil
+}
+
+func (pc *ProcessInfoCache) decodeProcessExecEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return pc.newProcessEvent(sample, data,
+		api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC)
+}
+
+func (pc *ProcessInfoCache) decodeProcessForkEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return pc.newProcessEvent(sample, data,
+		api.ProcessEventType_PROCESS_EVENT_TYPE_FORK)
+}
+
+func (pc *ProcessInfoCache) decodeProcessExitEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return pc.newProcessEvent(sample, data,
+		api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT)
+}
+
+func sampleIDFromSample(sample *perf.SampleRecord) perf.SampleID {
+	return perf.SampleID{
+		Time: sample.Time,
+		PID:  sample.Pid,
+		TID:  sample.Tid,
+		CPU:  sample.CPU,
+	}
+}
+
 func (pc *ProcessInfoCache) handleSysClone(
 	parentTask, parentLeader, childTask *Task,
 	cloneFlags uint64,
 	childComm string,
-	timestamp uint64,
+	sample *perf.SampleRecord,
 ) {
 	changes := map[string]interface{}{
 		"Command": childComm,
@@ -676,8 +830,18 @@ func (pc *ProcessInfoCache) handleSysClone(
 		changes["ContainerInfo"] = parentLeader.ContainerInfo
 	}
 
+	eventData := map[string]interface{}{
+		"__task__":       parentTask,
+		"fork_child_pid": int32(childTask.PID),
+		"fork_child_id":  childTask.ProcessID,
+	}
+
 	childTask.parent = parentTask
-	childTask.Update(changes, timestamp)
+	childTask.Update(changes, sample.Time)
+	pc.sensor.Monitor.EnqueueExternalSample(
+		pc.ProcessForkEventID,
+		sampleIDFromSample(sample),
+		eventData)
 }
 
 func (pc *ProcessInfoCache) decodeNewTask(
@@ -694,29 +858,50 @@ func (pc *ProcessInfoCache) decodeNewTask(
 		childTask := pc.LookupTask(childPid)
 
 		pc.handleSysClone(parentTask, parentLeader, childTask,
-			cloneFlags, childComm, sample.Time)
+			cloneFlags, childComm, sample)
 	})
 
 	return nil, nil
 }
 
-// decodeSchedProcessExit marks a task as having exited. The time of the exit
+// decodeDoExit marks a task as having exited. The time of the exit
 // is noted so that the task can be safely reused later. Don't delete it from
 // the cache, because out-of-order events could cause it to be recreated and
 // then when the pid is reused by the kernel later, it'll contain stale data.
-func (pc *ProcessInfoCache) decodeSchedProcessExit(
+func (pc *ProcessInfoCache) decodeDoExit(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
 ) (interface{}, error) {
 	pid := int(data["common_pid"].(int32))
+	exitCode := data["code"].(int64)
 
 	changes := map[string]interface{}{
 		"ExitTime": sys.CurrentMonotonicRaw(),
 	}
 
+	ws := unix.WaitStatus(exitCode)
+	eventData := map[string]interface{}{
+		"code": int32(exitCode),
+	}
+
+	if ws.Exited() {
+		eventData["exit_status"] = uint32(ws.ExitStatus())
+		eventData["exit_signal"] = uint32(0)
+		eventData["exit_core_dumped"] = false
+	} else {
+		eventData["exit_status"] = uint32(0)
+		eventData["exit_signal"] = uint32(ws.Signal())
+		eventData["exit_core_dumped"] = ws.CoreDump()
+	}
+
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
 		t.Update(changes, sample.Time)
+		eventData["__task__"] = t
+		pc.sensor.Monitor.EnqueueExternalSample(
+			pc.ProcessExitEventID,
+			sampleIDFromSample(sample),
+			eventData)
 	})
 
 	return nil, nil
@@ -764,9 +949,16 @@ func (pc *ProcessInfoCache) decodeRuncTaskRename(
 	pc.maybeDeferAction(func() {
 		glog.V(10).Infof("decodeRuncTaskRename: pid = %d", pid)
 
+		// FIXME There is a race condition here that can result in not
+		// getting the containerID at this time. Docker apparently
+		// renames the task before adjusting cgroups. A better way of
+		// determining the containerID for a process needs to be found.
+		// This is why the check for err == nil AND containerID != ""
+		// is necessary, rather than just err == nil.
+
 		_, leader := pc.LookupTaskAndLeader(pid)
 		containerID, err := procFS.ContainerID(leader.PID)
-		if err == nil {
+		if err == nil && containerID != "" && leader.ContainerID != containerID {
 			glog.V(10).Infof("containerID(%d) = %s", leader.PID, containerID)
 			changes := map[string]interface{}{
 				"ContainerID": containerID,
@@ -797,9 +989,53 @@ func (pc *ProcessInfoCache) decodeExecve(
 	changes := map[string]interface{}{
 		"CommandLine": commandLine,
 	}
+
+	var eventData map[string]interface{}
+	if !pc.haveSchedProcessExecTracepoint {
+		eventData = map[string]interface{}{
+			"filename":          commandLine[0],
+			"exec_command_line": commandLine,
+		}
+	}
+
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
 		t.Update(changes, sample.Time)
+		if !pc.haveSchedProcessExecTracepoint {
+			eventData["__task__"] = t
+			pc.sensor.Monitor.EnqueueExternalSample(
+				pc.ProcessExecEventID,
+				sampleIDFromSample(sample),
+				eventData)
+		}
+	})
+
+	return nil, nil
+}
+
+func (pc *ProcessInfoCache) decodeSchedProcessExec(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	pid := int(data["common_pid"].(int32))
+	t := pc.LookupTask(pid)
+
+	commandLine := t.CommandLine
+	if commandLine == nil {
+		commandLine = procFS.CommandLine(t.TGID)
+	}
+
+	eventData := map[string]interface{}{
+		"__task__":          t,
+		"filename":          data["filename"].(string),
+		"exec_command_line": commandLine,
+	}
+
+	pc.maybeDeferAction(func() {
+		pc.sensor.Monitor.EnqueueExternalSample(
+			pc.ProcessExecEventID,
+			sampleIDFromSample(sample),
+			eventData)
 	})
 
 	return nil, nil
@@ -864,7 +1100,7 @@ func (pc *ProcessInfoCache) decodeSchedProcessFork(
 		childTask := pc.LookupTask(childPid)
 
 		pc.handleSysClone(parentTask, parentLeader, childTask,
-			parentTask.pendingCloneFlags, childComm, sample.Time)
+			parentTask.pendingCloneFlags, childComm, sample)
 	})
 
 	return nil, nil
@@ -885,4 +1121,117 @@ func commToString(comm []interface{}) string {
 		}
 	}
 	return string(s)
+}
+
+func rewriteProcessEventFilter(pef *api.ProcessEventFilter) {
+	switch pef.Type {
+	case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:
+		if pef.ExecFilename != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("filename"),
+				expression.Value(pef.ExecFilename.Value))
+			pef.FilterExpression = expression.LogicalAnd(
+				newExpr, pef.FilterExpression)
+			pef.ExecFilename = nil
+			pef.ExecFilenamePattern = nil
+		} else if pef.ExecFilenamePattern != nil {
+			newExpr := expression.Like(
+				expression.Identifier("filename"),
+				expression.Value(pef.ExecFilenamePattern.Value))
+			pef.FilterExpression = expression.LogicalAnd(
+				newExpr, pef.FilterExpression)
+			pef.ExecFilenamePattern = nil
+		}
+	case api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT:
+		if pef.ExitCode != nil {
+			newExpr := expression.Equal(
+				expression.Identifier("code"),
+				expression.Value(pef.ExitCode.Value))
+			pef.FilterExpression = expression.LogicalAnd(
+				newExpr, pef.FilterExpression)
+			pef.ExitCode = nil
+		}
+	}
+}
+
+func registerProcessEvents(
+	sensor *Sensor,
+	subscr *subscription,
+	events []*api.ProcessEventFilter,
+) {
+	var (
+		filters       [4]*api.Expression
+		subscriptions [4]*eventSink
+		wildcards     [4]bool
+	)
+
+	for _, pef := range events {
+		// Translate deprecated fields into an expression
+		rewriteProcessEventFilter(pef)
+
+		t := pef.Type
+		if t < 1 || t > 3 {
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("ProcessEventType %d is invalid", t))
+			continue
+		}
+
+		if subscriptions[t] == nil {
+			var eventID uint64
+			switch t {
+			case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:
+				eventID = sensor.ProcessCache.ProcessExecEventID
+			case api.ProcessEventType_PROCESS_EVENT_TYPE_FORK:
+				eventID = sensor.ProcessCache.ProcessForkEventID
+			case api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT:
+				eventID = sensor.ProcessCache.ProcessExitEventID
+			}
+			subscriptions[t] = subscr.addEventSink(eventID)
+		}
+		if pef.FilterExpression == nil {
+			wildcards[t] = true
+			filters[t] = nil
+		} else if !wildcards[t] {
+			filters[t] = expression.LogicalOr(
+				filters[t],
+				pef.FilterExpression)
+		}
+	}
+
+	for t, s := range subscriptions {
+		if filters[t] == nil {
+			// No filter, no problem
+			continue
+		}
+
+		expr, err := expression.NewExpression(filters[t])
+		if err != nil {
+			// Bad filter. Remove subscription
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("Invalid process filter expression: %v", err))
+			subscr.removeEventSink(s)
+			continue
+		}
+
+		switch api.ProcessEventType(t) {
+		case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:
+			err = expr.Validate(processExecEventTypes)
+		case api.ProcessEventType_PROCESS_EVENT_TYPE_FORK:
+			err = expr.Validate(processForkEventTypes)
+		case api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT:
+			err = expr.Validate(processExitEventTypes)
+		}
+		if err != nil {
+			// Bad filter. Remove subscription
+			subscr.logStatus(
+				code.Code_INVALID_ARGUMENT,
+				fmt.Sprintf("Invalid process filter expression: %v", err))
+			subscr.removeEventSink(s)
+			continue
+		}
+
+		s.filter = expr
+	}
 }
