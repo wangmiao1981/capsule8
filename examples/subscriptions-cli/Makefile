@@ -1,2 +1,2 @@
 default:
-	go build -o c8cli ./cmd/cli/...
+	go build -o c8cli .
