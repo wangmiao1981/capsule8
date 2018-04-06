@@ -1,3 +1,22 @@
+## 0.10.1-alpha (Apr 9, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  * Update vendored gRPC dependency to [1.11.2](https://github.com/grpc/grpc-go/releases/tag/v1.11.2) ([#181](https://github.com/capsule8/capsule8/pull/181))
+  * Move subscriptions-cli's main.go to where Makefile will find it ([#179](https://github.com/capsule8/capsule8/pull/179))
+
+BUG FIXES:
+
+  None
+
 ## 0.10.0-alpha (Apr 5, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
