@@ -1443,11 +1443,6 @@ func (monitor *EventMonitor) EnqueueExternalSample(
 	if sampleID.Time == 0 {
 		return fmt.Errorf("Invalid sample time (%d)", sampleID.Time)
 	}
-	if sampleID.Time < monitor.lastSampleTimeDispatched {
-		// Silently drop the event; it will only be dropped later, so
-		// save some time now
-		return nil
-	}
 
 	esm := EventMonitorSample{
 		EventID:     eventID,
@@ -1513,9 +1508,6 @@ func (monitor *EventMonitor) processExternalSamples(timeLimit uint64) bool {
 		}
 		monitor.pendingExternalSamples =
 			monitor.pendingExternalSamples[:l-1]
-		if esm.RawSample.Time < monitor.lastSampleTimeDispatched {
-			continue
-		}
 		event, ok := eventMap[esm.EventID]
 		if !ok {
 			continue
