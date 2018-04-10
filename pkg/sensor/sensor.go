@@ -37,6 +37,8 @@ import (
 
 	"github.com/golang/glog"
 
+	"golang.org/x/sys/unix"
+
 	"google.golang.org/genproto/googleapis/rpc/code"
 	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
@@ -115,6 +117,17 @@ func NewSensor() (*Sensor, error) {
 
 // Start starts a sensor instance running.
 func (s *Sensor) Start() error {
+	var buf unix.Utsname
+	if err := unix.Uname(&buf); err == nil {
+		machine := string(buf.Machine[:])
+		nodename := string(buf.Nodename[:])
+		sysname := string(buf.Sysname[:])
+		release := string(buf.Release[:])
+		version := string(buf.Version[:])
+		glog.Infof("%s %s %s %s %s",
+			machine, nodename, sysname, release, version)
+	}
+
 	// We require that our run dir (usually /var/run/capsule8) exists.
 	// Ensure that now before proceeding any further.
 	if err := os.MkdirAll(config.Global.RunDir, 0700); err != nil {
