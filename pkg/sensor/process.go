@@ -76,6 +76,13 @@ const (
 		"euid=+20(%di):u32 egid=+24(%di):u32 " +
 		"fsuid=+28(%di):u32 fsgid=+32(%di):u32"
 
+	// static ssize_t __cgroup_procs_write(struct kernfs_open_file *of,
+	//	char *buf, size_t nbytes, loff_t off, bool threadgroup)
+	// container_id comes from of->file->f_path.dentry->d_parent->d_name.name
+	cgroupProcsWriteAddress = "__cgroup_procs_write"
+	cgroupProcsWriteArgs    = "container_id=+0(+40(+24(+24(+8(%di))))):string " +
+		"buf=+0(%si):string threadgroup=%r8:s32"
+
 	execveArgCount = 6
 
 	doExecveAddress         = "do_execve"
@@ -490,6 +497,14 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	eventName = doExitAddress
 	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
 		doExitArgs, cache.decodeDoExit,
+		perf.WithEventEnabled())
+	if err != nil {
+		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
+	}
+
+	eventName = cgroupProcsWriteAddress
+	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+		cgroupProcsWriteArgs, cache.decodeCgroupProcsWrite,
 		perf.WithEventEnabled())
 	if err != nil {
 		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
@@ -949,10 +964,11 @@ func (pc *ProcessInfoCache) decodeRuncTaskRename(
 	pc.maybeDeferAction(func() {
 		glog.V(10).Infof("decodeRuncTaskRename: pid = %d", pid)
 
-		// FIXME There is a race condition here that can result in not
-		// getting the containerID at this time. Docker apparently
-		// renames the task before adjusting cgroups. A better way of
-		// determining the containerID for a process needs to be found.
+		// There is a race condition here that can result in not
+		// getting the containerID at this time. Docker renames the
+		// task before adjusting cgroups. A better way of determining
+		// the containerID for a task is normally used, but we fallback
+		// to this just in case.
 		// This is why the check for err == nil AND containerID != ""
 		// is necessary, rather than just err == nil.
 
@@ -1018,20 +1034,19 @@ func (pc *ProcessInfoCache) decodeSchedProcessExec(
 	data perf.TraceEventSampleData,
 ) (interface{}, error) {
 	pid := int(data["common_pid"].(int32))
-	t := pc.LookupTask(pid)
-
-	commandLine := t.CommandLine
-	if commandLine == nil {
-		commandLine = procFS.CommandLine(t.TGID)
-	}
-
-	eventData := map[string]interface{}{
-		"__task__":          t,
-		"filename":          data["filename"].(string),
-		"exec_command_line": commandLine,
-	}
 
 	pc.maybeDeferAction(func() {
+		t := pc.LookupTask(pid)
+		commandLine := t.CommandLine
+		if commandLine == nil {
+			commandLine = procFS.CommandLine(t.TGID)
+		}
+
+		eventData := map[string]interface{}{
+			"__task__":          t,
+			"filename":          data["filename"].(string),
+			"exec_command_line": commandLine,
+		}
 		pc.sensor.Monitor.EnqueueExternalSample(
 			pc.ProcessExecEventID,
 			sampleIDFromSample(sample),
@@ -1101,6 +1116,56 @@ func (pc *ProcessInfoCache) decodeSchedProcessFork(
 
 		pc.handleSysClone(parentTask, parentLeader, childTask,
 			parentTask.pendingCloneFlags, childComm, sample)
+	})
+
+	return nil, nil
+}
+
+func (pc *ProcessInfoCache) decodeCgroupProcsWrite(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	// We're looking for container IDs, which are normally hex encoded
+	// sha256 hashes. Basically just ensure that we've got exactly 64
+	// characters. That should be good enough for now.
+	containerID := data["container_id"].(string)
+	if len(containerID) != 64 {
+		return nil, nil
+	}
+
+	buf := strings.TrimSpace(data["buf"].(string))
+	pid, err := strconv.ParseInt(buf, 10, 32)
+	if err != nil {
+		// If there's an error parsing data written to this file, we
+		// want to know about it so that we can deal with it. Use a
+		// high logging level to ensure that.
+		glog.Warning("Error parsing pid written to cgroup.procs: %v", err)
+		return nil, nil
+	}
+
+	threadgroup := false
+	if data["threadgroup"].(int32) != 0 {
+		threadgroup = true
+	}
+
+	pc.maybeDeferAction(func() {
+		task, leader := pc.LookupTaskAndLeader(int(pid))
+		if threadgroup {
+			task = leader
+		}
+
+		// This event fires once for each cgroup a task is entered
+		// into, which typically 13 times, so try to minimize the
+		// amount of work done
+		if task.ContainerID == containerID {
+			return
+		}
+
+		glog.V(10).Infof("containerID(%d) = %s", task.PID, containerID)
+		changes := map[string]interface{}{
+			"ContainerID": containerID,
+		}
+		task.Update(changes, sample.Time)
 	})
 
 	return nil, nil
