@@ -86,10 +86,15 @@ const (
 	execveArgCount = 6
 
 	doExecveAddress         = "do_execve"
+	doExecveArgs            = "filename=+0(+0(%di)):string "
 	doExecveatAddress       = "do_execveat"
+	doExecveatArgs          = "filename=+0(+0(%si)):string "
 	doExecveatCommonAddress = "do_execveat_common"
+	doExecveatCommonArgs    = "filename=+0(+0(%si)):string "
 	sysExecveAddress        = "sys_execve"
+	sysExecveArgs           = "filename=+0(%di):string "
 	sysExecveatAddress      = "sys_execveat"
+	sysExecveatArgs         = "filename=%0(%si):string "
 
 	doExitAddress = "do_exit"
 	doExitArgs    = "code=%di:s64"
@@ -400,8 +405,6 @@ type ProcessInfoCache struct {
 	ProcessForkEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_FORK
 	ProcessExitEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT
 
-	haveSchedProcessExecTracepoint bool
-
 	scanningLock  sync.Mutex
 	scanning      bool
 	scanningQueue []scannerDeferredAction
@@ -537,14 +540,6 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		}
 	}
 
-	eventName = "sched/sched_process_exec"
-	_, err = sensor.Monitor.RegisterTracepoint(eventName,
-		cache.decodeSchedProcessExec,
-		perf.WithEventEnabled())
-	if err == nil {
-		cache.haveSchedProcessExecTracepoint = true
-	}
-
 	// Attach a probe to capture exec events in the kernel. Different
 	// kernel versions require different probe attachments, so try to do
 	// the best that we can here. Try for do_execveat_common() first, and
@@ -553,12 +548,14 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	// duplicate events, which is ok.
 	_, err = sensor.Monitor.RegisterKprobe(
 		doExecveatCommonAddress, false,
-		makeExecveFetchArgs("dx"), cache.decodeExecve,
+		doExecveatCommonArgs+makeExecveFetchArgs("dx"),
+		cache.decodeExecve,
 		perf.WithEventEnabled())
 	if err != nil {
 		_, err = sensor.Monitor.RegisterKprobe(
 			sysExecveAddress, false,
-			makeExecveFetchArgs("si"), cache.decodeExecve,
+			sysExecveArgs+makeExecveFetchArgs("si"),
+			cache.decodeExecve,
 			perf.WithEventEnabled())
 		if err != nil {
 			glog.Fatalf("Couldn't register event %s: %s",
@@ -566,12 +563,14 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		}
 		_, _ = sensor.Monitor.RegisterKprobe(
 			doExecveAddress, false,
-			makeExecveFetchArgs("si"), cache.decodeExecve,
+			doExecveArgs+makeExecveFetchArgs("si"),
+			cache.decodeExecve,
 			perf.WithEventEnabled())
 
 		_, err = sensor.Monitor.RegisterKprobe(
 			sysExecveatAddress, false,
-			makeExecveFetchArgs("dx"), cache.decodeExecve,
+			sysExecveatArgs+makeExecveFetchArgs("dx"),
+			cache.decodeExecve,
 			perf.WithEventEnabled())
 		if err == nil {
 			_, _ = sensor.Monitor.RegisterKprobe(
@@ -1006,47 +1005,15 @@ func (pc *ProcessInfoCache) decodeExecve(
 		"CommandLine": commandLine,
 	}
 
-	var eventData map[string]interface{}
-	if !pc.haveSchedProcessExecTracepoint {
-		eventData = map[string]interface{}{
-			"filename":          commandLine[0],
-			"exec_command_line": commandLine,
-		}
+	eventData := map[string]interface{}{
+		"filename":          data["filename"].(string),
+		"exec_command_line": commandLine,
 	}
 
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
 		t.Update(changes, sample.Time)
-		if !pc.haveSchedProcessExecTracepoint {
-			eventData["__task__"] = t
-			pc.sensor.Monitor.EnqueueExternalSample(
-				pc.ProcessExecEventID,
-				sampleIDFromSample(sample),
-				eventData)
-		}
-	})
-
-	return nil, nil
-}
-
-func (pc *ProcessInfoCache) decodeSchedProcessExec(
-	sample *perf.SampleRecord,
-	data perf.TraceEventSampleData,
-) (interface{}, error) {
-	pid := int(data["common_pid"].(int32))
-
-	pc.maybeDeferAction(func() {
-		t := pc.LookupTask(pid)
-		commandLine := t.CommandLine
-		if commandLine == nil {
-			commandLine = procFS.CommandLine(t.TGID)
-		}
-
-		eventData := map[string]interface{}{
-			"__task__":          t,
-			"filename":          data["filename"].(string),
-			"exec_command_line": commandLine,
-		}
+		eventData["__task__"] = t
 		pc.sensor.Monitor.EnqueueExternalSample(
 			pc.ProcessExecEventID,
 			sampleIDFromSample(sample),
