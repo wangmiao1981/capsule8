@@ -47,10 +47,10 @@ const taskReuseThreshold = int64(10 * time.Millisecond)
 const (
 	commitCredsAddress = "commit_creds"
 	commitCredsArgs    = "usage=+0(%di):u64 " +
-		"uid=+8(%di):u32 gid=+12(%di):u32 " +
-		"suid=+16(%di):u32 sgid=+20(%di):u32 " +
-		"euid=+24(%di):u32 egid=+28(%di):u32 " +
-		"fsuid=+32(%di):u32 fsgid=+36(%di):u32"
+		"uid=+4(%di):u32 gid=+8(%di):u32 " +
+		"suid=+12(%di):u32 sgid=+16(%di):u32 " +
+		"euid=+20(%di):u32 egid=+24(%di):u32 " +
+		"fsuid=+28(%di):u32 fsgid=+32(%di):u32"
 
 	execveArgCount = 6
 
