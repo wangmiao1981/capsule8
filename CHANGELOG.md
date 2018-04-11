@@ -1,3 +1,21 @@
+## 0.8.1-alpha (Apr 11, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  None
+
+BUG FIXES:
+
+  * Fix the offsets for decoding credentials from the kernel ([#186](https://github.com/capsule8/capsule8/pull/186))
+
 ## 0.8.0-alpha (Mar 7, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
