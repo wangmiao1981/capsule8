@@ -66,6 +66,10 @@ var processExitEventTypes = expression.FieldTypeMap{
 	"exit_core_dumped": int32(api.ValueType_BOOL),
 }
 
+var processUpdateEventTypes = expression.FieldTypeMap{
+	"cwd": int32(api.ValueType_STRING),
+}
+
 const taskReuseThreshold = int64(10 * time.Millisecond)
 
 const (
@@ -410,9 +414,10 @@ type ProcessInfoCache struct {
 	// These are external event IDs registered with the sensor's event
 	// monitor instance. The cache will enqueue these events as appropriate
 	// as the cache is updated.
-	ProcessExecEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC
-	ProcessForkEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_FORK
-	ProcessExitEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT
+	ProcessExecEventID   uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC
+	ProcessForkEventID   uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_FORK
+	ProcessExitEventID   uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT
+	ProcessUpdateEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE
 
 	scanningLock  sync.Mutex
 	scanning      bool
@@ -467,6 +472,15 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		"PROCESS_EXIT",
 		cache.decodeProcessExitEvent,
 		processExitEventTypes,
+	)
+	if err != nil {
+		glog.Fatalf("Failed to register external event: %s", err)
+	}
+
+	cache.ProcessUpdateEventID, err = sensor.Monitor.RegisterExternalEvent(
+		"PROCESS_UPDATE",
+		cache.decodeProcessUpdateEvent,
+		processUpdateEventTypes,
 	)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
@@ -799,6 +813,8 @@ func (pc *ProcessInfoCache) newProcessEvent(
 		pev.ExitStatus = data["exit_status"].(uint32)
 		pev.ExitSignal = data["exit_signal"].(uint32)
 		pev.ExitCoreDumped = data["exit_core_dumped"].(bool)
+	case api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE:
+		pev.UpdateCwd = data["cwd"].(string)
 	}
 
 	event.Event = &api.TelemetryEvent_Process{
@@ -829,6 +845,14 @@ func (pc *ProcessInfoCache) decodeProcessExitEvent(
 ) (interface{}, error) {
 	return pc.newProcessEvent(sample, data,
 		api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT)
+}
+
+func (pc *ProcessInfoCache) decodeProcessUpdateEvent(
+	sample *perf.SampleRecord,
+	data perf.TraceEventSampleData,
+) (interface{}, error) {
+	return pc.newProcessEvent(sample, data,
+		api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE)
 }
 
 func sampleIDFromSample(sample *perf.SampleRecord) perf.SampleID {
@@ -982,6 +1006,16 @@ func (pc *ProcessInfoCache) decodeDoSetFsPwd(
 				"CWD": cwd,
 			}
 			t.Update(changes, sample.Time)
+
+			eventData := map[string]interface{}{
+				"__task__": t,
+				"cwd":      t.CWD,
+			}
+			pc.sensor.Monitor.EnqueueExternalSample(
+				pc.ProcessUpdateEventID,
+				sampleIDFromSample(sample),
+				eventData)
+
 		}
 	})
 
@@ -1254,6 +1288,8 @@ func registerProcessEvents(
 				eventID = sensor.ProcessCache.ProcessForkEventID
 			case api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT:
 				eventID = sensor.ProcessCache.ProcessExitEventID
+			case api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE:
+				eventID = sensor.ProcessCache.ProcessUpdateEventID
 			}
 			subscriptions[t] = subscr.addEventSink(eventID)
 		}
@@ -1290,6 +1326,8 @@ func registerProcessEvents(
 			err = expr.Validate(processForkEventTypes)
 		case api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT:
 			err = expr.Validate(processExitEventTypes)
+		case api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE:
+			err = expr.Validate(processUpdateEventTypes)
 		}
 		if err != nil {
 			// Bad filter. Remove subscription
