@@ -102,14 +102,7 @@ func (ct *exitTest) CreateSubscription(t *testing.T) *api.Subscription {
 		},
 
 		&api.ProcessEventFilter{
-			Type:         api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT,
-			ExecFilename: &wrappers.StringValue{testExitProc1Filename},
-		},
-
-		&api.ProcessEventFilter{
-			Type:                api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT,
-			ExecFilenamePattern: &wrappers.StringValue{testExitProc2Patt},
-			ExitCode:            &wrappers.Int32Value{testExitProc2Code},
+			Type: api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT,
 		},
 	}
 

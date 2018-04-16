@@ -418,6 +418,7 @@ func registerContainerEvents(
 	var (
 		filters       [6]*api.Expression
 		subscriptions [6]*eventSink
+		wildcards     [6]bool
 	)
 
 	for _, cef := range events {
@@ -428,6 +429,7 @@ func registerContainerEvents(
 				fmt.Sprintf("ContainerEventType %d is invalid", t))
 			continue
 		}
+
 		if subscriptions[t] == nil {
 			var eventID uint64
 			switch t {
@@ -445,7 +447,14 @@ func registerContainerEvents(
 			subscriptions[t] = subscr.addEventSink(eventID)
 			subscriptions[t].containerView = cef.View
 		}
-		filters[t] = expression.LogicalOr(filters[t], cef.FilterExpression)
+		if cef.FilterExpression == nil {
+			wildcards[t] = true
+			filters[t] = nil
+		} else if !wildcards[t] {
+			filters[t] = expression.LogicalOr(
+				filters[t],
+				cef.FilterExpression)
+		}
 	}
 
 	for i, s := range subscriptions {

@@ -37,6 +37,8 @@ import (
 
 	"github.com/golang/glog"
 
+	"golang.org/x/sys/unix"
+
 	"google.golang.org/genproto/googleapis/rpc/code"
 	google_rpc "google.golang.org/genproto/googleapis/rpc/status"
 )
@@ -115,6 +117,17 @@ func NewSensor() (*Sensor, error) {
 
 // Start starts a sensor instance running.
 func (s *Sensor) Start() error {
+	var buf unix.Utsname
+	if err := unix.Uname(&buf); err == nil {
+		machine := string(buf.Machine[:])
+		nodename := string(buf.Nodename[:])
+		sysname := string(buf.Sysname[:])
+		release := string(buf.Release[:])
+		version := string(buf.Version[:])
+		glog.Infof("%s %s %s %s %s",
+			machine, nodename, sysname, release, version)
+	}
+
 	// We require that our run dir (usually /var/run/capsule8) exists.
 	// Ensure that now before proceeding any further.
 	if err := os.MkdirAll(config.Global.RunDir, 0700); err != nil {
@@ -295,25 +308,31 @@ func (s *Sensor) NewEventFromSample(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
 ) *api.TelemetryEvent {
-	var leader, task *Task
+	var (
+		ok           bool
+		leader, task *Task
+	)
 
-	// When both the sensor and the process generating the sample are in
-	// containers, the sample.Pid and sample.Tid fields will be zero.
-	// Use "common_pid" from the trace event data instead.
-	pid, _ := data["common_pid"].(int32)
-	if pid != 0 {
+	// Avoid the lookup if we've been given the information.
+	// This happens most commonly with process events.
+	if task, ok = data["__task__"].(*Task); ok {
+		leader = task.Leader()
+	} else if pid, _ := data["common_pid"].(int32); pid != 0 {
+		// When both the sensor and the process generating the sample
+		// are in containers, the sample.Pid and sample.Tid fields will
+		// be zero. Use "common_pid" from the trace event data instead.
 		task, leader = s.ProcessCache.LookupTaskAndLeader(int(pid))
-		if leader.IsSensor() {
-			return nil
-		}
+	}
+	if leader != nil && leader.IsSensor() {
+		return nil
 	}
 
 	e := s.NewEvent()
 	e.SensorMonotimeNanos = int64(sample.Time) - s.bootMonotimeNanos
 	e.Cpu = int32(sample.CPU)
 
-	e.ProcessPid = pid
-	if pid != 0 {
+	if task != nil {
+		e.ProcessPid = int32(task.PID)
 		e.ProcessId = task.ProcessID
 		e.ProcessTgid = int32(task.TGID)
 
@@ -330,6 +349,7 @@ func (s *Sensor) NewEventFromSample(
 			}
 		}
 
+		// if task != nil, leader is also guaranteed != nil
 		if i := s.ProcessCache.LookupTaskContainerInfo(leader); i != nil {
 			e.ContainerId = i.ID
 			e.ContainerName = i.Name
