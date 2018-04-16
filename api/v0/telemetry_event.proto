@@ -194,6 +194,9 @@ enum ProcessEventType {
 
         // The event is a process exit event
         PROCESS_EVENT_TYPE_EXIT = 3;
+
+        // The event is a process update event
+        PROCESS_EVENT_TYPE_UPDATE = 4;
 }
 
 // ProcessEvent describes an event that occurred related to processes starting
@@ -234,6 +237,10 @@ message ProcessEvent {
         // Present when the event is an exit event. If true, indicates that the
         // process dumped a core when it terminated.
         bool exit_core_dumped = 33;
+
+        // Present when the event is an update event that informs of an update
+        // to the process's current working directory.
+        string update_cwd = 40;
 }
 
 // Possible SyscallEvent types

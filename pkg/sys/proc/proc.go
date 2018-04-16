@@ -281,6 +281,12 @@ func containerIDFromCgroups(cgroups []Cgroup) string {
 	return ""
 }
 
+// CWD returns the current working directory for the specified task.
+func (fs *FileSystem) CWD(tgid, pid int) (string, error) {
+	return os.Readlink(fmt.Sprintf("%s/%d/task/%d/cwd",
+		fs.MountPoint, tgid, pid))
+}
+
 // ReadProcessStatus reads the status of a process from the proc filesystem,
 // parsing each field and storing it in the supplied struct.
 func (fs *FileSystem) ReadProcessStatus(tgid, pid int, i interface{}) error {

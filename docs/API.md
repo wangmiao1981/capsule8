@@ -395,6 +395,7 @@ and exiting as detected by the Sensor.
 | exit_status | [uint32](#uint32) |  | Present when the event is an exit event. This will typically be one9 of the values defined in stdlib.h like EXIT_SUCCESS, EXIT_FAILURE, or EXIT_USAGE. |
 | exit_signal | [uint32](#uint32) |  | Present when the event is an exit event. If non-zero, this is the signal number that the process was terminated with. |
 | exit_core_dumped | [bool](#bool) |  | Present when the event is an exit event. If true, indicates that the process dumped a core when it terminated. |
+| update_cwd | [string](#string) |  | Present when the event is an update event that informs of an update to the process&#39;s current working directory. |
 
 
 
@@ -579,6 +580,7 @@ Possible ProcessEvent types
 | PROCESS_EVENT_TYPE_FORK | 1 | The event is a process fork event |
 | PROCESS_EVENT_TYPE_EXEC | 2 | The event is a process exec event |
 | PROCESS_EVENT_TYPE_EXIT | 3 | The event is a process exit event |
+| PROCESS_EVENT_TYPE_UPDATE | 4 | The event is a process update event |
 
 
 
