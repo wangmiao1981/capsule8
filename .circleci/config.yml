@@ -16,18 +16,20 @@ jobs:
             git config --global url."https://".insteadOf git://
 
       - checkout
- 
+
       - run:
           name: Checkout submodules
-          command: git submodule update --init --recursive --remote 
-     
+          command: git submodule update --init --recursive --remote
+
       # Install dependencies here b/c circleci requires custom build containers
       # to be in a public registry.
       - run:
           name: Install dependencies
           command: |
-            go get -u github.com/golang/lint/golint
-        
+            mkdir -p $GOPATH/src/golang.org/x \
+                && git clone https://github.com/golang/lint.git $GOPATH/src/golang.org/x/lint \
+                && go get -u golang.org/x/lint/golint
+
       - run:
           name: Check source code syntax, formatting, style, and lint
           command: make check
@@ -40,7 +42,7 @@ jobs:
       - run:
           name: Run unit tests under race detector
           command: make test_race
-          
+
       # Setup remote docker now to build container and run functional tests
       - setup_remote_docker
       - run:
