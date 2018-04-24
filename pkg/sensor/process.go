@@ -872,6 +872,7 @@ func (pc *ProcessInfoCache) handleSysClone(
 ) {
 	changes := map[string]interface{}{
 		"Command": childComm,
+		"Creds":   parentTask.Creds,
 	}
 
 	if (cloneFlags & CLONE_THREAD) != 0 {
