@@ -1,3 +1,25 @@
+## 0.11.0-alpha (Apr 26, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Send `PROCESS_EVENT_TYPE_UPDATE` events when cwd for a task changes ([#188](https://github.com/capsule8/capsule8/pull/188))
+
+IMPROVEMENTS:
+
+  * Generate process events for subscriptions from process cache events ([#182](https://github.com/capsule8/capsule8/pull/182))
+  * Update vendored gRPC dependency to [1.11.2](https://github.com/grpc/grpc-go/releases/tag/v1.11.2) ([#181](https://github.com/capsule8/capsule8/pull/181))
+  * Move subscriptions-cli's main.go to where Makefile will find it ([#179](https://github.com/capsule8/capsule8/pull/179))
+
+BUG FIXES:
+  * Simplify golint go get command in circle ci pipeline ([#192](https://github.com/capsule8/capsule8/pull/192))
+  * Child tasks should inherit credentials from parent tasks ([#189](https://github.com/capsule8/capsule8/pull/189))
+  * Manually clone go lint in circle ci ([#190](https://github.com/capsule8/capsule8/pull/190))
+  * Fix the offsets for decoding credentials from the kernel ([#185](https://github.com/capsule8/capsule8/pull/185))
+
 ## 0.10.1-alpha (Apr 9, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
