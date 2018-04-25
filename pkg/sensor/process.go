@@ -176,6 +176,35 @@ func newCredentials(
 	}
 }
 
+const cloneEventThreshold = uint64(100 * time.Millisecond)
+
+type cloneEvent struct {
+	timestamp uint64
+
+	// Set by the parent
+	cloneFlags uint64
+
+	// Set by the child
+	childPid  int
+	childComm string
+}
+
+func (c *cloneEvent) isExpired(t uint64) bool {
+	if c == nil {
+		return true
+	}
+	var delta uint64
+	if c.timestamp < t {
+		delta = t - c.timestamp
+	} else {
+		delta = c.timestamp - t
+	}
+	if delta > cloneEventThreshold {
+		fmt.Printf("cloneevent delta %d\n", delta)
+	}
+	return delta > cloneEventThreshold
+}
+
 // Task represents a schedulable task. All Linux tasks are uniquely identified
 // at a given time by their PID, but those PIDs may be reused after hitting the
 // maximum PID value.
@@ -233,17 +262,17 @@ type Task struct {
 	// Parent() to get the parent of a container.
 	parent *Task
 
-	// pendingCloneFlags is used internally for tracking the flags passed
-	// to the clone(2) system call.
-	pendingCloneFlags uint64
+	// pendingClone is used internally for tracking information about a
+	// task clone executed by the clone(2) system call. In kernels >= 3.9
+	// this is not necessary
+	pendingClone *cloneEvent
 }
 
 var rootTask = Task{}
 
 func newTask(pid int) *Task {
 	return &Task{
-		PID:               pid,
-		pendingCloneFlags: ^uint64(0),
+		PID: pid,
 	}
 }
 
@@ -520,13 +549,6 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 				glog.Fatalf("Couldn't register kprobe %s: %s",
 					eventName, err)
 			}
-		}
-		_, err = sensor.Monitor.RegisterKprobe(eventName, true,
-			"", cache.decodeDoForkReturn,
-			perf.WithEventEnabled())
-		if err != nil {
-			glog.Fatalf("Couldn't register kretprobe %s: %s",
-				eventName, err)
 		}
 
 		eventName = "sched/sched_process_fork"
@@ -1121,32 +1143,19 @@ func (pc *ProcessInfoCache) decodeDoFork(
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
 
-		if t.pendingCloneFlags != ^uint64(0) {
-			glog.V(2).Infof("decodeDoFork: stale clone flags %x for pid %d\n",
-				t.pendingCloneFlags, pid)
+		if t.pendingClone.isExpired(sample.Time) {
+			t.pendingClone = &cloneEvent{
+				timestamp:  sample.Time,
+				cloneFlags: cloneFlags,
+			}
+		} else {
+			c := t.pendingClone
+			t.pendingClone = nil
+
+			childTask := pc.LookupTask(c.childPid)
+			pc.handleSysClone(t, t.Leader(), childTask,
+				cloneFlags, c.childComm, sample)
 		}
-
-		t.pendingCloneFlags = cloneFlags
-	})
-
-	return nil, nil
-}
-
-func (pc *ProcessInfoCache) decodeDoForkReturn(
-	sample *perf.SampleRecord,
-	data perf.TraceEventSampleData,
-) (interface{}, error) {
-	pid := int(data["common_pid"].(int32))
-
-	pc.maybeDeferAction(func() {
-		t := pc.LookupTask(pid)
-
-		if t.pendingCloneFlags == ^uint64(0) {
-			glog.V(2).Infof("decodeDoFork: no pending clone flags for pid %d\n",
-				pid)
-		}
-
-		t.pendingCloneFlags = ^uint64(0)
 	})
 
 	return nil, nil
@@ -1162,15 +1171,20 @@ func (pc *ProcessInfoCache) decodeSchedProcessFork(
 
 	pc.maybeDeferAction(func() {
 		parentTask, parentLeader := pc.LookupTaskAndLeader(parentPid)
-		if parentTask.pendingCloneFlags == ^uint64(0) {
-			glog.Fatalf("decodeSchedProcessFork: no pending clone flags for pid %d\n",
-				parentPid)
+		if parentTask.pendingClone.isExpired(sample.Time) {
+			parentTask.pendingClone = &cloneEvent{
+				timestamp: sample.Time,
+				childPid:  childPid,
+				childComm: childComm,
+			}
+		} else {
+			c := parentTask.pendingClone
+			parentTask.pendingClone = nil
+
+			childTask := pc.LookupTask(childPid)
+			pc.handleSysClone(parentTask, parentLeader, childTask,
+				c.cloneFlags, childComm, sample)
 		}
-
-		childTask := pc.LookupTask(childPid)
-
-		pc.handleSysClone(parentTask, parentLeader, childTask,
-			parentTask.pendingCloneFlags, childComm, sample)
 	})
 
 	return nil, nil
