@@ -26,9 +26,7 @@ jobs:
       - run:
           name: Install dependencies
           command: |
-            mkdir -p $GOPATH/src/golang.org/x \
-                && git clone https://github.com/golang/lint.git $GOPATH/src/golang.org/x/lint \
-                && go get -u golang.org/x/lint/golint
+            go get -u github.com/golang/lint/golint
 
       - run:
           name: Check source code syntax, formatting, style, and lint
