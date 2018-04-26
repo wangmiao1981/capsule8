@@ -20,6 +20,28 @@ BUG FIXES:
   * Manually clone go lint in circle ci ([#190](https://github.com/capsule8/capsule8/pull/190))
   * Fix the offsets for decoding credentials from the kernel ([#185](https://github.com/capsule8/capsule8/pull/185))
 
+## 0.8.1-alpha (Apr 11, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  None
+
+IMPROVEMENTS:
+
+  None
+
+BUG FIXES:
+
+  * Fix the offsets for decoding credentials from the kernel ([#186](https://github.com/capsule8/capsule8/pull/186))
+
+Notes:
+
+  This release is on the `release-0.8` branch
+
 ## 0.10.1-alpha (Apr 9, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
