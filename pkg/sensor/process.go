@@ -528,14 +528,6 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
 	}
 
-	eventName = cgroupProcsWriteAddress
-	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
-		cgroupProcsWriteArgs, cache.decodeCgroupProcsWrite,
-		perf.WithEventEnabled())
-	if err != nil {
-		glog.Fatalf("Couldn't register event %s: %s", eventName, err)
-	}
-
 	// Attach kprobe on commit_creds to capture task privileges
 	_, err = sensor.Monitor.RegisterKprobe(commitCredsAddress, false,
 		commitCredsArgs, cache.decodeCommitCreds,
