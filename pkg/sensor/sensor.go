@@ -72,7 +72,7 @@ type Sensor struct {
 	Monitor *perf.EventMonitor
 
 	// Per-sensor caches and monitors
-	ProcessCache   ProcessInfoCache
+	ProcessCache   *ProcessInfoCache
 	ContainerCache *ContainerCache
 	dockerMonitor  *dockerMonitor
 	ociMonitor     *ociMonitor

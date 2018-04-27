@@ -429,7 +429,7 @@ type scannerDeferredAction func()
 // NewProcessInfoCache creates a new process information cache object. An
 // existing sensor object is required in order for the process info cache to
 // able to install its probes to monitor the system to maintain the cache.
-func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
+func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 	once.Do(func() {
 		procFS = sys.HostProcFS()
 		if procFS == nil {
@@ -437,7 +437,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		}
 	})
 
-	cache := ProcessInfoCache{
+	cache := &ProcessInfoCache{
 		sensor:   sensor,
 		scanning: true,
 	}
