@@ -493,12 +493,12 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 		perf.WithEventEnabled())
 	if err != nil {
 		eventName = doForkAddress
-		_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+		_, err = sensor.RegisterKprobe(eventName, false,
 			doForkFetchargs, cache.decodeDoFork,
 			perf.WithEventEnabled())
 		if err != nil {
 			eventName = "_" + eventName
-			_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+			_, err = sensor.RegisterKprobe(eventName, false,
 				doForkFetchargs, cache.decodeDoFork,
 				perf.WithEventEnabled())
 			if err != nil {
@@ -521,7 +521,7 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 	}
 
 	eventName = doExitAddress
-	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+	_, err = sensor.RegisterKprobe(eventName, false,
 		doExitArgs, cache.decodeDoExit,
 		perf.WithEventEnabled())
 	if err != nil {
@@ -529,17 +529,17 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 	}
 
 	// Attach kprobe on commit_creds to capture task privileges
-	_, err = sensor.Monitor.RegisterKprobe(commitCredsAddress, false,
+	_, err = sensor.RegisterKprobe(commitCredsAddress, false,
 		commitCredsArgs, cache.decodeCommitCreds,
 		perf.WithEventEnabled())
 
 	// Attach kretprobe on set_fs_pwd to track working directories
-	_, err = sensor.Monitor.RegisterKprobe(doSetFsPwd, true,
+	_, err = sensor.RegisterKprobe(doSetFsPwd, true,
 		"", cache.decodeDoSetFsPwd,
 		perf.WithEventEnabled())
 
 	eventName = cgroupProcsWriteAddress
-	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+	_, err = sensor.RegisterKprobe(eventName, false,
 		cgroupProcsWriteArgs, cache.decodeCgroupProcsWrite,
 		perf.WithEventEnabled())
 	if err != nil {
@@ -566,13 +566,13 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 	// if that succeeds, it's the only one we need. Otherwise, we need a
 	// bunch of others to try to hit everything. We may end up getting
 	// duplicate events, which is ok.
-	_, err = sensor.Monitor.RegisterKprobe(
+	_, err = sensor.RegisterKprobe(
 		doExecveatCommonAddress, false,
 		doExecveatCommonArgs+makeExecveFetchArgs("dx"),
 		cache.decodeExecve,
 		perf.WithEventEnabled())
 	if err != nil {
-		_, err = sensor.Monitor.RegisterKprobe(
+		_, err = sensor.RegisterKprobe(
 			sysExecveAddress, false,
 			sysExecveArgs+makeExecveFetchArgs("si"),
 			cache.decodeExecve,
@@ -581,19 +581,19 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 			glog.Fatalf("Couldn't register event %s: %s",
 				sysExecveAddress, err)
 		}
-		_, _ = sensor.Monitor.RegisterKprobe(
+		_, _ = sensor.RegisterKprobe(
 			doExecveAddress, false,
 			doExecveArgs+makeExecveFetchArgs("si"),
 			cache.decodeExecve,
 			perf.WithEventEnabled())
 
-		_, err = sensor.Monitor.RegisterKprobe(
+		_, err = sensor.RegisterKprobe(
 			sysExecveatAddress, false,
 			sysExecveatArgs+makeExecveFetchArgs("dx"),
 			cache.decodeExecve,
 			perf.WithEventEnabled())
 		if err == nil {
-			_, _ = sensor.Monitor.RegisterKprobe(
+			_, _ = sensor.RegisterKprobe(
 				doExecveatAddress, false,
 				makeExecveFetchArgs("dx"), cache.decodeExecve,
 				perf.WithEventEnabled())
