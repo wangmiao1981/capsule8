@@ -119,7 +119,7 @@ ci:
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		-v $(shell pwd):$(shell pwd) \
 		--workdir $(shell pwd) \
-		circleci/picard \
+		circleci/picard:0.0.4995-4605912 \
 		circleci build
 
 
