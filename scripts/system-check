@@ -1,0 +1,228 @@
+#!/bin/bash
+
+# Copyright 2017 Capsule8, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# This script is intended to perform a cursory check on a system to determine
+# the likelihood that the sensor will be able to function it. It checks to
+# ensure that required mount points, tracepoints, and kernel symbols are found.
+# It does not actually attempt to register kprobes or do anything of that sort.
+
+# This script must be run as root. The only reason that this is required is
+# because the tracefs mount point that is needed is typically mounted requiring
+# root privileges. This script does not modify the system in any way.
+if [ "`id -u`" != 0 ]; then
+    echo "This script must be run as root!"
+    exit 1
+fi
+
+# Quick checks for kernel version
+MAJOR="`uname -r | cut -d '.' -f 1`"
+MINOR="`uname -r | cut -d '.' -f 2`"
+if [ "$MAJOR" -lt 2 ]; then
+    echo "Kernel version `uname -r` is not supported."
+    exit 1
+fi
+if [ "$MAJOR" = 2 ]; then
+    if [ "`uname -r | cut -d '.' -f 4`" != "el6" ]; then
+        echo "Kernel version `uname -r` is not supported."
+        exit 1
+    fi
+    if [ "`uname -r | cut -d '.' -f 3 | cut -d '-' -f 1`" != 32 ]; then
+        echo "Kernel version `uname -r` is not supported."
+    fi
+    if [ "`uname -r | cut -d '.' -f 3 | cut -d '-' -f 1`" -lt 504 ]; then
+        echo "Kernel version `uname -r` is not supported."
+    fi
+fi
+if [ "$MAJOR" = 3 -a "${MINOR}" -lt 10 ]; then
+    echo "Kernel version `uname -r` is not supported."
+fi
+
+# Check for the needed filesystems: tracefs, proc, cgroup
+TRACEFS_MOUNT="`mount -t tracefs | cut -d ' ' -f 3`"
+if [ -z "${TRACEFS_MOUNT}" ]; then
+    # On older kernels, tracefs is mounted by default in the tracing directory
+    # of a debugfs mount
+    DEBUGFS_MOUNT="`mount -t debugfs | cut -d ' ' -f 3`"
+    if [ ! -d "${DEBUGFS_MOUNT}/tracing/events" ]; then
+        echo "No tracefs filesystem is mounted."
+        exit 1
+    fi
+    TRACEFS_MOUNT="${DEBUGFS_MOUNT}/tracing"
+fi
+echo "Found tracefs filesystem mounted at ${TRACEFS_MOUNT}"
+
+PROC_MOUNT="`mount -t proc | cut -d ' ' -f 3`"
+if [ -z "${PROC_MOUNT}" ]; then
+    echo "No proc filesystem is mounted."
+    exit 1
+fi
+echo "Found proc filesystem mounted at ${PROC_MOUNT}"
+
+KALLSYMS="${PROC_MOUNT}/kallsyms"
+if [ ! -f ${KALLSYMS} ]; then
+    echo "${KALLSYMS} is missing."
+    exit 1
+fi
+
+function lookup_kernel_symbol () {
+    local result=""
+    local savedIFS="${IFS}"
+    IFS='
+'
+    for line in `grep "$1" "${KALLSYMS}"`; do
+        local t="`echo ${line} | cut -d ' ' -f 2`"
+        if [ "${t}" != "t" -a "${t}" != "T" ]; then
+            continue
+        fi
+        local sym="`echo ${line} | cut -d ' ' -f 3`"
+        if [ "${sym}" = "$1" ]; then
+            result="${sym}"
+            break
+        fi
+        local sym2="`echo ${sym} | cut -d '.' -f 1`"
+        if [ "${sym2}" = "$1" ]; then
+            result="${sym}"
+            break
+        fi
+    done
+    IFS="${savedIFS}"
+    echo "${result}"
+}
+
+# Check for perf_event support. This is REQUIRED.
+if [ -z "$(lookup_kernel_symbol sys_perf_event_open)" ]; then
+    echo "Kernel does not have perf_event support compiled in."
+    exit 1
+fi
+
+# Check for CGROUP support. This is OPTIONAL, but if present additional
+# symbols are REQUIRED.
+if [ -z "$(lookup_kernel_symbol cgroup_procs_write)" ]; then
+    echo "No container support: kernel does not have cgroup support compiled in."
+else
+    if [ -z "$(lookup_kernel_symbol attach_task_by_pid)" ]; then
+        if [ -z "$(lookup_kernel_symbol __cgroup_procs_write)" ]; then
+            if [ -z "$(lookup_kernel_symbol __cgroup1_procs_write)" ]; then
+                echo "Unable to find known cgroup related kernel symbols for container monitoring."
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+# Check for all required tracepoints
+REQUIRED_TRACEPOINTS="
+sched/sched_process_exit
+sched/sched_process_fork
+
+syscalls/sys_enter_accept
+syscalls/sys_exit_accept
+syscalls/sys_enter_accept4
+syscalls/sys_exit_accept4
+syscalls/sys_exit_bind
+syscalls/sys_exit_connect
+syscalls/sys_enter_listen
+syscalls/sys_exit_listen
+syscalls/sys_enter_recvfrom
+syscalls/sys_enter_recvmsg
+syscalls/sys_exit_recvfrom
+syscalls/sys_exit_recvmsg
+syscalls/sys_exit_sendmsg
+syscalls/sys_exit_sendto
+"
+for tp in ${REQUIRED_TRACEPOINTS}; do
+    if [ ! -d "${TRACEFS_MOUNT}/events/${tp}" ]; then
+        echo "Required tracepoint ${tp} is not present."
+        exit 1
+    fi
+    echo "Found required tracepoint ${tp}"
+done
+
+# If raw_syscalls/sys_enter does not exist, check syscalls/sys_enter
+if [ ! -d "${TRACEFS_MOUNT}/events/raw_syscalls/sys_enter" ]; then
+    if [ ! -d "${TRACEFS_MOUNT}/events/syscalls/sys_enter" ]; then
+        echo "Required tracepoints raw_syscalls/sys_enter or syscalls/sys_enter are not present."
+    else
+        echo "Found required tracepoint syscalls/sys_enter"
+    fi
+else
+    echo "Found required tracepoint raw_syscalls/sys_enter"
+fi
+
+# If raw_syscalls/sys_exit does not exist, check syscalls/sys_exit
+if [ ! -d "${TRACEFS_MOUNT}/events/raw_syscalls/sys_exit" ]; then
+    if [ ! -d "${TRACEFS_MOUNT}/events/syscalls/sys_exit" ]; then
+        echo "Required tracepoints raw_syscalls/sys_exit or syscalls/sys_exit are not present."
+    else
+        echo "Found required tracepoint syscalls/sys_exit"
+    fi
+else
+    echo "Found required tracepoint raw_syscalls/sys_exit"
+fi
+
+# Check for all required kernel symbols
+REQUIRED_KPROBE_SYMBOLS="
+commit_creds
+do_exit
+set_fs_pwd
+
+do_sys_open
+
+sys_bind
+sys_connect
+sys_sendmsg
+sys_sendto
+"
+for s in ${REQUIRED_KPROBE_SYMBOLS}; do
+    if [ -z "$(lookup_kernel_symbol ${s})" ]; then
+        echo "Required kernel symbol ${s} is not present."
+        exit 1
+    fi
+    echo "Found required kernel symbol ${s}"
+done
+
+# Check for special cases. Most of these are related to process monitoring.
+if [ ! -d "${TRACEFS_MOUNT}/events/task/task_newtask" ]; then
+    if [ -z "$(lookup_kernel_symbol do_fork)" ]; then
+        echo "Required kernel symbol do_fork is not present."
+        exit 1
+    fi
+    if [ ! -d "${TRACEFS_MOUNT}/events/sched/sched_process_fork" ]; then
+        echo "Required tracepoint sched/sched_process_fork is not present."
+        exit 1
+    fi
+fi
+
+if [ -z "$(lookup_kernel_symbol do_execveat_common)" ]; then
+    if [ -z "$(lookup_kernel_symbol sys_execve)" ]; then
+        echo "Required kernel symbol sys_execve is not present."
+        exit 1
+    fi
+    # There are other symbols we'll attempt to attach kprobes to, but they're
+    # not required: do_execve, do_execveat, sys_execveat
+fi
+
+if [ -z "$(lookup_kernel_symbol syscall_trace_enter_phase1)" ]; then
+    if [ -z "$(lookup_kernel_symbol syscall_trace_enter)" ]; then
+        echo "Required kernel symbol syscall_trace_enter is not present."
+        exit 1
+    fi
+fi
+
+# Everything checks out! This is not a guarantee that the sensor will function
+# normally, but the odds are pretty good.
+echo "System check passed!"
+exit 0
