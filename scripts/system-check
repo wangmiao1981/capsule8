@@ -22,6 +22,12 @@
 # This script must be run as root. The only reason that this is required is
 # because the tracefs mount point that is needed is typically mounted requiring
 # root privileges. This script does not modify the system in any way.
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0;0m'
+
 if [ "`id -u`" != 0 ]; then
     echo "This script must be run as root!"
     exit 1
@@ -46,9 +52,9 @@ if [ "$CONFIG_CMD" != "" ]; then
     for option in $CONFIG_OPTIONS; do
         eval "$CONFIG_CMD | grep $option 2>/dev/null >/dev/null"
         if  [ "$?" != "0" ]; then
-		    echo -e "[ ${RED} FAIL ${NC} ] option $option is missing from running kernel $(uname -r)"
-            else
-		    echo -e "[ ${GREEN} PASS ${NC} ] option $option is present in running kernel $(uname -r)"
+            echo -e "[ ${RED} FAIL ${NC} ] option $option is missing from running kernel $(uname -r)"
+        else
+            echo -e "[ ${GREEN} PASS ${NC} ] option $option is present in running kernel $(uname -r)"
         fi
     done
 else
@@ -56,27 +62,30 @@ else
 fi
 
 
+
 # Quick checks for kernel version
 MAJOR="`uname -r | cut -d '.' -f 1`"
 MINOR="`uname -r | cut -d '.' -f 2`"
+
 if [ "$MAJOR" -lt 2 ]; then
-    echo "Kernel version `uname -r` is not supported."
+    echo -e "[ ${RED} FAIL ${NC}] Kernel version `uname -r` is not supported."
     exit 1
 fi
+
 if [ "$MAJOR" = 2 ]; then
     if [ "`uname -r | cut -d '.' -f 4`" != "el6" ]; then
-        echo "Kernel version `uname -r` is not supported."
+        echo -e "[ ${RED} FAIL ${NC} ] Kernel version `uname -r` is not supported."
         exit 1
     fi
     if [ "`uname -r | cut -d '.' -f 3 | cut -d '-' -f 1`" != 32 ]; then
-        echo "Kernel version `uname -r` is not supported."
+        echo -e "[ ${RED} FAIL ${NC} ] Kernel version `uname -r` is not supported."
     fi
     if [ "`uname -r | cut -d '.' -f 3 | cut -d '-' -f 1`" -lt 504 ]; then
-        echo "Kernel version `uname -r` is not supported."
+        echo -e "[ ${RED} FAIL ${NC} ] Kernel version `uname -r` is not supported."
     fi
 fi
 if [ "$MAJOR" = 3 -a "${MINOR}" -lt 10 ]; then
-    echo "Kernel version `uname -r` is not supported."
+    echo -e "[ ${RED} FAIL ${NC} ] Kernel version `uname -r` is not supported."
 fi
 
 # Check for the needed filesystems: tracefs, proc, cgroup
@@ -86,23 +95,23 @@ if [ -z "${TRACEFS_MOUNT}" ]; then
     # of a debugfs mount
     DEBUGFS_MOUNT="`mount -t debugfs | cut -d ' ' -f 3`"
     if [ ! -d "${DEBUGFS_MOUNT}/tracing/events" ]; then
-        echo "No tracefs filesystem is mounted."
+        echo -e "[ ${RED} FAIL ${NC} ] No tracefs filesystem is mounted."
         exit 1
     fi
     TRACEFS_MOUNT="${DEBUGFS_MOUNT}/tracing"
 fi
-echo "Found tracefs filesystem mounted at ${TRACEFS_MOUNT}"
+echo -e "[ ${GREEN} PASS ${NC} ] Found tracefs filesystem mounted at ${TRACEFS_MOUNT}"
 
 PROC_MOUNT="`mount -t proc | cut -d ' ' -f 3`"
 if [ -z "${PROC_MOUNT}" ]; then
-    echo "No proc filesystem is mounted."
+    echo -e "[ ${RED} FAIL ${NC} ] No proc filesystem is mounted."
     exit 1
 fi
-echo "Found proc filesystem mounted at ${PROC_MOUNT}"
+echo -e "[ ${GREEN} PASS ${NC} ] Found proc filesystem mounted at ${PROC_MOUNT}"
 
 KALLSYMS="${PROC_MOUNT}/kallsyms"
 if [ ! -f ${KALLSYMS} ]; then
-    echo "${KALLSYMS} is missing."
+    echo -e "[ ${RED} FAIL ${NC} ] ${KALLSYMS} is missing."
     exit 1
 fi
 
@@ -133,19 +142,19 @@ function lookup_kernel_symbol () {
 
 # Check for perf_event support. This is REQUIRED.
 if [ -z "$(lookup_kernel_symbol sys_perf_event_open)" ]; then
-    echo "Kernel does not have perf_event support compiled in."
+    echo -e "[ ${RED} FAIL ${NC} ] Kernel does not have perf_event support compiled in."
     exit 1
 fi
 
 # Check for CGROUP support. This is OPTIONAL, but if present additional
 # symbols are REQUIRED.
 if [ -z "$(lookup_kernel_symbol cgroup_procs_write)" ]; then
-    echo "No container support: kernel does not have cgroup support compiled in."
+    echo -e "[ ${RED} FAIL ${NC} ] No container support: kernel does not have cgroup support compiled in."
 else
     if [ -z "$(lookup_kernel_symbol attach_task_by_pid)" ]; then
         if [ -z "$(lookup_kernel_symbol __cgroup_procs_write)" ]; then
             if [ -z "$(lookup_kernel_symbol __cgroup1_procs_write)" ]; then
-                echo "Unable to find known cgroup related kernel symbols for container monitoring."
+                echo -e "[ ${RED} FAIL ${NC} ] Unable to find known cgroup related kernel symbols for container monitoring."
                 exit 1
             fi
         fi
@@ -174,32 +183,32 @@ syscalls/sys_exit_sendto
 "
 for tp in ${REQUIRED_TRACEPOINTS}; do
     if [ ! -d "${TRACEFS_MOUNT}/events/${tp}" ]; then
-        echo "Required tracepoint ${tp} is not present."
+        echo -e "[ ${RED} FAIL ${NC} ] Required tracepoint ${tp} is not present."
         exit 1
     fi
-    echo "Found required tracepoint ${tp}"
+    echo -e "[ ${GREEN} PASS ${NC} ] Found required tracepoint ${tp}"
 done
 
 # If raw_syscalls/sys_enter does not exist, check syscalls/sys_enter
 if [ ! -d "${TRACEFS_MOUNT}/events/raw_syscalls/sys_enter" ]; then
     if [ ! -d "${TRACEFS_MOUNT}/events/syscalls/sys_enter" ]; then
-        echo "Required tracepoints raw_syscalls/sys_enter or syscalls/sys_enter are not present."
+        echo -e "[ ${RED} FAIL ${NC} ] Required tracepoints raw_syscalls/sys_enter or syscalls/sys_enter are not present."
     else
-        echo "Found required tracepoint syscalls/sys_enter"
+        echo -e "[ ${GREEN} PASS ${NC} ] Found required tracepoint syscalls/sys_enter"
     fi
 else
-    echo "Found required tracepoint raw_syscalls/sys_enter"
+    echo -e "[ ${GREEN} PASS ${NC} ] Found required tracepoint raw_syscalls/sys_enter"
 fi
 
 # If raw_syscalls/sys_exit does not exist, check syscalls/sys_exit
 if [ ! -d "${TRACEFS_MOUNT}/events/raw_syscalls/sys_exit" ]; then
     if [ ! -d "${TRACEFS_MOUNT}/events/syscalls/sys_exit" ]; then
-        echo "Required tracepoints raw_syscalls/sys_exit or syscalls/sys_exit are not present."
+        echo -e "[ ${RED} FAIL ${NC} ] Required tracepoints raw_syscalls/sys_exit or syscalls/sys_exit are not present."
     else
-        echo "Found required tracepoint syscalls/sys_exit"
+        echo -e "[ ${GREEN} PASS ${NC} ] Found required tracepoint syscalls/sys_exit"
     fi
 else
-    echo "Found required tracepoint raw_syscalls/sys_exit"
+    echo -e "[ ${GREEN} PASS ${NC} ] Found required tracepoint raw_syscalls/sys_exit"
 fi
 
 # Check for all required kernel symbols
@@ -217,27 +226,27 @@ sys_sendto
 "
 for s in ${REQUIRED_KPROBE_SYMBOLS}; do
     if [ -z "$(lookup_kernel_symbol ${s})" ]; then
-        echo "Required kernel symbol ${s} is not present."
+        echo -e "[ ${RED} FAIL ${NC} ]  Required kernel symbol ${s} is not present."
         exit 1
     fi
-    echo "Found required kernel symbol ${s}"
+    echo -e "[ ${GREEN} PASS ${NC} ] Found required kernel symbol ${s}"
 done
 
 # Check for special cases. Most of these are related to process monitoring.
 if [ ! -d "${TRACEFS_MOUNT}/events/task/task_newtask" ]; then
     if [ -z "$(lookup_kernel_symbol do_fork)" ]; then
-        echo "Required kernel symbol do_fork is not present."
+        echo -e "[ ${RED} FAIL ${NC} ] Required kernel symbol do_fork is not present."
         exit 1
     fi
     if [ ! -d "${TRACEFS_MOUNT}/events/sched/sched_process_fork" ]; then
-        echo "Required tracepoint sched/sched_process_fork is not present."
+        echo -e "[ ${RED} FAIL ${NC} ] Required tracepoint sched/sched_process_fork is not present."
         exit 1
     fi
 fi
 
 if [ -z "$(lookup_kernel_symbol do_execveat_common)" ]; then
     if [ -z "$(lookup_kernel_symbol sys_execve)" ]; then
-        echo "Required kernel symbol sys_execve is not present."
+        echo -e "[ ${RED} FAIL ${NC} ] Required kernel symbol sys_execve is not present."
         exit 1
     fi
     # There are other symbols we'll attempt to attach kprobes to, but they're
@@ -246,12 +255,12 @@ fi
 
 if [ -z "$(lookup_kernel_symbol syscall_trace_enter_phase1)" ]; then
     if [ -z "$(lookup_kernel_symbol syscall_trace_enter)" ]; then
-        echo "Required kernel symbol syscall_trace_enter is not present."
+        echo -e "[ ${RED} FAIL ${NC} ] Required kernel symbol syscall_trace_enter is not present."
         exit 1
     fi
 fi
 
 # Everything checks out! This is not a guarantee that the sensor will function
 # normally, but the odds are pretty good.
-echo "System check passed!"
+echo -e "[ ${GREEN} PASS ${NC} ] System check passed!"
 exit 0
