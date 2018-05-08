@@ -27,6 +27,35 @@ if [ "`id -u`" != 0 ]; then
     exit 1
 fi
 
+CONFIG_CMD=""
+# check to see if this kernel supports kprobes
+if [[ -e  "${PROC_MOUNT}/config.gz" ]]; then
+    CONFIG_CMD="cat ${PROC_MOUNT}/config.gz | gunzip "
+elif [[ -e "/boot/config-`uname -r`" ]]; then
+    CONFIG_CMD="cat /boot/config-`uname -r`"
+fi
+
+CONFIG_OPTIONS=$(cat << EOF
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENT=y
+EOF
+)
+
+if [ "$CONFIG_CMD" != "" ]; then
+    echo "Checking config for kernel $(uname -r)"
+    for option in $CONFIG_OPTIONS; do
+        eval "$CONFIG_CMD | grep $option 2>/dev/null >/dev/null"
+        if  [ "$?" != "0" ]; then
+		    echo -e "[ ${RED} FAIL ${NC} ] option $option is missing from running kernel $(uname -r)"
+            else
+		    echo -e "[ ${GREEN} PASS ${NC} ] option $option is present in running kernel $(uname -r)"
+        fi
+    done
+else
+    echo -e "[ ${YELLOW} WARN ${NC} ] Could not find kernel config checking for tracingfs directly"
+fi
+
+
 # Quick checks for kernel version
 MAJOR="`uname -r | cut -d '.' -f 1`"
 MINOR="`uname -r | cut -d '.' -f 2`"
