@@ -312,7 +312,7 @@ func fullFilterString(filters map[string]int) (string, bool) {
 }
 
 func registerEvent(
-	monitor *perf.EventMonitor,
+	sensor *Sensor,
 	subscr *subscription,
 	name string,
 	fn perf.TraceEventDecoderFn,
@@ -323,7 +323,7 @@ func registerEvent(
 		return
 	}
 
-	eventID, err := monitor.RegisterTracepoint(name, fn,
+	eventID, err := sensor.Monitor.RegisterTracepoint(name, fn,
 		perf.WithEventGroup(subscr.eventGroupID),
 		perf.WithFilter(f))
 	if err != nil {
@@ -337,7 +337,7 @@ func registerEvent(
 }
 
 func registerKprobe(
-	monitor *perf.EventMonitor,
+	sensor *Sensor,
 	subscr *subscription,
 	symbol string,
 	fetchargs string,
@@ -349,7 +349,7 @@ func registerKprobe(
 		return
 	}
 
-	eventID, err := monitor.RegisterKprobe(symbol, false, fetchargs, fn,
+	eventID, err := sensor.RegisterKprobe(symbol, false, fetchargs, fn,
 		perf.WithEventGroup(subscr.eventGroupID),
 		perf.WithFilter(f))
 	if err != nil {
@@ -376,33 +376,33 @@ func registerNetworkEvents(
 		sensor: sensor,
 	}
 
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_enter_accept", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_accept", f.decodeSysExitAccept, nfs.acceptResultFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_enter_accept4", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_accept4", f.decodeSysExitAccept, nfs.acceptResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_accept", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_accept", f.decodeSysExitAccept, nfs.acceptResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_accept4", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_accept4", f.decodeSysExitAccept, nfs.acceptResultFilters)
 
-	registerKprobe(sensor.Monitor, subscr, networkKprobeBindSymbol, networkKprobeBindFetchargs, f.decodeSysBind, nfs.bindAttemptFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_bind", f.decodeSysExitBind, nfs.bindResultFilters)
+	registerKprobe(sensor, subscr, networkKprobeBindSymbol, networkKprobeBindFetchargs, f.decodeSysBind, nfs.bindAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_bind", f.decodeSysExitBind, nfs.bindResultFilters)
 
-	registerKprobe(sensor.Monitor, subscr, networkKprobeConnectSymbol, networkKprobeConnectFetchargs, f.decodeSysConnect, nfs.connectAttemptFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_connect", f.decodeSysExitConnect, nfs.connectResultFilters)
+	registerKprobe(sensor, subscr, networkKprobeConnectSymbol, networkKprobeConnectFetchargs, f.decodeSysConnect, nfs.connectAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_connect", f.decodeSysExitConnect, nfs.connectResultFilters)
 
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_enter_listen", f.decodeSysEnterListen, nfs.listenAttemptFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_listen", f.decodeSysExitListen, nfs.listenResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_listen", f.decodeSysEnterListen, nfs.listenAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_listen", f.decodeSysExitListen, nfs.listenResultFilters)
 
 	// There are two additional system calls added in Linux 3.0 that are of
 	// interest, but there's no way to get all of the data without eBPF
 	// support, so don't bother with them for now.
 
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_enter_recvfrom", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_enter_recvmsg", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_recvfrom", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_recvmsg", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
 
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_recvfrom", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_recvmsg", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_recvfrom", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_recvmsg", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
 
-	registerKprobe(sensor.Monitor, subscr, networkKprobeSendmsgSymbol, networkKprobeSendmsgFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
-	registerKprobe(sensor.Monitor, subscr, networkKprobeSendtoSymbol, networkKprobeSendtoFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
+	registerKprobe(sensor, subscr, networkKprobeSendmsgSymbol, networkKprobeSendmsgFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
+	registerKprobe(sensor, subscr, networkKprobeSendtoSymbol, networkKprobeSendtoFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
 
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_sendmsg", f.decodeSysExitSendto, nfs.sendtoResultFilters)
-	registerEvent(sensor.Monitor, subscr, "syscalls/sys_exit_sendto", f.decodeSysExitSendto, nfs.sendtoResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_sendmsg", f.decodeSysExitSendto, nfs.sendtoResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_sendto", f.decodeSysExitSendto, nfs.sendtoResultFilters)
 }

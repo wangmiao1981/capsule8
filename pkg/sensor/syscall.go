@@ -300,7 +300,7 @@ func registerSyscallEvents(
 		// because the old probe will also set in the newer kernels,
 		// but it won't fire.
 		kprobeSymbol := syscallNewEnterKprobeAddress
-		eventID, err = sensor.Monitor.RegisterKprobe(
+		eventID, err = sensor.RegisterKprobe(
 			kprobeSymbol, false,
 			syscallEnterKprobeFetchargs,
 			f.decodeSyscallTraceEnter,
@@ -308,7 +308,7 @@ func registerSyscallEvents(
 			perf.WithFilter(filter))
 		if err != nil {
 			kprobeSymbol = syscallOldEnterKprobeAddress
-			eventID, err = sensor.Monitor.RegisterKprobe(
+			eventID, err = sensor.RegisterKprobe(
 				kprobeSymbol, false,
 				syscallEnterKprobeFetchargs,
 				f.decodeSyscallTraceEnter,
