@@ -33,6 +33,13 @@ if [ "`id -u`" != 0 ]; then
     exit 1
 fi
 
+PROC_MOUNT="`mount -t proc | cut -d ' ' -f 3`"
+if [ -z "${PROC_MOUNT}" ]; then
+    echo -e "[ ${RED} FAIL ${NC} ] No proc filesystem is mounted."
+    exit 1
+fi
+echo -e "[ ${GREEN} PASS ${NC} ] Found proc filesystem mounted at ${PROC_MOUNT}"
+
 CONFIG_CMD=""
 # check to see if this kernel supports kprobes
 if [[ -e  "${PROC_MOUNT}/config.gz" ]]; then
@@ -41,20 +48,38 @@ elif [[ -e "/boot/config-`uname -r`" ]]; then
     CONFIG_CMD="cat /boot/config-`uname -r`"
 fi
 
+
+# Unfortunately different distros e.g. redhat/fedora vs. ubuntu have slightly
+# different option names in their kernels depending upon when they pulled their
+# kernels from the mainline the following is a list of expected options with
+# "synonyms" specified on the same line delimited with a semi-colon and no
+# space between
+
 CONFIG_OPTIONS=$(cat << EOF
 CONFIG_KPROBES=y
-CONFIG_KPROBE_EVENT=y
+CONFIG_KPROBE_EVENT=y;CONFIG_KPROBE_EVENTS=y
 EOF
 )
 
 if [ "$CONFIG_CMD" != "" ]; then
-    echo "Checking config for kernel $(uname -r)"
-    for option in $CONFIG_OPTIONS; do
-        eval "$CONFIG_CMD | grep $option 2>/dev/null >/dev/null"
-        if  [ "$?" != "0" ]; then
-            echo -e "[ ${RED} FAIL ${NC} ] option $option is missing from running kernel $(uname -r)"
+    for option in $(echo $CONFIG_OPTIONS); do
+        OPT_FOUND=0
+        OPT_NAME=""
+        for opt in $(echo $option | tr ";" "\n"); do
+        	eval "$CONFIG_CMD | grep $opt 2>/dev/null >/dev/null"
+		if [ "$?" == "0" ]; then
+		   OPT_FOUND=1
+		   OPT_NAME=$opt 
+		   break
+		fi
+        done
+
+        if  [ "$OPT_FOUND" == "0" ]; then
+	    for opt in $(echo $option | tr ";" "\n"); do
+            	echo -e "[ ${RED} FAIL ${NC} ] option $opt is missing from running kernel $(uname -r)"
+	    done
         else
-            echo -e "[ ${GREEN} PASS ${NC} ] option $option is present in running kernel $(uname -r)"
+            echo -e "[ ${GREEN} PASS ${NC} ] option $OPT_NAME is present in running kernel $(uname -r)"
         fi
     done
 else
@@ -102,12 +127,6 @@ if [ -z "${TRACEFS_MOUNT}" ]; then
 fi
 echo -e "[ ${GREEN} PASS ${NC} ] Found tracefs filesystem mounted at ${TRACEFS_MOUNT}"
 
-PROC_MOUNT="`mount -t proc | cut -d ' ' -f 3`"
-if [ -z "${PROC_MOUNT}" ]; then
-    echo -e "[ ${RED} FAIL ${NC} ] No proc filesystem is mounted."
-    exit 1
-fi
-echo -e "[ ${GREEN} PASS ${NC} ] Found proc filesystem mounted at ${PROC_MOUNT}"
 
 KALLSYMS="${PROC_MOUNT}/kallsyms"
 if [ ! -f ${KALLSYMS} ]; then
