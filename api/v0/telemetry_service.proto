@@ -31,12 +31,12 @@ import "google/rpc/status.proto";
 // historical Events from Capsule8 Sensors.
 //
 
-service TelemetryService {  
+service TelemetryService {
         // Opens a new stream of telemetry events
         rpc GetEvents(GetEventsRequest) returns (stream GetEventsResponse) {
                 option (google.api.http) = {
-                        post : "/v0/events"
-                        body : "*"
+                        post: "/v0/events"
+                        body: "*"
                 };
         }
 }

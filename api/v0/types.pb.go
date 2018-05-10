@@ -28,6 +28,8 @@ It has these top-level messages:
 	Process
 	KernelFunctionCallEvent
 	NetworkEvent
+	PerformanceEventValue
+	PerformanceEvent
 	GetEventsRequest
 	GetEventsResponse
 	ReceivedTelemetryEvent
@@ -39,6 +41,8 @@ It has these top-level messages:
 	FileEventFilter
 	KernelFunctionCallFilter
 	NetworkEventFilter
+	PerformanceEventCounter
+	PerformanceEventFilter
 	ContainerEventFilter
 	ChargenEventFilter
 	TickerEventFilter

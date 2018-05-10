@@ -83,27 +83,27 @@ message NetworkAddress {
 
 // Process credentials (uid, gid, etc.)
 message Credentials {
-	// The real user ID
-	uint32 uid = 1;
+        // The real user ID
+        uint32 uid = 1;
 
-	// The real group ID
-	uint32 gid = 2;
+        // The real group ID
+        uint32 gid = 2;
 
-	// The effective user ID
-	uint32 euid = 3;
+        // The effective user ID
+        uint32 euid = 3;
 
-	// The effective group ID
-	uint32 egid = 4;
+        // The effective group ID
+        uint32 egid = 4;
 
-	// The saved user ID
-	uint32 suid = 5;
+        // The saved user ID
+        uint32 suid = 5;
 
-	// The saved group ID
-	uint32 sgid = 6;
+        // The saved group ID
+        uint32 sgid = 6;
 
-	// The user ID for filesystem operations
-	uint32 fsuid = 7;
+        // The user ID for filesystem operations
+        uint32 fsuid = 7;
 
-	// The group ID for filesystem operations
-	uint32 fsgid = 8;
+        // The group ID for filesystem operations
+        uint32 fsgid = 8;
 }
