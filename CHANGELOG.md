@@ -1,3 +1,26 @@
+## 0.12.0-alpha (May 11, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Add a script to check whether the sensor is likely to function or not ([#199](https://github.com/capsule8/capsule8/pull/199))
+  * Update cgroup monitoring to work with all supported kernels ([#198](https://github.com/capsule8/capsule8/pull/198))
+
+IMPROVEMENTS:
+
+  * Document known issues and update minimum system requirements ([#201](https://github.com/capsule8/capsule8/pull/201))
+  * Use `syscalls/sys_{enter,exit}` if `raw_syscalls` versions are not present ([#200](https://github.com/capsule8/capsule8/pull/200))
+  * Handle out of order fork events on kernels older than 3.9 ([#191](https://github.com/capsule8/capsule8/pull/191))
+  * Add Pete to code owners ([#195](https://github.com/capsule8/capsule8/pull/195))
+
+BUG FIXES:
+
+  * Fix copying of mutex values ([#197](https://github.com/capsule8/capsule8/pull/197))
+  * Remove duplicate `__cgroup_procs_write` kprobe ([#196](https://github.com/capsule8/capsule8/pull/196))
+
 ## 0.11.0-alpha (Apr 26, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
