@@ -675,6 +675,7 @@ func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
 	} else {
 		t.StartTime = sys.CurrentMonotonicRaw()
 	}
+	t.ProcessID = proc.DeriveUniqueID(t.PID, uint64(t.StartTime))
 	if t.PID != t.TGID {
 		t.parent = pc.cache.LookupTask(t.TGID)
 	} else {
@@ -875,7 +876,6 @@ func (pc *ProcessInfoCache) newProcessEvent(
 
 	switch eventType {
 	case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:
-		fmt.Println("exec type!")
 		pev.ExecFilename = data["filename"].(string)
 		pev.ExecCommandLine = data["exec_command_line"].([]string)
 	case api.ProcessEventType_PROCESS_EVENT_TYPE_FORK:
@@ -887,10 +887,11 @@ func (pc *ProcessInfoCache) newProcessEvent(
 		pev.ExitSignal = data["exit_signal"].(uint32)
 		pev.ExitCoreDumped = data["exit_core_dumped"].(bool)
 	case api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE:
-		fmt.Println("update type!")
+		//fmt.Println("update type!")
 		pev.UpdateCwd = data["cwd"].(string)
-		fmt.Println(pev)
-		fmt.Println(event.SensorSequenceNumber)
+		//fmt.Println(pev)
+		//fmt.Println(event.SensorSequenceNumber)
+		//fmt.Println(event.GetProcessId())
 	}
 
 	event.Event = &api.TelemetryEvent_Process{
@@ -1316,7 +1317,6 @@ func registerProcessEvents(
 		wildcards     [5]bool
 	)
 
-	fmt.Println("subscriptions:", subscr.eventGroupID)
 	for _, pef := range events {
 		// Translate deprecated fields into an expression
 		rewriteProcessEventFilter(pef)
