@@ -675,6 +675,7 @@ func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
 	} else {
 		t.StartTime = sys.CurrentMonotonicRaw()
 	}
+	t.ProcessID = proc.DeriveUniqueID(t.PID, uint64(t.StartTime))
 	if t.PID != t.TGID {
 		t.parent = pc.cache.LookupTask(t.TGID)
 	} else {
