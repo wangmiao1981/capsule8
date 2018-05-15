@@ -15,6 +15,7 @@
 package sensor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -22,6 +23,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,8 +73,14 @@ type Sensor struct {
 	// caching process information
 	Monitor *perf.EventMonitor
 
+	// A lookup table of available kernel symbols. The key is the symbol
+	// name as would be used with RegisterKprobe. The value is the actual
+	// symbol that should be used, which is normally the same, but can
+	// sometimes differ due to compiler name mangling.
+	kallsyms map[string]string
+
 	// Per-sensor caches and monitors
-	ProcessCache   ProcessInfoCache
+	ProcessCache   *ProcessInfoCache
 	ContainerCache *ContainerCache
 	dockerMonitor  *dockerMonitor
 	ociMonitor     *ociMonitor
@@ -165,6 +173,7 @@ func (s *Sensor) Start() error {
 		s.Stop()
 		return err
 	}
+	s.loadKernelSymbols()
 
 	s.ContainerCache = NewContainerCache(s)
 	s.ProcessCache = NewProcessInfoCache(s)
@@ -391,6 +400,34 @@ func (s *Sensor) buildMonitorGroups() ([]string, []int, error) {
 	return cgroupList, pidList, nil
 }
 
+func (s *Sensor) loadKernelSymbols() {
+	filename := filepath.Join(sys.ProcFS().MountPoint, "kallsyms")
+	f, err := os.Open(filename)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	s.kallsyms = make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		// Only record symbols in text segments
+		if fields[1] != "t" && fields[1] != "T" {
+			continue
+		}
+		parts := strings.Split(fields[2], ".")
+		if len(parts) < 1 {
+			continue
+		}
+		s.kallsyms[parts[0]] = fields[2]
+	}
+}
+
 func (s *Sensor) createEventMonitor() error {
 	eventMonitorOptions := []perf.EventMonitorOption{}
 
@@ -459,6 +496,41 @@ func (s *Sensor) createEventMonitor() error {
 	}()
 
 	return nil
+}
+
+// IsKernelSymbolAvailable checks to see if the specified kprobe symbol is
+// available for use in the running kernel.
+func (s *Sensor) IsKernelSymbolAvailable(symbol string) bool {
+	// If the kallsyms mapping is nil, the table could not be
+	// loaded for some reason; assume anything is available
+	if s.kallsyms == nil {
+		return true
+	}
+
+	_, ok := s.kallsyms[symbol]
+	return ok
+}
+
+// RegisterKprobe registers a kprobe with the sensor's EventMonitor instance,
+// but before doing so, ensures that the kernel symbol is available.
+func (s *Sensor) RegisterKprobe(
+	address string,
+	onReturn bool,
+	output string,
+	fn perf.TraceEventDecoderFn,
+	options ...perf.RegisterEventOption,
+) (uint64, error) {
+	if s.kallsyms != nil {
+		if actual, ok := s.kallsyms[address]; ok {
+			if actual != address {
+				glog.V(2).Infof("Using %q for kprobe symbol %q", actual, address)
+				address = actual
+			}
+		} else {
+			return 0, fmt.Errorf("Kernel symbol not found: %s", address)
+		}
+	}
+	return s.Monitor.RegisterKprobe(address, onReturn, output, fn, options...)
 }
 
 // NewSubscription creates a new telemetry subscription from the given

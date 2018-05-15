@@ -24,6 +24,7 @@ package sensor
 //   10 = cache operation level tracing for debugging
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -80,12 +81,26 @@ const (
 		"euid=+20(%di):u32 egid=+24(%di):u32 " +
 		"fsuid=+28(%di):u32 fsgid=+32(%di):u32"
 
+	// Kernel versions 3.16 through 4.16 should all work with this symbol
+	// and fetchargs. Older kernels will need to use attach_task_by_pid,
+	// below.
+	//
 	// static ssize_t __cgroup_procs_write(struct kernfs_open_file *of,
-	//	char *buf, size_t nbytes, loff_t off, bool threadgroup)
+	//      char *buf, size_t nbytes, loff_t off, bool threadgroup)
 	// container_id comes from of->file->f_path.dentry->d_parent->d_name.name
 	cgroupProcsWriteAddress = "__cgroup_procs_write"
 	cgroupProcsWriteArgs    = "container_id=+0(+40(+24(+24(+8(%di))))):string " +
 		"buf=+0(%si):string threadgroup=%r8:s32"
+
+	cgroup1ProcsWriteAddress = "__cgroup1_procs_write"
+	cgroup1ProcsWriteArgs    = "container_id=+0(+40(+24(+24(+8(%di))))):string " +
+		"buf=+0(%si):string threadgroup=%r8:s32"
+
+	// static int attach_task_by_pid(struct cgroup *cgrp, u64 pid, bool threadgroup)
+	attachTaskByPid      = "attach_task_by_pid"
+	attachTaskByPidArgs1 = "container_id=+0(+56(+56(%di))):string pid=%si:u64 threadgroup=%dx:u32" // RHEL 6: 2.6.32
+	attachTaskByPidArgs2 = "container_id=+0(+40(+72(%di))):string pid=%si:u64 threadgroup=%dx:u32" // 3.5.x-3.14.x
+	attachTaskByPidArgs3 = "container_id=+0(+16(+64(%di))):string pid=%si:u64 threadgroup=%dx:u32" // 3.15.x
 
 	execveArgCount = 6
 
@@ -161,6 +176,35 @@ func newCredentials(
 	}
 }
 
+const cloneEventThreshold = uint64(100 * time.Millisecond)
+
+type cloneEvent struct {
+	timestamp uint64
+
+	// Set by the parent
+	cloneFlags uint64
+
+	// Set by the child
+	childPid  int
+	childComm string
+}
+
+func (c *cloneEvent) isExpired(t uint64) bool {
+	if c == nil {
+		return true
+	}
+	var delta uint64
+	if c.timestamp < t {
+		delta = t - c.timestamp
+	} else {
+		delta = c.timestamp - t
+	}
+	if delta > cloneEventThreshold {
+		fmt.Printf("cloneevent delta %d\n", delta)
+	}
+	return delta > cloneEventThreshold
+}
+
 // Task represents a schedulable task. All Linux tasks are uniquely identified
 // at a given time by their PID, but those PIDs may be reused after hitting the
 // maximum PID value.
@@ -218,17 +262,17 @@ type Task struct {
 	// Parent() to get the parent of a container.
 	parent *Task
 
-	// pendingCloneFlags is used internally for tracking the flags passed
-	// to the clone(2) system call.
-	pendingCloneFlags uint64
+	// pendingClone is used internally for tracking information about a
+	// task clone executed by the clone(2) system call. In kernels >= 3.9
+	// this is not necessary
+	pendingClone *cloneEvent
 }
 
 var rootTask = Task{}
 
 func newTask(pid int) *Task {
 	return &Task{
-		PID:               pid,
-		pendingCloneFlags: ^uint64(0),
+		PID: pid,
 	}
 }
 
@@ -429,7 +473,7 @@ type scannerDeferredAction func()
 // NewProcessInfoCache creates a new process information cache object. An
 // existing sensor object is required in order for the process info cache to
 // able to install its probes to monitor the system to maintain the cache.
-func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
+func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 	once.Do(func() {
 		procFS = sys.HostProcFS()
 		if procFS == nil {
@@ -437,7 +481,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		}
 	})
 
-	cache := ProcessInfoCache{
+	cache := &ProcessInfoCache{
 		sensor:   sensor,
 		scanning: true,
 	}
@@ -493,25 +537,18 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 		perf.WithEventEnabled())
 	if err != nil {
 		eventName = doForkAddress
-		_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+		_, err = sensor.RegisterKprobe(eventName, false,
 			doForkFetchargs, cache.decodeDoFork,
 			perf.WithEventEnabled())
 		if err != nil {
 			eventName = "_" + eventName
-			_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+			_, err = sensor.RegisterKprobe(eventName, false,
 				doForkFetchargs, cache.decodeDoFork,
 				perf.WithEventEnabled())
 			if err != nil {
 				glog.Fatalf("Couldn't register kprobe %s: %s",
 					eventName, err)
 			}
-		}
-		_, err = sensor.Monitor.RegisterKprobe(eventName, true,
-			"", cache.decodeDoForkReturn,
-			perf.WithEventEnabled())
-		if err != nil {
-			glog.Fatalf("Couldn't register kretprobe %s: %s",
-				eventName, err)
 		}
 
 		eventName = "sched/sched_process_fork"
@@ -521,7 +558,7 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	}
 
 	eventName = doExitAddress
-	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
+	_, err = sensor.RegisterKprobe(eventName, false,
 		doExitArgs, cache.decodeDoExit,
 		perf.WithEventEnabled())
 	if err != nil {
@@ -529,36 +566,14 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	}
 
 	// Attach kprobe on commit_creds to capture task privileges
-	_, err = sensor.Monitor.RegisterKprobe(commitCredsAddress, false,
+	_, err = sensor.RegisterKprobe(commitCredsAddress, false,
 		commitCredsArgs, cache.decodeCommitCreds,
 		perf.WithEventEnabled())
 
 	// Attach kretprobe on set_fs_pwd to track working directories
-	_, err = sensor.Monitor.RegisterKprobe(doSetFsPwd, true,
+	_, err = sensor.RegisterKprobe(doSetFsPwd, true,
 		"", cache.decodeDoSetFsPwd,
 		perf.WithEventEnabled())
-
-	eventName = cgroupProcsWriteAddress
-	_, err = sensor.Monitor.RegisterKprobe(eventName, false,
-		cgroupProcsWriteArgs, cache.decodeCgroupProcsWrite,
-		perf.WithEventEnabled())
-	if err != nil {
-		major, _, _ := sys.KernelVersion()
-		if major >= 3 {
-			// Attach a probe for task_rename involving the runc
-			// init processes to trigger containerID lookups
-			f := "oldcomm == exe || oldcomm == runc:[2:INIT]"
-			eventName = "task/task_rename"
-			_, err = sensor.Monitor.RegisterTracepoint(eventName,
-				cache.decodeRuncTaskRename,
-				perf.WithFilter(f),
-				perf.WithEventEnabled())
-			if err != nil {
-				glog.Fatalf("Couldn't register event %s: %s",
-					eventName, err)
-			}
-		}
-	}
 
 	// Attach a probe to capture exec events in the kernel. Different
 	// kernel versions require different probe attachments, so try to do
@@ -566,13 +581,13 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 	// if that succeeds, it's the only one we need. Otherwise, we need a
 	// bunch of others to try to hit everything. We may end up getting
 	// duplicate events, which is ok.
-	_, err = sensor.Monitor.RegisterKprobe(
+	_, err = sensor.RegisterKprobe(
 		doExecveatCommonAddress, false,
 		doExecveatCommonArgs+makeExecveFetchArgs("dx"),
 		cache.decodeExecve,
 		perf.WithEventEnabled())
 	if err != nil {
-		_, err = sensor.Monitor.RegisterKprobe(
+		_, err = sensor.RegisterKprobe(
 			sysExecveAddress, false,
 			sysExecveArgs+makeExecveFetchArgs("si"),
 			cache.decodeExecve,
@@ -581,23 +596,27 @@ func NewProcessInfoCache(sensor *Sensor) ProcessInfoCache {
 			glog.Fatalf("Couldn't register event %s: %s",
 				sysExecveAddress, err)
 		}
-		_, _ = sensor.Monitor.RegisterKprobe(
+		_, _ = sensor.RegisterKprobe(
 			doExecveAddress, false,
 			doExecveArgs+makeExecveFetchArgs("si"),
 			cache.decodeExecve,
 			perf.WithEventEnabled())
 
-		_, err = sensor.Monitor.RegisterKprobe(
+		_, err = sensor.RegisterKprobe(
 			sysExecveatAddress, false,
 			sysExecveatArgs+makeExecveFetchArgs("dx"),
 			cache.decodeExecve,
 			perf.WithEventEnabled())
 		if err == nil {
-			_, _ = sensor.Monitor.RegisterKprobe(
+			_, _ = sensor.RegisterKprobe(
 				doExecveatAddress, false,
 				makeExecveFetchArgs("dx"), cache.decodeExecve,
 				perf.WithEventEnabled())
 		}
+	}
+
+	if err = cache.installCgroupMonitor(); err != nil {
+		glog.Fatalf("Could not install cgroup monitoring: %v", err)
 	}
 
 	// Scan the proc filesystem to learn about all existing tasks.
@@ -726,6 +745,67 @@ func (pc *ProcessInfoCache) scanProcFilesystem() error {
 
 			// Ignore errors here; the process may have gone away
 			_ = pc.cacheTaskFromProc(tgid, pid)
+		}
+	}
+
+	return nil
+}
+
+func (pc *ProcessInfoCache) installCgroupMonitor() error {
+	// All kernel versions have the "cgroup_procs_write" symbol, which we
+	// will use to determine whether cgroup monitoring is possible at all.
+	// Structs are different in different kernel versions, though, so we
+	// have to do more work to pick out the right symbol and fetchargs.
+	if !pc.sensor.IsKernelSymbolAvailable("cgroup_procs_write") {
+		glog.Info("CGROUP monitoring disabled: kernel compiled without CGROUPS support")
+		return nil
+	}
+
+	var (
+		eventName, fetchArgs   string
+		eventName2, fetchArgs2 string
+	)
+
+	// attach_task_by_pid exists in kernel versions < 3.16
+	if pc.sensor.IsKernelSymbolAvailable(attachTaskByPid) {
+		eventName = attachTaskByPid
+
+		// The structure of struct cgroup changes in 3.5. The symbol
+		// cgroup_add_files exists in kernel versions < 3.5.
+		// The structure of struct cgroup changes again in 3.15. The
+		// symbol cgroup_taskset_size exists in kernel versions < 3.15.
+		if pc.sensor.IsKernelSymbolAvailable("cgroup_add_files") {
+			fetchArgs = attachTaskByPidArgs1
+		} else if pc.sensor.IsKernelSymbolAvailable("cgroup_taskset_size") {
+			fetchArgs = attachTaskByPidArgs2
+		} else {
+			fetchArgs = attachTaskByPidArgs3
+		}
+	} else if pc.sensor.IsKernelSymbolAvailable(cgroupProcsWriteAddress) {
+		eventName = cgroupProcsWriteAddress
+		fetchArgs = cgroupProcsWriteArgs
+	} else if pc.sensor.IsKernelSymbolAvailable(cgroup1ProcsWriteAddress) {
+		eventName = cgroup1ProcsWriteAddress
+		fetchArgs = cgroup1ProcsWriteArgs
+		eventName2 = "cgroup_procs_write"
+		fetchArgs2 = cgroupProcsWriteArgs
+	} else {
+		return errors.New("Known cgroup symbols not found")
+	}
+
+	_, err := pc.sensor.RegisterKprobe(eventName, false,
+		fetchArgs, pc.decodeCgroupProcsWrite,
+		perf.WithEventEnabled())
+	if err != nil {
+		return fmt.Errorf("%s: %v", eventName, err)
+	}
+
+	if eventName2 != "" {
+		_, err := pc.sensor.RegisterKprobe(eventName2, false,
+			fetchArgs2, pc.decodeCgroupProcsWrite,
+			perf.WithEventEnabled())
+		if err != nil {
+			return fmt.Errorf("%s: %v", eventName2, err)
 		}
 	}
 
@@ -1020,39 +1100,6 @@ func (pc *ProcessInfoCache) decodeDoSetFsPwd(
 	return nil, nil
 }
 
-// decodeRuncTaskRename is called when runc execs and obtains the containerID
-// from /procfs and caches it.
-func (pc *ProcessInfoCache) decodeRuncTaskRename(
-	sample *perf.SampleRecord,
-	data perf.TraceEventSampleData,
-) (interface{}, error) {
-	pid := int(data["pid"].(int32))
-
-	pc.maybeDeferAction(func() {
-		glog.V(10).Infof("decodeRuncTaskRename: pid = %d", pid)
-
-		// There is a race condition here that can result in not
-		// getting the containerID at this time. Docker renames the
-		// task before adjusting cgroups. A better way of determining
-		// the containerID for a task is normally used, but we fallback
-		// to this just in case.
-		// This is why the check for err == nil AND containerID != ""
-		// is necessary, rather than just err == nil.
-
-		_, leader := pc.LookupTaskAndLeader(pid)
-		containerID, err := procFS.ContainerID(leader.PID)
-		if err == nil && containerID != "" && leader.ContainerID != containerID {
-			glog.V(10).Infof("containerID(%d) = %s", leader.PID, containerID)
-			changes := map[string]interface{}{
-				"ContainerID": containerID,
-			}
-			leader.Update(changes, sample.Time)
-		}
-	})
-
-	return nil, nil
-}
-
 // decodeDoExecve decodes sys_execve() and sys_execveat() events to obtain the
 // command-line for the process.
 func (pc *ProcessInfoCache) decodeExecve(
@@ -1101,32 +1148,19 @@ func (pc *ProcessInfoCache) decodeDoFork(
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
 
-		if t.pendingCloneFlags != ^uint64(0) {
-			glog.V(2).Infof("decodeDoFork: stale clone flags %x for pid %d\n",
-				t.pendingCloneFlags, pid)
+		if t.pendingClone.isExpired(sample.Time) {
+			t.pendingClone = &cloneEvent{
+				timestamp:  sample.Time,
+				cloneFlags: cloneFlags,
+			}
+		} else {
+			c := t.pendingClone
+			t.pendingClone = nil
+
+			childTask := pc.LookupTask(c.childPid)
+			pc.handleSysClone(t, t.Leader(), childTask,
+				cloneFlags, c.childComm, sample)
 		}
-
-		t.pendingCloneFlags = cloneFlags
-	})
-
-	return nil, nil
-}
-
-func (pc *ProcessInfoCache) decodeDoForkReturn(
-	sample *perf.SampleRecord,
-	data perf.TraceEventSampleData,
-) (interface{}, error) {
-	pid := int(data["common_pid"].(int32))
-
-	pc.maybeDeferAction(func() {
-		t := pc.LookupTask(pid)
-
-		if t.pendingCloneFlags == ^uint64(0) {
-			glog.V(2).Infof("decodeDoFork: no pending clone flags for pid %d\n",
-				pid)
-		}
-
-		t.pendingCloneFlags = ^uint64(0)
 	})
 
 	return nil, nil
@@ -1142,15 +1176,20 @@ func (pc *ProcessInfoCache) decodeSchedProcessFork(
 
 	pc.maybeDeferAction(func() {
 		parentTask, parentLeader := pc.LookupTaskAndLeader(parentPid)
-		if parentTask.pendingCloneFlags == ^uint64(0) {
-			glog.Fatalf("decodeSchedProcessFork: no pending clone flags for pid %d\n",
-				parentPid)
+		if parentTask.pendingClone.isExpired(sample.Time) {
+			parentTask.pendingClone = &cloneEvent{
+				timestamp: sample.Time,
+				childPid:  childPid,
+				childComm: childComm,
+			}
+		} else {
+			c := parentTask.pendingClone
+			parentTask.pendingClone = nil
+
+			childTask := pc.LookupTask(childPid)
+			pc.handleSysClone(parentTask, parentLeader, childTask,
+				c.cloneFlags, childComm, sample)
 		}
-
-		childTask := pc.LookupTask(childPid)
-
-		pc.handleSysClone(parentTask, parentLeader, childTask,
-			parentTask.pendingCloneFlags, childComm, sample)
 	})
 
 	return nil, nil
@@ -1168,18 +1207,30 @@ func (pc *ProcessInfoCache) decodeCgroupProcsWrite(
 		return nil, nil
 	}
 
-	buf := strings.TrimSpace(data["buf"].(string))
-	pid, err := strconv.ParseInt(buf, 10, 32)
-	if err != nil {
-		// If there's an error parsing data written to this file, we
-		// want to know about it so that we can deal with it. Use a
-		// high logging level to ensure that.
-		glog.Warning("Error parsing pid written to cgroup.procs: %v", err)
-		return nil, nil
-	}
+	var (
+		pid         int
+		threadgroup bool
+	)
 
-	threadgroup := false
-	if data["threadgroup"].(int32) != 0 {
+	if buf, ok := data["buf"].(string); ok {
+		buf = strings.TrimSpace(buf)
+		if v, err := strconv.ParseInt(buf, 10, 32); err == nil {
+			pid = int(v)
+		} else {
+			// If there's an error parsing data written to this file, we
+			// want to know about it so that we can deal with it. Use a
+			// high logging level to ensure that.
+			glog.Warning("Error parsing pid written to cgroup.procs: %v", err)
+			return nil, nil
+		}
+	} else if v, ok := data["tgid"].(uint64); ok {
+		pid = int(v)
+		threadgroup = true
+	} else if v, ok := data["pid"].(uint64); ok {
+		pid = int(v)
+		threadgroup = false
+	}
+	if v, ok := data["threadgroup"].(int32); ok && v != 0 {
 		threadgroup = true
 	}
 

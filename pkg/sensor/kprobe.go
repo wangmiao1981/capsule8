@@ -151,7 +151,7 @@ func registerKernelEvents(
 		}
 
 		f.sensor = sensor
-		eventID, err := sensor.Monitor.RegisterKprobe(
+		eventID, err := sensor.RegisterKprobe(
 			f.symbol, f.onReturn, f.fetchargs(),
 			f.decodeKprobe,
 			perf.WithEventGroup(subscr.eventGroupID),

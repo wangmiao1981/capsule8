@@ -273,6 +273,13 @@ func registerSyscallEvents(
 				perf.WithEventGroup(subscr.eventGroupID),
 				perf.WithFilter("id == 0x7fffffff"))
 			if err != nil {
+				eventName = "syscalls/sys_enter"
+				eventID, err = sensor.Monitor.RegisterTracepoint(
+					eventName, f.decodeDummySysEnter,
+					perf.WithEventGroup(subscr.eventGroupID),
+					perf.WithFilter("id == 0x7fffffff"))
+			}
+			if err != nil {
 				subscr.logStatus(
 					code.Code_UNKNOWN,
 					fmt.Sprintf("Could not register dummy syscall event %s: %v", eventName, err))
@@ -300,7 +307,7 @@ func registerSyscallEvents(
 		// because the old probe will also set in the newer kernels,
 		// but it won't fire.
 		kprobeSymbol := syscallNewEnterKprobeAddress
-		eventID, err = sensor.Monitor.RegisterKprobe(
+		eventID, err = sensor.RegisterKprobe(
 			kprobeSymbol, false,
 			syscallEnterKprobeFetchargs,
 			f.decodeSyscallTraceEnter,
@@ -308,7 +315,7 @@ func registerSyscallEvents(
 			perf.WithFilter(filter))
 		if err != nil {
 			kprobeSymbol = syscallOldEnterKprobeAddress
-			eventID, err = sensor.Monitor.RegisterKprobe(
+			eventID, err = sensor.RegisterKprobe(
 				kprobeSymbol, false,
 				syscallEnterKprobeFetchargs,
 				f.decodeSyscallTraceEnter,
@@ -344,6 +351,13 @@ func registerSyscallEvents(
 			f.decodeSysExit,
 			perf.WithEventGroup(subscr.eventGroupID),
 			perf.WithFilter(filter))
+		if err != nil {
+			eventName = "syscalls/sys_exit"
+			eventID, err = sensor.Monitor.RegisterTracepoint(eventName,
+				f.decodeSysExit,
+				perf.WithEventGroup(subscr.eventGroupID),
+				perf.WithFilter(filter))
+		}
 		if err != nil {
 			subscr.logStatus(
 				code.Code_UNKNOWN,
