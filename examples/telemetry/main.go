@@ -85,6 +85,9 @@ func createSubscription() *api.Subscription {
 		&api.ProcessEventFilter{
 			Type: api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT,
 		},
+		&api.ProcessEventFilter{
+			Type: api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE,
+		},
 	}
 
 	syscallEvents := []*api.SyscallEventFilter{
