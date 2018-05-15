@@ -1311,9 +1311,9 @@ func registerProcessEvents(
 	events []*api.ProcessEventFilter,
 ) {
 	var (
-		filters       [4]*api.Expression
-		subscriptions [4]*eventSink
-		wildcards     [4]bool
+		filters       [5]*api.Expression
+		subscriptions [5]*eventSink
+		wildcards     [5]bool
 	)
 
 	fmt.Println("subscriptions:", subscr.eventGroupID)
@@ -1322,8 +1322,7 @@ func registerProcessEvents(
 		rewriteProcessEventFilter(pef)
 
 		t := pef.Type
-		fmt.Println(pef.Type)
-		if t < 1 || t > 3 {
+		if t < 1 || t > api.ProcessEventType(len(subscriptions)-1) {
 			subscr.logStatus(
 				code.Code_INVALID_ARGUMENT,
 				fmt.Sprintf("ProcessEventType %d is invalid", t))
