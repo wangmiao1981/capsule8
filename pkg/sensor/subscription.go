@@ -27,12 +27,25 @@ import (
 )
 
 type subscription struct {
+	sensor          *Sensor
 	eventGroupID    int32
 	counterGroupIDs []int32
 	containerFilter *containerFilter
 	eventSinks      map[uint64]*eventSink
 	status          []*google_rpc.Status
 	dispatchFn      eventSinkDispatchFn
+}
+
+func newSubscription(
+	sensor *Sensor,
+	eventGroupID int32,
+	dispatchFn eventSinkDispatchFn,
+) *subscription {
+	return &subscription{
+		sensor:       sensor,
+		eventGroupID: eventGroupID,
+		dispatchFn:   dispatchFn,
+	}
 }
 
 type eventSinkDispatchFn func(event *api.TelemetryEvent)
@@ -46,16 +59,44 @@ type eventSink struct {
 	containerView api.ContainerEventView
 }
 
-func (s *subscription) addEventSink(eventID uint64) *eventSink {
+func (s *subscription) addEventSink(
+	eventID uint64,
+	filterExpression *api.Expression,
+) (*eventSink, error) {
 	es := &eventSink{
 		subscription: s,
 		eventID:      eventID,
 	}
+
+	if filterExpression != nil {
+		expr, err := expression.NewExpression(filterExpression)
+		if err != nil {
+			return nil, err
+		}
+
+		filterTypes := s.sensor.Monitor.RegisteredEventFields(eventID)
+		if filterTypes != nil {
+			err = expr.Validate(filterTypes)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		err = expr.ValidateKernelFilter()
+		if err == nil {
+			err = s.sensor.Monitor.SetFilter(eventID,
+				expr.KernelFilterString())
+		}
+		if err != nil {
+			es.filter = expr
+		}
+	}
+
 	if s.eventSinks == nil {
 		s.eventSinks = make(map[uint64]*eventSink)
 	}
 	s.eventSinks[eventID] = es
-	return es
+	return es, nil
 }
 
 func (s *subscription) removeEventSink(es *eventSink) {

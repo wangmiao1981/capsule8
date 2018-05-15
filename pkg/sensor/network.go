@@ -16,7 +16,6 @@ package sensor
 
 import (
 	"fmt"
-	"strings"
 
 	api "github.com/capsule8/capsule8/api/v0"
 
@@ -192,123 +191,70 @@ func (f *networkFilter) decodeSysExitSendto(sample *perf.SampleRecord, data perf
 	return event, nil
 }
 
+type networkFilterItem struct {
+	filter   *api.Expression
+	wildcard bool
+}
+
+func (nfi *networkFilterItem) add(nef *api.NetworkEventFilter) {
+	if nef.FilterExpression == nil {
+		nfi.wildcard = true
+		nfi.filter = nil
+	} else if nfi.wildcard == false {
+		nfi.filter = expression.LogicalOr(nfi.filter,
+			nef.FilterExpression)
+	}
+}
+
 type networkFilterSet struct {
-	acceptAttemptFilters   map[string]int
-	acceptResultFilters    map[string]int
-	bindAttemptFilters     map[string]int
-	bindResultFilters      map[string]int
-	connectAttemptFilters  map[string]int
-	connectResultFilters   map[string]int
-	listenAttemptFilters   map[string]int
-	listenResultFilters    map[string]int
-	sendtoAttemptFilters   map[string]int
-	sendtoResultFilters    map[string]int
-	recvfromAttemptFilters map[string]int
-	recvfromResultFilters  map[string]int
+	acceptAttemptFilters   networkFilterItem
+	acceptResultFilters    networkFilterItem
+	bindAttemptFilters     networkFilterItem
+	bindResultFilters      networkFilterItem
+	connectAttemptFilters  networkFilterItem
+	connectResultFilters   networkFilterItem
+	listenAttemptFilters   networkFilterItem
+	listenResultFilters    networkFilterItem
+	sendtoAttemptFilters   networkFilterItem
+	sendtoResultFilters    networkFilterItem
+	recvfromAttemptFilters networkFilterItem
+	recvfromResultFilters  networkFilterItem
 }
 
 func (nfs *networkFilterSet) add(
 	subscr *subscription,
 	nef *api.NetworkEventFilter,
-) bool {
-	var filterString string
-
-	if nef.FilterExpression != nil {
-		expr, err := expression.NewExpression(nef.FilterExpression)
-		if err != nil {
-			subscr.logStatus(
-				code.Code_INVALID_ARGUMENT,
-				fmt.Sprintf("Bad network filter expression: %v", err))
-			return false
-		}
-
-		filterString = expr.KernelFilterString()
-	}
-
+) {
 	switch nef.Type {
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_ACCEPT_ATTEMPT:
-		if nfs.acceptAttemptFilters == nil {
-			nfs.acceptAttemptFilters = make(map[string]int)
-		}
-		nfs.acceptAttemptFilters[filterString]++
+		nfs.acceptAttemptFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_ACCEPT_RESULT:
-		if nfs.acceptResultFilters == nil {
-			nfs.acceptResultFilters = make(map[string]int)
-		}
-		nfs.acceptResultFilters[filterString]++
+		nfs.acceptResultFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_BIND_ATTEMPT:
-		if nfs.bindAttemptFilters == nil {
-			nfs.bindAttemptFilters = make(map[string]int)
-		}
-		nfs.bindAttemptFilters[filterString]++
+		nfs.bindAttemptFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_BIND_RESULT:
-		if nfs.bindResultFilters == nil {
-			nfs.bindResultFilters = make(map[string]int)
-		}
-		nfs.bindResultFilters[filterString]++
+		nfs.bindResultFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_CONNECT_ATTEMPT:
-		if nfs.connectAttemptFilters == nil {
-			nfs.connectAttemptFilters = make(map[string]int)
-		}
-		nfs.connectAttemptFilters[filterString]++
+		nfs.connectAttemptFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_CONNECT_RESULT:
-		if nfs.connectResultFilters == nil {
-			nfs.connectResultFilters = make(map[string]int)
-		}
-		nfs.connectResultFilters[filterString]++
+		nfs.connectResultFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_LISTEN_ATTEMPT:
-		if nfs.listenAttemptFilters == nil {
-			nfs.listenAttemptFilters = make(map[string]int)
-		}
-		nfs.listenAttemptFilters[filterString]++
+		nfs.listenAttemptFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_LISTEN_RESULT:
-		if nfs.listenResultFilters == nil {
-			nfs.listenResultFilters = make(map[string]int)
-		}
-		nfs.listenResultFilters[filterString]++
+		nfs.listenResultFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_RECVFROM_ATTEMPT:
-		if nfs.recvfromAttemptFilters == nil {
-			nfs.recvfromAttemptFilters = make(map[string]int)
-		}
-		nfs.recvfromAttemptFilters[filterString]++
+		nfs.recvfromAttemptFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_RECVFROM_RESULT:
-		if nfs.recvfromResultFilters == nil {
-			nfs.recvfromResultFilters = make(map[string]int)
-		}
-		nfs.recvfromResultFilters[filterString]++
+		nfs.recvfromResultFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_SENDTO_ATTEMPT:
-		if nfs.sendtoAttemptFilters == nil {
-			nfs.sendtoAttemptFilters = make(map[string]int)
-		}
-		nfs.sendtoAttemptFilters[filterString]++
+		nfs.sendtoAttemptFilters.add(nef)
 	case api.NetworkEventType_NETWORK_EVENT_TYPE_SENDTO_RESULT:
-		if nfs.sendtoResultFilters == nil {
-			nfs.sendtoResultFilters = make(map[string]int)
-		}
-		nfs.sendtoResultFilters[filterString]++
+		nfs.sendtoResultFilters.add(nef)
+	default:
+		subscr.logStatus(
+			code.Code_INVALID_ARGUMENT,
+			fmt.Sprintf("Invalid NetworkEventType %d", nef.Type))
 	}
-
-	return true
-}
-
-func fullFilterString(filters map[string]int) (string, bool) {
-	if filters == nil {
-		return "", false
-	}
-	parts := make([]string, 0, len(filters))
-	for f, count := range filters {
-		if count <= 0 {
-			continue
-		}
-		if f == "" {
-			return "", true
-		}
-		parts = append(parts, fmt.Sprintf("(%s)", f))
-	}
-	if len(parts) > 0 {
-		return strings.Join(parts, " || "), true
-	}
-	return "", false
 }
 
 func registerEvent(
@@ -316,16 +262,14 @@ func registerEvent(
 	subscr *subscription,
 	name string,
 	fn perf.TraceEventDecoderFn,
-	filters map[string]int,
+	filter networkFilterItem,
 ) {
-	f, active := fullFilterString(filters)
-	if !active {
+	if !filter.wildcard && filter.filter == nil {
 		return
 	}
 
 	eventID, err := sensor.Monitor.RegisterTracepoint(name, fn,
-		perf.WithEventGroup(subscr.eventGroupID),
-		perf.WithFilter(f))
+		perf.WithEventGroup(subscr.eventGroupID))
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,
@@ -333,7 +277,13 @@ func registerEvent(
 		return
 	}
 
-	subscr.addEventSink(eventID)
+	_, err = subscr.addEventSink(eventID, filter.filter)
+	if err != nil {
+		subscr.logStatus(
+			code.Code_UNKNOWN,
+			fmt.Sprintf("Invalid filter expression for network filter: %v", err))
+		sensor.Monitor.UnregisterEvent(eventID)
+	}
 }
 
 func registerKprobe(
@@ -342,16 +292,14 @@ func registerKprobe(
 	symbol string,
 	fetchargs string,
 	fn perf.TraceEventDecoderFn,
-	filters map[string]int,
+	filter networkFilterItem,
 ) {
-	f, active := fullFilterString(filters)
-	if !active {
+	if !filter.wildcard && filter.filter == nil {
 		return
 	}
 
 	eventID, err := sensor.RegisterKprobe(symbol, false, fetchargs, fn,
-		perf.WithEventGroup(subscr.eventGroupID),
-		perf.WithFilter(f))
+		perf.WithEventGroup(subscr.eventGroupID))
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,
@@ -359,7 +307,13 @@ func registerKprobe(
 		return
 	}
 
-	subscr.addEventSink(eventID)
+	_, err = subscr.addEventSink(eventID, filter.filter)
+	if err != nil {
+		subscr.logStatus(
+			code.Code_UNKNOWN,
+			fmt.Sprintf("Invalid filter expression for network filter: %v", err))
+		sensor.Monitor.UnregisterEvent(eventID)
+	}
 }
 
 func registerNetworkEvents(

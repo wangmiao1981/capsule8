@@ -16,7 +16,6 @@ package sensor
 
 import (
 	"fmt"
-	"strings"
 	"sync/atomic"
 
 	api "github.com/capsule8/capsule8/api/v0"
@@ -196,8 +195,7 @@ func registerSyscallEvents(
 	subscr *subscription,
 	events []*api.SyscallEventFilter,
 ) {
-	enterFilters := make(map[string]bool)
-	exitFilters := make(map[string]bool)
+	var enterFilter, exitFilter *api.Expression
 
 	for _, sef := range events {
 		// Translate deprecated fields into an expression
@@ -211,27 +209,13 @@ func registerSyscallEvents(
 			continue
 		}
 
-		expr, err := expression.NewExpression(sef.FilterExpression)
-		if err != nil {
-			subscr.logStatus(
-				code.Code_INVALID_ARGUMENT,
-				fmt.Sprintf("Invalid syscall event filter: %v", err))
-			continue
-		}
-		err = expr.ValidateKernelFilter()
-		if err != nil {
-			subscr.logStatus(
-				code.Code_INVALID_ARGUMENT,
-				fmt.Sprintf("Invalid syscall event filter as kernel filter: %v", err))
-			continue
-		}
-		s := expr.KernelFilterString()
-
 		switch sef.Type {
 		case api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER:
-			enterFilters[s] = true
+			enterFilter = expression.LogicalOr(enterFilter,
+				sef.FilterExpression)
 		case api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT:
-			exitFilters[s] = true
+			exitFilter = expression.LogicalOr(exitFilter,
+				sef.FilterExpression)
 		default:
 			subscr.logStatus(
 				code.Code_INVALID_ARGUMENT,
@@ -244,13 +228,7 @@ func registerSyscallEvents(
 		sensor: sensor,
 	}
 
-	if len(enterFilters) > 0 {
-		filters := make([]string, 0, len(enterFilters))
-		for k := range enterFilters {
-			filters = append(filters, fmt.Sprintf("(%s)", k))
-		}
-		filter := strings.Join(filters, " || ")
-
+	if enterFilter != nil {
 		// Create the dummy syscall event. This event is needed to put
 		// the kernel into a mode where it'll make the function calls
 		// needed to make the kprobe we'll add fire. Add the tracepoint,
@@ -311,24 +289,33 @@ func registerSyscallEvents(
 			kprobeSymbol, false,
 			syscallEnterKprobeFetchargs,
 			f.decodeSyscallTraceEnter,
-			perf.WithEventGroup(subscr.eventGroupID),
-			perf.WithFilter(filter))
+			perf.WithEventGroup(subscr.eventGroupID))
 		if err != nil {
 			kprobeSymbol = syscallOldEnterKprobeAddress
 			eventID, err = sensor.RegisterKprobe(
 				kprobeSymbol, false,
 				syscallEnterKprobeFetchargs,
 				f.decodeSyscallTraceEnter,
-				perf.WithEventGroup(subscr.eventGroupID),
-				perf.WithFilter(filter))
+				perf.WithEventGroup(subscr.eventGroupID))
 		}
 		if err != nil {
 			subscr.logStatus(
 				code.Code_UNKNOWN,
 				fmt.Sprintf("Could not register syscall enter kprobe %s: %v", kprobeSymbol, err))
 		} else {
-			es := subscr.addEventSink(eventID)
-			if major >= 3 {
+			es, err := subscr.addEventSink(eventID, enterFilter)
+			if err != nil {
+				subscr.logStatus(
+					code.Code_UNKNOWN,
+					fmt.Sprintf("Invalid filter expression for syscall enter filter: %v", err))
+				sensor.Monitor.UnregisterEvent(eventID)
+				if major >= 3 {
+					eventID = sensor.dummySyscallEventID
+					if atomic.AddInt64(&sensor.dummySyscallEventCount, -1) == 0 {
+						sensor.Monitor.UnregisterEvent(sensor.dummySyscallEventID)
+					}
+				}
+			} else if major >= 3 {
 				es.unregister = func(*eventSink) {
 					eventID := sensor.dummySyscallEventID
 					if atomic.AddInt64(&sensor.dummySyscallEventCount, -1) == 0 {
@@ -339,31 +326,29 @@ func registerSyscallEvents(
 		}
 	}
 
-	if len(exitFilters) > 0 {
-		filters := make([]string, 0, len(exitFilters))
-		for k := range exitFilters {
-			filters = append(filters, fmt.Sprintf("(%s)", k))
-		}
-		filter := strings.Join(filters, " || ")
-
+	if exitFilter != nil {
 		eventName := "raw_syscalls/sys_exit"
 		eventID, err := sensor.Monitor.RegisterTracepoint(eventName,
 			f.decodeSysExit,
-			perf.WithEventGroup(subscr.eventGroupID),
-			perf.WithFilter(filter))
+			perf.WithEventGroup(subscr.eventGroupID))
 		if err != nil {
 			eventName = "syscalls/sys_exit"
 			eventID, err = sensor.Monitor.RegisterTracepoint(eventName,
 				f.decodeSysExit,
-				perf.WithEventGroup(subscr.eventGroupID),
-				perf.WithFilter(filter))
+				perf.WithEventGroup(subscr.eventGroupID))
 		}
 		if err != nil {
 			subscr.logStatus(
 				code.Code_UNKNOWN,
 				fmt.Sprintf("Could not register tracepoint %s: %v", eventName, err))
 		} else {
-			subscr.addEventSink(eventID)
+			_, err = subscr.addEventSink(eventID, exitFilter)
+			if err != nil {
+				subscr.logStatus(
+					code.Code_UNKNOWN,
+					fmt.Sprintf("Invalid filter expression for syscall exit filter: %v", err))
+				sensor.Monitor.UnregisterEvent(eventID)
+			}
 		}
 	}
 }
