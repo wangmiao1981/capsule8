@@ -204,6 +204,7 @@ func (t *telemetryServiceServer) GetEvents(
 	events := make(chan *api.TelemetryEvent,
 		config.Sensor.ChannelBufferLength)
 	f := func(e *api.TelemetryEvent) {
+		fmt.Println("sending", e.GetSensorSequenceNumber())
 		// Send the event to the data channel, but drop the event if
 		// the channel is full. Do not block the sensor from delivering
 		// telemetry to other subscribers.
