@@ -91,13 +91,27 @@ func createSubscription() *api.Subscription {
 	}
 
 	syscallEvents := []*api.SyscallEventFilter{
-		// Get all open(2) syscalls that return an error
+		// Get all open(2) syscalls
 		&api.SyscallEventFilter{
-			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT,
+			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
 
 			Id: &wrappers.Int64Value{
 				Value: 2, // SYS_OPEN
 			},
+		},
+
+		// An example of negative filters:
+		// Get all setuid(2) calls that are not root
+		&api.SyscallEventFilter{
+			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
+
+			Id: &wrappers.Int64Value{
+				Value: 105, // SYS_SETUID
+			},
+
+			FilterExpression: expression.NotEqual(
+				expression.Identifier("arg0"),
+				expression.Value(int64(0))),
 		},
 	}
 
