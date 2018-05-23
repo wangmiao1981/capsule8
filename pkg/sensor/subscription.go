@@ -28,6 +28,7 @@ import (
 
 type subscription struct {
 	eventGroupID    int32
+	counterGroupIDs []int32
 	containerFilter *containerFilter
 	eventSinks      map[uint64]*eventSink
 	status          []*google_rpc.Status

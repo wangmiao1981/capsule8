@@ -141,6 +141,18 @@ type registerEventOptions struct {
 	decoderFn TraceEventDecoderFn
 }
 
+func processRegisterEventOptions(
+	options ...RegisterEventOption,
+) registerEventOptions {
+	opts := registerEventOptions{
+		disabled: true,
+	}
+	for _, option := range options {
+		option(&opts)
+	}
+	return opts
+}
+
 // RegisterEventOption is used to implement optional arguments for event
 // registration methods. It must be exported, but it is not typically used
 // directly.
@@ -219,6 +231,61 @@ const (
 	EventTypeExternal
 )
 
+// EventTypeNames is a mapping of EventType to a human-readable string that is
+// the name of the symbolic constant.
+var EventTypeNames = map[EventType]string{
+	EventTypeTracepoint:    "EventTypeTracepoint",
+	EventTypeKprobe:        "EventTypeKprobe",
+	EventTypeUprobe:        "EventTypeUprobe",
+	EventTypeHardware:      "EventTypeHardware",
+	EventTypeSoftware:      "EventTypeSoftware",
+	EventTypeHardwareCache: "EventTypeHardwareCache",
+	EventTypeRaw:           "EventTypeRaw",
+	EventTypeBreakpoint:    "EventTypeBreakpoint",
+	EventTypeDynamicPMU:    "EventTypeDynamicPMU",
+	EventTypeExternal:      "EventTypeExternal",
+}
+
+func eventTypeFromPerfType(t uint32) EventType {
+	switch t {
+	case PERF_TYPE_HARDWARE:
+		return EventTypeHardware
+	case PERF_TYPE_HW_CACHE:
+		return EventTypeHardwareCache
+	case PERF_TYPE_SOFTWARE:
+		return EventTypeSoftware
+	case PERF_TYPE_BREAKPOINT:
+		return EventTypeBreakpoint
+	case PERF_TYPE_RAW:
+		return EventTypeRaw
+	case PERF_TYPE_TRACEPOINT:
+		// Could be kprobe or uprobe, but not enough information to
+		// make a determination
+		return EventTypeTracepoint
+	}
+	glog.Fatalf("Unrecognized event type %d", t)
+	return EventTypeInvalid
+}
+
+func perfTypeFromEventType(t EventType) uint32 {
+	switch t {
+	case EventTypeHardware:
+		return PERF_TYPE_HARDWARE
+	case EventTypeSoftware:
+		return PERF_TYPE_SOFTWARE
+	case EventTypeTracepoint, EventTypeKprobe, EventTypeUprobe:
+		return PERF_TYPE_TRACEPOINT
+	case EventTypeHardwareCache:
+		return PERF_TYPE_HW_CACHE
+	case EventTypeRaw:
+		return PERF_TYPE_RAW
+	case EventTypeBreakpoint:
+		return PERF_TYPE_BREAKPOINT
+	}
+	glog.Fatalf("Unrecognized event type %d", t)
+	return 0
+}
+
 type eventSampleDecoder interface {
 	decodeSample(*EventMonitorSample, *EventMonitor)
 }
@@ -256,12 +323,21 @@ func (d externalEventSampleDecoder) decodeSample(
 	esm.DecodedSample = s
 }
 
+// CounterEventValue is a counter value returned from the kernel. The EventType
+// and Config values are what were used to register the counter group member,
+// and Value is the value returned with the sample.
+type CounterEventValue struct {
+	EventType EventType
+	Config    uint64
+	Value     uint64
+}
+
 // CounterEventDecoderFn is the signature of a function to call to decode a
 // counter event sample. The first argument is the sample to be decoded, the
 // second is a map of event counter IDs to values, the third is the total time
 // the event has been enabled, and the fourth is the total time the event has
 // been running.
-type CounterEventDecoderFn func(*SampleRecord, map[uint64]uint64, uint64, uint64) (interface{}, error)
+type CounterEventDecoderFn func(*SampleRecord, []CounterEventValue, uint64, uint64) (interface{}, error)
 
 type counterEventSampleDecoder struct {
 	decoderFn CounterEventDecoderFn
@@ -281,14 +357,16 @@ func (d counterEventSampleDecoder) decodeSample(
 	}
 
 	attrMap := monitor.eventAttrMap.getMap()
-	counters := make(map[uint64]uint64, len(sample.V.Values))
+	counters := make([]CounterEventValue, 0, len(sample.V.Values))
 	for _, v := range sample.V.Values {
 		var attr *EventAttr
-		attr, ok = attrMap[v.ID]
-		if !ok {
-			continue
+		if attr, ok = attrMap[v.ID]; ok {
+			counters = append(counters, CounterEventValue{
+				EventType: eventTypeFromPerfType(attr.Type),
+				Config:    attr.Config,
+				Value:     v.Value,
+			})
 		}
-		counters[attr.Config] += v.Value
 	}
 
 	var s interface{}
@@ -850,27 +928,45 @@ func (monitor *EventMonitor) RegisterExternalEvent(
 	return event.id, nil
 }
 
-func (monitor *EventMonitor) registerPerfCounterEvent(
-	eventType EventType,
-	sampleType uint32,
+// CounterEventGroupMember defines a counter event group member at registration
+// time. Each member must have an event type of software, hardware, or
+// hardware cache, as well as a configuration value that specifies what counter
+// information to return.
+type CounterEventGroupMember struct {
+	EventType EventType
+	Config    uint64
+}
+
+// RegisterCounterEventGroup registers a performance counter event group.
+func (monitor *EventMonitor) RegisterCounterEventGroup(
 	name string,
-	counters []uint64,
+	counters []CounterEventGroupMember,
 	decoderFn CounterEventDecoderFn,
 	options ...RegisterEventOption,
-) (int32, error) {
+) (int32, uint64, error) {
 	if len(counters) < 1 {
-		return 0, errors.New("At least one counter must be specified")
+		return 0, 0, errors.New("At least one counter must be specified")
+	}
+	for i, c := range counters {
+		switch c.EventType {
+		case EventTypeHardware, EventTypeHardwareCache, EventTypeSoftware:
+			continue
+		default:
+			s, ok := EventTypeNames[c.EventType]
+			if !ok {
+				s = fmt.Sprintf("%d", c.EventType)
+			}
+			return 0, 0, fmt.Errorf("Counter %d event type %s is invalid",
+				i, s)
+		}
 	}
 
-	opts := registerEventOptions{}
-	for _, option := range options {
-		option(&opts)
-	}
+	opts := processRegisterEventOptions(options...)
 	if len(opts.filter) > 0 {
-		return 0, errors.New("Counter events do not support filters")
+		return 0, 0, errors.New("Counter events do not support filters")
 	}
 	if opts.groupID != 0 {
-		return 0, errors.New("Counter events are their own groups")
+		return 0, 0, errors.New("Counter events are their own groups")
 	}
 
 	if opts.eventAttr == nil {
@@ -879,21 +975,22 @@ func (monitor *EventMonitor) registerPerfCounterEvent(
 		attr := *opts.eventAttr
 		opts.eventAttr = &attr
 	}
-	opts.eventAttr.Type = sampleType
 	opts.eventAttr.SampleType |= PERF_SAMPLE_READ
 	opts.eventAttr.ReadFormat = PERF_FORMAT_GROUP | PERF_FORMAT_ID |
 		PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING
+	opts.eventAttr.Disabled = opts.disabled
 	fixupEventAttr(opts.eventAttr)
 
-	// For our purposese, leaders should always be pinned. Note that
+	// For our purposes, leaders should always be pinned. Note that
 	// fixupEventAttr() sets Pinned to false for all other events in the
 	// group.
 	leaderAttr := *opts.eventAttr
-	leaderAttr.Config = counters[0]
+	leaderAttr.Type = perfTypeFromEventType(counters[0].EventType)
+	leaderAttr.Config = counters[0].Config
 	leaderAttr.Pinned = true
 	group, err := monitor.newEventGroup(&leaderAttr)
 	if err != nil {
-		return -1, err
+		return 0, 0, err
 	}
 	group.name = name
 
@@ -909,57 +1006,24 @@ func (monitor *EventMonitor) registerPerfCounterEvent(
 	for i, leader := range group.leaders {
 		newfds[i] = leader.fd
 	}
-	_, err = monitor.newRegisteredEvent(name, newfds, nil, eventType,
-		decoder, &leaderAttr, group, true)
+	eventID, err := monitor.newRegisteredEvent(name, newfds, nil,
+		counters[0].EventType, decoder, &leaderAttr, group, true)
 	if err != nil {
 		monitor.unregisterEventGroup(group)
-		return -1, nil
+		return 0, 0, err
 	}
 
 	for i := 1; i < len(counters); i++ {
-		_, err = monitor.newRegisteredPerfEvent(name, counters[i], nil,
-			opts, eventType, decoder)
+		_, err = monitor.newRegisteredPerfEvent(
+			name, counters[i].Config, nil, opts,
+			counters[i].EventType, decoder)
 		if err != nil {
 			monitor.unregisterEventGroup(group)
-			return -1, nil
+			return 0, 0, err
 		}
 	}
 
-	return group.groupID, nil
-}
-
-// RegisterHardwareEventGroup is used to register a hardware event with an
-// event monitor. These types of events are alqways created as groups, and
-// so they return a new group identifier.
-func (monitor *EventMonitor) RegisterHardwareEventGroup(
-	counters []uint64,
-	decoderFn CounterEventDecoderFn,
-	options ...RegisterEventOption,
-) (int32, error) {
-	return monitor.registerPerfCounterEvent(
-		EventTypeHardware,
-		PERF_TYPE_HARDWARE,
-		"PERF_TYPE_HARDWARE",
-		counters,
-		decoderFn,
-		options...)
-}
-
-// RegisterHardwareCacheEventGroup is used to register a hardware cache event
-// with an event monitor. These types of events are always created as groups,
-// and so they return a new group identifier.
-func (monitor *EventMonitor) RegisterHardwareCacheEventGroup(
-	counters []uint64,
-	decoderFn CounterEventDecoderFn,
-	options ...RegisterEventOption,
-) (int32, error) {
-	return monitor.registerPerfCounterEvent(
-		EventTypeHardwareCache,
-		PERF_TYPE_HW_CACHE,
-		"PERF_TYPE_HW_CACHE",
-		counters,
-		decoderFn,
-		options...)
+	return group.groupID, eventID, nil
 }
 
 // RegisterTracepoint is used to register a tracepoint with an EventMonitor.
@@ -972,10 +1036,7 @@ func (monitor *EventMonitor) RegisterTracepoint(
 	fn TraceEventDecoderFn,
 	options ...RegisterEventOption,
 ) (uint64, error) {
-	opts := registerEventOptions{}
-	for _, option := range options {
-		option(&opts)
-	}
+	opts := processRegisterEventOptions(options...)
 
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -995,10 +1056,7 @@ func (monitor *EventMonitor) RegisterKprobe(
 	fn TraceEventDecoderFn,
 	options ...RegisterEventOption,
 ) (uint64, error) {
-	opts := registerEventOptions{}
-	for _, option := range options {
-		option(&opts)
-	}
+	opts := processRegisterEventOptions(options...)
 
 	monitor.lock.Lock()
 	defer monitor.lock.Unlock()
@@ -1031,10 +1089,7 @@ func (monitor *EventMonitor) RegisterUprobe(
 	fn TraceEventDecoderFn,
 	options ...RegisterEventOption,
 ) (uint64, error) {
-	opts := registerEventOptions{}
-	for _, option := range options {
-		option(&opts)
-	}
+	opts := processRegisterEventOptions(options...)
 
 	// If the address looks like a symbol that needs to be resolved, it
 	// must be resolved here and now. The kernel does not do symbol
@@ -2185,7 +2240,7 @@ func (monitor *EventMonitor) initializeGroupLeaders(
 		return nil, err
 	}
 
-	return pgls, err
+	return pgls, nil
 }
 
 func (monitor *EventMonitor) newEventGroup(

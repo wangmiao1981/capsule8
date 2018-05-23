@@ -77,6 +77,7 @@ message TelemetryEvent {
                 FileEvent file                      = 12;
                 KernelFunctionCallEvent kernel_call = 13;
                 NetworkEvent network                = 14;
+                PerformanceEvent performance        = 15;
 
                 //
                 // System-level events (containers, systemd, etc)
@@ -475,4 +476,51 @@ message NetworkEvent {
         // Present only when the event describes a listen attempt. This is the
         // value of the backlog argument passed to listen(2).
         uint64 backlog = 13;
+}
+
+// Possible performance event types
+enum PerformanceEventType {
+        // The type of event is unknown
+        PERFORMANCE_EVENT_TYPE_UNKNOWN = 0;
+
+        // The event is a hardware based event (PERF_TYPE_HARDWARE)
+        PERFORMANCE_EVENT_TYPE_HARDWARE = 1;
+
+        // The event is a hardware cache based event (PERF_TYPE_HW_CACHE)
+        PERFORMANCE_EVENT_TYPE_HARDWARE_CACHE = 2;
+
+        // The event is a software based event (PERF_TYPE_SOFTWARE)
+        PERFORMANCE_EVENT_TYPE_SOFTWARE = 3;
+}
+
+// PerformanceEventValue is a single performance event counter. It contains
+// the perf config value and its associated counter value.
+message PerformanceEventValue {
+        // The type of performance event counter.
+        PerformanceEventType type = 1;
+
+        // The config value used in the registration of the event group.
+        uint64 config = 2;
+
+        // The current value of the counter associated with the type and config
+        // value pair.
+        uint64 value = 3;
+}
+
+// PerformanceEvent describes an event that occurred related to performance
+// event activity in the Sensor.
+message PerformanceEvent {
+        // The total amount of time that the event has been enabled in the
+        // sensor. This corresponds to PERF_FORMAT_TOTAL_TIME_ENABLED that is
+        // reported by the kernel with the event sample.
+        uint64 total_time_enabled = 1;
+
+        // The total amount of time that the event subscription has been running
+        // in the sensor. This corresponds to PERF_FORMAT_TOTAL_TIME_RUNNING
+        // that is reported by the kernel with the event sample.
+        uint64 total_time_running = 2;
+
+        // These are the counter values reported by the kernel with the event
+        // sample.
+        repeated PerformanceEventValue values = 3;
 }

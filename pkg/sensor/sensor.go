@@ -569,6 +569,7 @@ func (s *Sensor) NewSubscription(
 	registerFileEvents(s, subscr, sub.EventFilter.FileEvents)
 	registerKernelEvents(s, subscr, sub.EventFilter.KernelEvents)
 	registerNetworkEvents(s, subscr, sub.EventFilter.NetworkEvents)
+	registerPerformanceEvents(s, subscr, sub.EventFilter.PerformanceEvents)
 	registerProcessEvents(s, subscr, sub.EventFilter.ProcessEvents)
 	registerSyscallEvents(s, subscr, sub.EventFilter.SyscallEvents)
 	registerTimerEvents(s, subscr, sub.EventFilter.TickerEvents)
@@ -594,13 +595,20 @@ func (s *Sensor) NewSubscription(
 	go func() {
 		<-ctx.Done()
 		glog.V(2).Infof("Subscription %d control channel closed",
-			groupID)
+			subscr.eventGroupID)
 
-		s.Monitor.UnregisterEventGroup(groupID)
+		for _, id := range subscr.counterGroupIDs {
+			s.Monitor.UnregisterEventGroup(id)
+		}
+
+		s.Monitor.UnregisterEventGroup(subscr.eventGroupID)
 		s.eventMap.unsubscribe(subscr, nil)
 	}()
 
 	s.Monitor.EnableGroup(groupID)
+	for _, id := range subscr.counterGroupIDs {
+		s.Monitor.EnableGroup(id)
+	}
 
 	atomic.AddInt32(&s.Metrics.Subscriptions, 1)
 	return status, nil

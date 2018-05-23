@@ -73,8 +73,8 @@ message Expression {
                 GT          = 24;
                 GE          = 25;
                 LIKE        = 26;
-                IS_NULL     = 27; // unary comparison
-                IS_NOT_NULL = 28; // unary comparison
+                IS_NULL     = 27;  // unary comparison
+                IS_NOT_NULL = 28;  // unary comparison
 
                 BITWISE_AND = 30;
         }

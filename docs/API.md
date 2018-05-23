@@ -24,6 +24,8 @@
     - [KernelFunctionCallEvent.ArgumentsEntry](#capsule8.api.v0.KernelFunctionCallEvent.ArgumentsEntry)
     - [KernelFunctionCallEvent.FieldValue](#capsule8.api.v0.KernelFunctionCallEvent.FieldValue)
     - [NetworkEvent](#capsule8.api.v0.NetworkEvent)
+    - [PerformanceEvent](#capsule8.api.v0.PerformanceEvent)
+    - [PerformanceEventValue](#capsule8.api.v0.PerformanceEventValue)
     - [Process](#capsule8.api.v0.Process)
     - [ProcessEvent](#capsule8.api.v0.ProcessEvent)
     - [SyscallEvent](#capsule8.api.v0.SyscallEvent)
@@ -35,6 +37,7 @@
     - [KernelFunctionCallEvent.FieldType](#capsule8.api.v0.KernelFunctionCallEvent.FieldType)
     - [KernelFunctionCallEventType](#capsule8.api.v0.KernelFunctionCallEventType)
     - [NetworkEventType](#capsule8.api.v0.NetworkEventType)
+    - [PerformanceEventType](#capsule8.api.v0.PerformanceEventType)
     - [ProcessEventType](#capsule8.api.v0.ProcessEventType)
     - [SyscallEventType](#capsule8.api.v0.SyscallEventType)
   
@@ -63,6 +66,8 @@
     - [LimitModifier](#capsule8.api.v0.LimitModifier)
     - [Modifier](#capsule8.api.v0.Modifier)
     - [NetworkEventFilter](#capsule8.api.v0.NetworkEventFilter)
+    - [PerformanceEventCounter](#capsule8.api.v0.PerformanceEventCounter)
+    - [PerformanceEventFilter](#capsule8.api.v0.PerformanceEventFilter)
     - [ProcessEventFilter](#capsule8.api.v0.ProcessEventFilter)
     - [Subscription](#capsule8.api.v0.Subscription)
     - [SyscallEventFilter](#capsule8.api.v0.SyscallEventFilter)
@@ -70,6 +75,7 @@
     - [TickerEventFilter](#capsule8.api.v0.TickerEventFilter)
   
     - [ContainerEventView](#capsule8.api.v0.ContainerEventView)
+    - [SampleRateType](#capsule8.api.v0.SampleRateType)
     - [ThrottleModifier.IntervalType](#capsule8.api.v0.ThrottleModifier.IntervalType)
   
   
@@ -361,6 +367,42 @@ occurring as detected by the Sensor.
 
 
 
+<a name="capsule8.api.v0.PerformanceEvent"/>
+
+### PerformanceEvent
+PerformanceEvent describes an event that occurred related to performance
+event activity in the Sensor.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| total_time_enabled | [uint64](#uint64) |  | The total amount of time that the event has been enabled in the sensor. This corresponds to PERF_FORMAT_TOTAL_TIME_ENABLED that is reported by the kernel with the event sample. |
+| total_time_running | [uint64](#uint64) |  | The total amount of time that the event subscription has been running in the sensor. This corresponds to PERF_FORMAT_TOTAL_TIME_RUNNING that is reported by the kernel with the event sample. |
+| values | [PerformanceEventValue](#capsule8.api.v0.PerformanceEventValue) | repeated | These are the counter values reported by the kernel with the event sample. |
+
+
+
+
+
+
+<a name="capsule8.api.v0.PerformanceEventValue"/>
+
+### PerformanceEventValue
+PerformanceEventValue is a single performance event counter. It contains
+the perf config value and its associated counter value.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| type | [PerformanceEventType](#capsule8.api.v0.PerformanceEventType) |  | The type of performance event counter. |
+| config | [uint64](#uint64) |  | The config value used in the registration of the event group. |
+| value | [uint64](#uint64) |  | The current value of the counter associated with the type and config value pair. |
+
+
+
+
+
+
 <a name="capsule8.api.v0.Process"/>
 
 ### Process
@@ -450,6 +492,7 @@ An event observed by the Sensor.
 | file | [FileEvent](#capsule8.api.v0.FileEvent) |  |  |
 | kernel_call | [KernelFunctionCallEvent](#capsule8.api.v0.KernelFunctionCallEvent) |  |  |
 | network | [NetworkEvent](#capsule8.api.v0.NetworkEvent) |  |  |
+| performance | [PerformanceEvent](#capsule8.api.v0.PerformanceEvent) |  |  |
 | container | [ContainerEvent](#capsule8.api.v0.ContainerEvent) |  |  |
 | chargen | [ChargenEvent](#capsule8.api.v0.ChargenEvent) |  | Debugging events (&gt;= 100) |
 | ticker | [TickerEvent](#capsule8.api.v0.TickerEvent) |  |  |
@@ -566,6 +609,20 @@ Possible network event types
 | NETWORK_EVENT_TYPE_SENDTO_RESULT | 10 | The event is the result of an attempt to send data to a specific address |
 | NETWORK_EVENT_TYPE_RECVFROM_ATTEMPT | 11 | The event is an attempt to receive data from a specific address |
 | NETWORK_EVENT_TYPE_RECVFROM_RESULT | 12 | The event is the result of an attempt to receive data from a specific address |
+
+
+
+<a name="capsule8.api.v0.PerformanceEventType"/>
+
+### PerformanceEventType
+Possible performance event types
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| PERFORMANCE_EVENT_TYPE_UNKNOWN | 0 | The type of event is unknown |
+| PERFORMANCE_EVENT_TYPE_HARDWARE | 1 | The event is a hardware based event (PERF_TYPE_HARDWARE) |
+| PERFORMANCE_EVENT_TYPE_HARDWARE_CACHE | 2 | The event is a hardware cache based event (PERF_TYPE_HW_CACHE) |
+| PERFORMANCE_EVENT_TYPE_SOFTWARE | 3 | The event is a software based event (PERF_TYPE_SOFTWARE) |
 
 
 
@@ -806,6 +863,7 @@ Kernel-level events
 | file_events | [FileEventFilter](#capsule8.api.v0.FileEventFilter) | repeated | Zero or more filters specifying which file events to include |
 | kernel_events | [KernelFunctionCallFilter](#capsule8.api.v0.KernelFunctionCallFilter) | repeated | Zero or more kernel functional calls to include |
 | network_events | [NetworkEventFilter](#capsule8.api.v0.NetworkEventFilter) | repeated | Zero or more network events to include |
+| performance_events | [PerformanceEventFilter](#capsule8.api.v0.PerformanceEventFilter) | repeated | Zero or more performance events to include |
 | container_events | [ContainerEventFilter](#capsule8.api.v0.ContainerEventFilter) | repeated | Zero or more container events to include |
 | chargen_events | [ChargenEventFilter](#capsule8.api.v0.ChargenEventFilter) | repeated | Zero or more character generators to configure and return events from (for debugging) |
 | ticker_events | [TickerEventFilter](#capsule8.api.v0.TickerEventFilter) | repeated | Zero or more ticker generators to configure and return events from (for debugging) |
@@ -930,6 +988,42 @@ precisely which network events should be included.
 
 
 
+<a name="capsule8.api.v0.PerformanceEventCounter"/>
+
+### PerformanceEventCounter
+PerformanceEventCounter represents a single performance event counter group
+member, where each member may have a different type and configuration.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| type | [PerformanceEventType](#capsule8.api.v0.PerformanceEventType) |  | Required; the performance event type. |
+| config | [uint64](#uint64) |  | Required; the performance event type&#39;s configuration, which is defined by the Linux perf interface. This corresponds to the config field in a struct perf_event_attr that is documented in the perf_event_open(2) man page. |
+
+
+
+
+
+
+<a name="capsule8.api.v0.PerformanceEventFilter"/>
+
+### PerformanceEventFilter
+The PerformanceEventFilter specifies which performance events to include in
+the Subscription.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| events | [PerformanceEventCounter](#capsule8.api.v0.PerformanceEventCounter) | repeated | Required; the performance events to monitor for. The sensor will create a new group with the order of the events preserved. |
+| sample_rate_type | [SampleRateType](#capsule8.api.v0.SampleRateType) |  | Required; the sample rate type to use, which may be either period or frequency as described for SampleRateType. |
+| period | [uint64](#uint64) |  | If sample_rate_type is SAMPLE_RATE_TYPE_PERIOD, this is the value for the sample rate period to use. |
+| frequency | [uint64](#uint64) |  | If sample_rate_type is SAMPLE_RATE_TYPE_FREQUENCY, this is the value for the sample rate frequency to use. |
+
+
+
+
+
+
 <a name="capsule8.api.v0.ProcessEventFilter"/>
 
 ### ProcessEventFilter
@@ -1042,6 +1136,22 @@ ContainerEvents.
 | ---- | ------ | ----------- |
 | BASIC | 0 | Default view of a ContainerEvent includes just basic information |
 | FULL | 1 | Full view of a ContainerEvent includes raw Docker and OCI config JSON payloads |
+
+
+
+<a name="capsule8.api.v0.SampleRateType"/>
+
+### SampleRateType
+SampleRateType describes the type of sample rate to use, either by the # of
+generated events (SAMPLE_RATE_TYPE_PERIOD) or by time
+(SAMPLE_RATE_TYPE_FREQUENCY), which is expressed in units of kernel timer
+ticks.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| SAMPLE_RATE_TYPE_UNKNOWN | 0 |  |
+| SAMPLE_RATE_TYPE_PERIOD | 1 |  |
+| SAMPLE_RATE_TYPE_FREQUENCY | 2 |  |
 
 
 

@@ -15,17 +15,22 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 
-	"github.com/capsule8/capsule8/pkg/sensor"
+	api "github.com/capsule8/capsule8/api/v0"
 
+	"github.com/capsule8/capsule8/pkg/sensor"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
+	"github.com/capsule8/capsule8/pkg/sys/proc"
+
 	"github.com/golang/glog"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
 )
 
 const (
@@ -80,33 +85,54 @@ func main() {
 	flag.Parse()
 
 	glog.Infof("Starting Capsule8 cache side channel detector")
+	ncpu, err := proc.FS().NumCPU()
+	if err != nil {
+		glog.Fatalf("Unable to determine # of CPUs: %v", err)
+	}
 	tracker := counterTracker{
 		sensor:   newSensor(),
-		counters: make([]eventCounters, runtime.NumCPU()),
+		counters: make([]eventCounters, ncpu),
 	}
 
-	// Create our event group to read LL cache accesses and misses
+	// Create our subscription to read LL cache accesses and misses
 	//
 	// We ask the kernel to sample every llcLoadSampleSize LLC
 	// loads. During each sample, the LLC load misses are also
 	// recorded, as well as CPU number, PID/TID, and sample time.
-	attr := perf.EventAttr{
-		SamplePeriod: llcLoadSampleSize,
-		SampleType:   perf.PERF_SAMPLE_TID | perf.PERF_SAMPLE_CPU,
-	}
-	groupID, err := tracker.sensor.Monitor.RegisterHardwareCacheEventGroup(
-		[]uint64{
-			perfConfigLLCLoads,
-			perfConfigLLCLoadMisses,
+	sub := &api.Subscription{
+		EventFilter: &api.EventFilter{
+			PerformanceEvents: []*api.PerformanceEventFilter{
+				&api.PerformanceEventFilter{
+					SampleRateType: api.SampleRateType_SAMPLE_RATE_TYPE_PERIOD,
+					SampleRate: &api.PerformanceEventFilter_Period{
+						Period: llcLoadSampleSize,
+					},
+					Events: []*api.PerformanceEventCounter{
+						&api.PerformanceEventCounter{
+							Type:   api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE_CACHE,
+							Config: perfConfigLLCLoads,
+						},
+						&api.PerformanceEventCounter{
+							Type:   api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE_CACHE,
+							Config: perfConfigLLCLoadMisses,
+						},
+					},
+				},
+			},
 		},
-		tracker.decodeConfigLLCLoads,
-		perf.WithEventAttr(&attr))
-	if err != nil {
-		glog.Fatalf("Could not register hardware cache event: %s", err)
 	}
 
 	glog.Info("Monitoring for cache side channels")
-	tracker.sensor.Monitor.EnableGroup(groupID)
+	ctx, cancel := context.WithCancel(context.Background())
+	status, err := tracker.sensor.NewSubscription(ctx, sub, tracker.dispatchEvent)
+	if !(len(status) == 1 && status[0].Code == int32(code.Code_OK)) {
+		for _, s := range status {
+			glog.Infof("%s: %s", code.Code_name[s.Code], s.Message)
+		}
+	}
+	if err != nil {
+		glog.Fatalf("Could not register subscription: %v", err)
+	}
 
 	signals := make(chan os.Signal)
 	signal.Notify(signals, os.Interrupt)
@@ -114,20 +140,27 @@ func main() {
 	close(signals)
 
 	glog.Info("Shutting down gracefully")
+	cancel()
 	tracker.sensor.Monitor.Close()
 }
 
-func (t *counterTracker) decodeConfigLLCLoads(
-	sample *perf.SampleRecord,
-	counters map[uint64]uint64,
-	totalTimeElapsed uint64,
-	totalTimeRunning uint64,
-) (interface{}, error) {
-	cpu := sample.CPU
+func (t *counterTracker) dispatchEvent(e *api.TelemetryEvent) {
+	event := e.Event.(*api.TelemetryEvent_Performance).Performance
+
+	cpu := e.Cpu
 	prevCounters := t.counters[cpu]
-	t.counters[cpu] = eventCounters{
-		LLCLoads:      counters[perfConfigLLCLoads],
-		LLCLoadMisses: counters[perfConfigLLCLoadMisses],
+	t.counters[cpu] = eventCounters{}
+
+	for _, v := range event.Values {
+		switch v.Type {
+		case api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE_CACHE:
+			switch v.Config {
+			case perfConfigLLCLoads:
+				t.counters[cpu].LLCLoads += v.Value
+			case perfConfigLLCLoadMisses:
+				t.counters[cpu].LLCLoadMisses += v.Value
+			}
+		}
 	}
 
 	counterDeltas := eventCounters{
@@ -135,12 +168,11 @@ func (t *counterTracker) decodeConfigLLCLoads(
 		LLCLoadMisses: t.counters[cpu].LLCLoadMisses - prevCounters.LLCLoadMisses,
 	}
 
-	t.alarm(sample, counterDeltas)
-	return nil, nil
+	t.alarm(e, counterDeltas)
 }
 
 func (t *counterTracker) alarm(
-	sample *perf.SampleRecord,
+	event *api.TelemetryEvent,
 	counters eventCounters,
 ) {
 	LLCLoadMissRate := float32(counters.LLCLoadMisses) /
@@ -151,18 +183,14 @@ func (t *counterTracker) alarm(
 
 	var fields []string
 	fields = append(fields, fmt.Sprintf("LLCLoadMissRate=%v", LLCLoadMissRate))
-	fields = append(fields, fmt.Sprintf("pid=%v", sample.Pid))
-	fields = append(fields, fmt.Sprintf("tid=%v", sample.Tid))
-	fields = append(fields, fmt.Sprintf("cpu=%v", sample.CPU))
-
-	if sample.Pid > 0 {
-		task := t.sensor.ProcessCache.LookupTask(int(sample.Pid))
-		if ci := t.sensor.ProcessCache.LookupTaskContainerInfo(task); ci != nil {
-			fields = append(fields, fmt.Sprintf("container_name=%v", ci.Name))
-			fields = append(fields, fmt.Sprintf("container_id=%v", ci.ID))
-			fields = append(fields, fmt.Sprintf("container_image=%v", ci.ImageName))
-			fields = append(fields, fmt.Sprintf("container_image_id=%v", ci.ImageID))
-		}
+	fields = append(fields, fmt.Sprintf("pid=%v", event.ProcessTgid))
+	fields = append(fields, fmt.Sprintf("tid=%v", event.ProcessPid))
+	fields = append(fields, fmt.Sprintf("cpu=%v", event.Cpu))
+	if event.ContainerId != "" {
+		fields = append(fields, fmt.Sprintf("container_name=%v", event.ContainerName))
+		fields = append(fields, fmt.Sprintf("container_id=%v", event.ContainerId))
+		fields = append(fields, fmt.Sprintf("container_image=%v", event.ImageName))
+		fields = append(fields, fmt.Sprintf("container_image_id=%v", event.ImageId))
 	}
 
 	message := strings.Join(fields, " ")

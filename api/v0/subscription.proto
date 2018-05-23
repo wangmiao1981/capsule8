@@ -97,6 +97,9 @@ message EventFilter {
         // Zero or more network events to include
         repeated NetworkEventFilter network_events = 5;
 
+        // Zero or more performance events to include
+        repeated PerformanceEventFilter performance_events = 6;
+
         //
         // Operating System-level events (containers, etc)
         //
@@ -243,6 +246,52 @@ message NetworkEventFilter {
         // Optional; a filter to apply to events. Only events for which the
         // evaluation of the filter expression is true will be returned.
         Expression filter_expression = 100;
+}
+
+// SampleRateType describes the type of sample rate to use, either by the # of
+// generated events (SAMPLE_RATE_TYPE_PERIOD) or by time
+// (SAMPLE_RATE_TYPE_FREQUENCY), which is expressed in units of kernel timer
+// ticks.
+enum SampleRateType {
+        SAMPLE_RATE_TYPE_UNKNOWN   = 0;
+        SAMPLE_RATE_TYPE_PERIOD    = 1;
+        SAMPLE_RATE_TYPE_FREQUENCY = 2;
+}
+
+// PerformanceEventCounter represents a single performance event counter group
+// member, where each member may have a different type and configuration.
+message PerformanceEventCounter {
+        // Required; the performance event type.
+        PerformanceEventType type = 1;
+
+        // Required; the performance event type's configuration, which is
+        // defined by the Linux perf interface. This corresponds to the config
+        // field in a struct perf_event_attr that is documented in the
+        // perf_event_open(2) man page.
+        uint64 config = 2;
+}
+
+// The PerformanceEventFilter specifies which performance events to include in
+// the Subscription.
+message PerformanceEventFilter {
+        // Required; the performance events to monitor for. The sensor will
+        // create a new group with the order of the events preserved.
+        repeated PerformanceEventCounter events = 10;
+
+        // Required; the sample rate type to use, which may be either period or
+        // frequency as described for SampleRateType.
+        SampleRateType sample_rate_type = 11;
+
+        // Required; the sample rate to use
+        oneof sample_rate {
+                // If sample_rate_type is SAMPLE_RATE_TYPE_PERIOD, this is the
+                // value for the sample rate period to use.
+                uint64 period = 12;
+
+                // If sample_rate_type is SAMPLE_RATE_TYPE_FREQUENCY, this is
+                // the value for the sample rate frequency to use.
+                uint64 frequency = 13;
+        }
 }
 
 // The ContainerEventView specifies the level of detail to include for
