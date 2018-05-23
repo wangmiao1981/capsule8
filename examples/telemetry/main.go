@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -25,14 +26,14 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/context"
-
-	"github.com/golang/protobuf/jsonpb"
-	"google.golang.org/grpc"
-
 	api "github.com/capsule8/capsule8/api/v0"
 	"github.com/capsule8/capsule8/pkg/expression"
+
+	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/ptypes/wrappers"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
+	"google.golang.org/grpc"
 )
 
 var config struct {
@@ -265,6 +266,25 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Recv: %s\n", err)
 			os.Exit(1)
+		}
+
+		if len(ev.Statuses) > 1 ||
+			(len(ev.Statuses) == 1 &&
+				ev.Statuses[0].Code != int32(code.Code_OK)) {
+			for _, s := range ev.Statuses {
+				if config.json {
+					msg, err := marshaler.MarshalToString(s)
+					if err != nil {
+						fmt.Fprintf(os.Stderr,
+							"Unable to decode event: %v", err)
+						continue
+					}
+					fmt.Println(msg)
+				} else {
+					fmt.Println(s)
+				}
+			}
+
 		}
 
 		for _, e := range ev.Events {
