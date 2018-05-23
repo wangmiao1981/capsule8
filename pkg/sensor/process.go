@@ -104,16 +104,14 @@ const (
 
 	execveArgCount = 6
 
-	doExecveAddress         = "do_execve"
-	doExecveArgs            = "filename=+0(+0(%di)):string "
-	doExecveatAddress       = "do_execveat"
-	doExecveatArgs          = "filename=+0(+0(%si)):string "
-	doExecveatCommonAddress = "do_execveat_common"
-	doExecveatCommonArgs    = "filename=+0(+0(%si)):string "
-	sysExecveAddress        = "sys_execve"
-	sysExecveArgs           = "filename=+0(%di):string "
-	sysExecveatAddress      = "sys_execveat"
-	sysExecveatArgs         = "filename=%0(%si):string "
+	doExecveAddress    = "do_execve"
+	doExecveArgs       = "filename=+0(+0(%di)):string "
+	doExecveatAddress  = "do_execveat"
+	doExecveatArgs     = "filename=+0(+0(%si)):string "
+	sysExecveAddress   = "sys_execve"
+	sysExecveArgs      = "filename=+0(%di):string "
+	sysExecveatAddress = "sys_execveat"
+	sysExecveatArgs    = "filename=%0(%si):string "
 
 	doExitAddress = "do_exit"
 	doExitArgs    = "code=%di:s64"
@@ -577,42 +575,33 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 
 	// Attach a probe to capture exec events in the kernel. Different
 	// kernel versions require different probe attachments, so try to do
-	// the best that we can here. Try for do_execveat_common() first, and
-	// if that succeeds, it's the only one we need. Otherwise, we need a
-	// bunch of others to try to hit everything. We may end up getting
-	// duplicate events, which is ok.
+	// the best that we can here. We may end up getting duplicate events,
+	// which is ok.
 	_, err = sensor.RegisterKprobe(
-		doExecveatCommonAddress, false,
-		doExecveatCommonArgs+makeExecveFetchArgs("dx"),
+		sysExecveAddress, false,
+		sysExecveArgs+makeExecveFetchArgs("si"),
 		cache.decodeExecve,
 		perf.WithEventEnabled())
 	if err != nil {
-		_, err = sensor.RegisterKprobe(
-			sysExecveAddress, false,
-			sysExecveArgs+makeExecveFetchArgs("si"),
-			cache.decodeExecve,
-			perf.WithEventEnabled())
-		if err != nil {
-			glog.Fatalf("Couldn't register event %s: %s",
-				sysExecveAddress, err)
-		}
-		_, _ = sensor.RegisterKprobe(
-			doExecveAddress, false,
-			doExecveArgs+makeExecveFetchArgs("si"),
-			cache.decodeExecve,
-			perf.WithEventEnabled())
+		glog.Fatalf("Couldn't register event %s: %s",
+			sysExecveAddress, err)
+	}
+	_, _ = sensor.RegisterKprobe(
+		doExecveAddress, false,
+		doExecveArgs+makeExecveFetchArgs("si"),
+		cache.decodeExecve,
+		perf.WithEventEnabled())
 
-		_, err = sensor.RegisterKprobe(
-			sysExecveatAddress, false,
-			sysExecveatArgs+makeExecveFetchArgs("dx"),
-			cache.decodeExecve,
+	_, err = sensor.RegisterKprobe(
+		sysExecveatAddress, false,
+		sysExecveatArgs+makeExecveFetchArgs("dx"),
+		cache.decodeExecve,
+		perf.WithEventEnabled())
+	if err == nil {
+		_, _ = sensor.RegisterKprobe(
+			doExecveatAddress, false,
+			makeExecveFetchArgs("dx"), cache.decodeExecve,
 			perf.WithEventEnabled())
-		if err == nil {
-			_, _ = sensor.RegisterKprobe(
-				doExecveatAddress, false,
-				makeExecveFetchArgs("dx"), cache.decodeExecve,
-				perf.WithEventEnabled())
-		}
 	}
 
 	if err = cache.installCgroupMonitor(); err != nil {
