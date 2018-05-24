@@ -1,3 +1,23 @@
+## 0.13.0-alpha (May 24, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Surface hardware/software performance events through the sensor API ([#203](https://github.com/capsule8/capsule8/pull/203))
+
+IMPROVEMENTS:
+
+  None
+
+BUG FIXES:
+
+  * Do not use do_execveat_common for process exec monitoring ([#208](https://github.com/capsule8/capsule8/pull/208))
+  * Set the ProcessID for a task existing when the sensor starts up ([#207](https://github.com/capsule8/capsule8/pull/207))
+  * Fix a problem with subscribing to PROCESS_EVENT_TYPE_UPDATE events ([#206](https://github.com/capsule8/capsule8/pull/206))
+
 ## 0.12.0-alpha (May 11, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
