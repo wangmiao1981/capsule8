@@ -61,15 +61,15 @@ CONFIG_KPROBE_EVENT=y;CONFIG_KPROBE_EVENTS=y
 EOF
 )
 
-if [ "$CONFIG_CMD" != "" ]; then
+if [ -z "$CONFIG_CMD" ]; then
     for option in $(echo $CONFIG_OPTIONS); do
         OPT_FOUND=0
         OPT_NAME=""
         for opt in $(echo $option | tr ";" "\n"); do
-        	eval "$CONFIG_CMD | grep $opt 2>/dev/null >/dev/null"
+        	eval "$CONFIG_CMD | grep -qs $opt"
 		if [ "$?" == "0" ]; then
 		   OPT_FOUND=1
-		   OPT_NAME=$opt 
+		   OPT_NAME=$opt
 		   break
 		fi
         done
@@ -113,7 +113,7 @@ if [ "$MAJOR" = 3 -a "${MINOR}" -lt 10 ]; then
     echo -e "[ ${RED} FAIL ${NC} ] Kernel version `uname -r` is not supported."
 fi
 
-# Check for the needed filesystems: tracefs, proc, cgroup
+# Check for the needed filesystems: tracefs, cgroup
 TRACEFS_MOUNT="`mount -t tracefs | cut -d ' ' -f 3`"
 if [ -z "${TRACEFS_MOUNT}" ]; then
     # On older kernels, tracefs is mounted by default in the tracing directory
