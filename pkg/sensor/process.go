@@ -946,14 +946,16 @@ func (pc *ProcessInfoCache) handleSysClone(
 		changes["ContainerInfo"] = parentLeader.ContainerInfo
 	}
 
+	// This must be done before filling in eventData, because otherwise
+	// childTask.ProcessID won't be set yet.
+	childTask.parent = parentTask
+	childTask.Update(changes, sample.Time)
+
 	eventData := map[string]interface{}{
 		"__task__":       parentTask,
 		"fork_child_pid": int32(childTask.PID),
 		"fork_child_id":  childTask.ProcessID,
 	}
-
-	childTask.parent = parentTask
-	childTask.Update(changes, sample.Time)
 	pc.sensor.Monitor.EnqueueExternalSample(
 		pc.ProcessForkEventID,
 		sampleIDFromSample(sample),
