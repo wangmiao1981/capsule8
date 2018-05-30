@@ -1,3 +1,22 @@
+## 0.14.0-alpha (May 30, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Add a command-line flag to print version information and exit ([#213](https://github.com/capsule8/capsule8/pull/213))
+  * Add optional hooks to the telemetry service ([#212](https://github.com/capsule8/capsule8/pull/212))
+
+IMPROVEMENTS:
+
+  * Remove dead code that is no longer used anywhere ([#211](https://github.com/capsule8/capsule8/pull/211))
+
+BUG FIXES:
+
+  * Make sure that ProcessEvent.fork_child_id gets set properly ([#214](https://github.com/capsule8/capsule8/pull/214))
+
 ## 0.13.0-alpha (May 24, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
