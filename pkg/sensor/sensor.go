@@ -177,15 +177,18 @@ func (s *Sensor) Start() error {
 
 	s.ContainerCache = NewContainerCache(s)
 	s.ProcessCache = NewProcessInfoCache(s)
+	s.ProcessCache.Start()
 
 	if len(config.Sensor.DockerContainerDir) > 0 {
 		s.dockerMonitor = newDockerMonitor(s,
 			config.Sensor.DockerContainerDir)
+		s.dockerMonitor.start()
 	}
 	/* Temporarily disable the OCI monitor until a better means of
 	   supporting it is found.
 	if len(config.Sensor.OciContainerDir) > 0 {
 		s.ociMonitor = newOciMonitor(s, config.Sensor.OciContainerDir)
+		s.ociMonitor.start()
 	}
 	*/
 

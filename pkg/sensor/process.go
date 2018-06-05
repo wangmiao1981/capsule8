@@ -461,9 +461,9 @@ type ProcessInfoCache struct {
 	ProcessExitEventID   uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT
 	ProcessUpdateEventID uint64 // api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE
 
-	scanningLock  sync.Mutex
-	scanning      bool
-	scanningQueue []scannerDeferredAction
+	startLock  sync.Mutex
+	startQueue []scannerDeferredAction
+	started    bool
 }
 
 type scannerDeferredAction func()
@@ -480,8 +480,7 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 	})
 
 	cache := &ProcessInfoCache{
-		sensor:   sensor,
-		scanning: true,
+		sensor: sensor,
 	}
 
 	maxPid := proc.MaxPid()
@@ -608,25 +607,6 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 		glog.Fatalf("Could not install cgroup monitoring: %v", err)
 	}
 
-	// Scan the proc filesystem to learn about all existing tasks.
-	err = cache.scanProcFilesystem()
-	if err != nil {
-		glog.Fatal(err)
-	}
-
-	cache.scanningLock.Lock()
-	for len(cache.scanningQueue) > 0 {
-		queue := cache.scanningQueue
-		cache.scanningQueue = nil
-		cache.scanningLock.Unlock()
-		for _, f := range queue {
-			f()
-		}
-		cache.scanningLock.Lock()
-	}
-	cache.scanning = false
-	cache.scanningLock.Unlock()
-
 	return cache
 }
 
@@ -636,6 +616,32 @@ func makeExecveFetchArgs(reg string) string {
 		parts[i] = fmt.Sprintf("argv%d=+0(+%d(%%%s)):string", i, i*8, reg)
 	}
 	return strings.Join(parts, " ")
+}
+
+// Start enables the process cache by scanning the /proc filesystem to learn
+// about existing processes and enable monitoring once that is done.
+func (pc *ProcessInfoCache) Start() {
+	if pc.started {
+		glog.Fatal("Illegal second call to ProcessInfoCache.Start()")
+	}
+
+	// Scan the proc filesystem to learn about all existing tasks.
+	if err := pc.scanProcFilesystem(); err != nil {
+		glog.Fatal(err)
+	}
+
+	pc.startLock.Lock()
+	for len(pc.startQueue) > 0 {
+		queue := pc.startQueue
+		pc.startQueue = nil
+		pc.startLock.Unlock()
+		for _, f := range queue {
+			f()
+		}
+		pc.startLock.Lock()
+	}
+	pc.started = true
+	pc.startLock.Unlock()
 }
 
 func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
@@ -836,14 +842,14 @@ func (pc *ProcessInfoCache) LookupTaskContainerInfo(t *Task) *ContainerInfo {
 }
 
 func (pc *ProcessInfoCache) maybeDeferAction(f func()) {
-	if pc.scanning {
-		pc.scanningLock.Lock()
-		if pc.scanning {
-			pc.scanningQueue = append(pc.scanningQueue, f)
-			pc.scanningLock.Unlock()
+	if !pc.started {
+		pc.startLock.Lock()
+		if !pc.started {
+			pc.startQueue = append(pc.startQueue, f)
+			pc.startLock.Unlock()
 			return
 		}
-		pc.scanningLock.Unlock()
+		pc.startLock.Unlock()
 	}
 
 	f()
