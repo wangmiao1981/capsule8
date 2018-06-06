@@ -17,7 +17,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -26,14 +25,36 @@ import (
 	"strings"
 	"time"
 
-	api "github.com/capsule8/capsule8/api/v0"
-	"github.com/capsule8/capsule8/pkg/expression"
+	"golang.org/x/net/context"
 
 	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/ptypes/wrappers"
-
-	"google.golang.org/genproto/googleapis/rpc/code"
 	"google.golang.org/grpc"
+
+	api "github.com/capsule8/capsule8/api/v0"
+//	"github.com/capsule8/capsule8/pkg/expression"
+//	"github.com/golang/protobuf/ptypes/wrappers"
+	"github.com/capsule8/capsule8/pkg/sys/perf"
+)
+
+const (
+        // perf_event_attr config value for LL cache loads
+
+
+        perfConfigLLCLoads = perf.PERF_COUNT_HW_CACHE_LL |
+                (perf.PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                (perf.PERF_COUNT_HW_CACHE_RESULT_ACCESS << 16)
+
+        // perf_event_attr config value for LL cache misses
+        perfConfigLLCLoadMisses = perf.PERF_COUNT_HW_CACHE_LL |
+                (perf.PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                (perf.PERF_COUNT_HW_CACHE_RESULT_MISS << 16)
+
+
+
+        perfCacheRef = perf.PERF_COUNT_HW_CACHE_REFERENCES
+        perfCacheMisses = perf.PERF_COUNT_HW_CACHE_MISSES
+        perfBranchMisses = perf.PERF_COUNT_HW_BRANCH_MISSES
+
 )
 
 var config struct {
@@ -73,6 +94,8 @@ func dialer(addr string, timeout time.Duration) (net.Conn, error) {
 }
 
 func createSubscription() *api.Subscription {
+
+/*
 	processEvents := []*api.ProcessEventFilter{
 		//
 		// Get all process lifecycle events
@@ -92,27 +115,13 @@ func createSubscription() *api.Subscription {
 	}
 
 	syscallEvents := []*api.SyscallEventFilter{
-		// Get all open(2) syscalls
+		// Get all open(2) syscalls that return an error
 		&api.SyscallEventFilter{
-			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
+			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT,
 
 			Id: &wrappers.Int64Value{
 				Value: 2, // SYS_OPEN
 			},
-		},
-
-		// An example of negative filters:
-		// Get all setuid(2) calls that are not root
-		&api.SyscallEventFilter{
-			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
-
-			Id: &wrappers.Int64Value{
-				Value: 105, // SYS_SETUID
-			},
-
-			FilterExpression: expression.NotEqual(
-				expression.Identifier("arg0"),
-				expression.Value(int64(0))),
 		},
 	}
 
@@ -178,14 +187,46 @@ func createSubscription() *api.Subscription {
 	}
 
 	chargenEvents := []*api.ChargenEventFilter{
-		/*
 			&api.ChargenEventFilter{
 				Length: 16,
 			},
-		*/
 	}
 
+
+*/
+	performanceEvents := []*api.PerformanceEventFilter{
+        	&api.PerformanceEventFilter{
+			 SampleRateType: api.SampleRateType_SAMPLE_RATE_TYPE_PERIOD,
+                    	 SampleRate: &api.PerformanceEventFilter_Period{
+                         	Period: 10000,
+                    	 },
+                    	 Events: []*api.PerformanceEventCounter{
+                        	&api.PerformanceEventCounter{
+                            	Type:   api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE_CACHE,
+                            	Config: perfConfigLLCLoads,
+                         },
+                         &api.PerformanceEventCounter{
+                            	Type:   api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE_CACHE,
+                            	Config: perfConfigLLCLoadMisses,
+                         },
+			 &api.PerformanceEventCounter{
+                                Type:   api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE,
+                                Config: perfCacheRef,
+                         },
+			 &api.PerformanceEventCounter{
+                                Type:   api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE,
+                                Config: perfCacheMisses,
+                         },
+                         &api.PerformanceEventCounter{
+                                Type:   api.PerformanceEventType_PERFORMANCE_EVENT_TYPE_HARDWARE,
+                                Config: perfBranchMisses,
+                         },
+			},
+		},
+        }
+
 	eventFilter := &api.EventFilter{
+/*
 		ProcessEvents:   processEvents,
 		SyscallEvents:   syscallEvents,
 		KernelEvents:    kernelCallEvents,
@@ -193,6 +234,8 @@ func createSubscription() *api.Subscription {
 		ContainerEvents: containerEvents,
 		TickerEvents:    tickerEvents,
 		ChargenEvents:   chargenEvents,
+*/
+		PerformanceEvents: performanceEvents,
 	}
 
 	sub := &api.Subscription{
@@ -266,25 +309,6 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Recv: %s\n", err)
 			os.Exit(1)
-		}
-
-		if len(ev.Statuses) > 1 ||
-			(len(ev.Statuses) == 1 &&
-				ev.Statuses[0].Code != int32(code.Code_OK)) {
-			for _, s := range ev.Statuses {
-				if config.json {
-					msg, err := marshaler.MarshalToString(s)
-					if err != nil {
-						fmt.Fprintf(os.Stderr,
-							"Unable to decode event: %v", err)
-						continue
-					}
-					fmt.Println(msg)
-				} else {
-					fmt.Println(s)
-				}
-			}
-
 		}
 
 		for _, e := range ev.Events {
