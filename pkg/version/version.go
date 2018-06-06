@@ -16,10 +16,41 @@
 package version
 
 import (
+	"flag"
 	"fmt"
+	"os"
 
 	"github.com/golang/glog"
 )
+
+type versionValue struct {
+}
+
+func (v versionValue) String() string {
+	var buildLog string
+	if Build != "" {
+		buildLog = fmt.Sprintf(" [%s]", Build)
+	}
+
+	return fmt.Sprintf("%s%s", Version, buildLog)
+}
+
+func (v versionValue) Set(s string) error {
+	fmt.Println(v.String())
+	os.Exit(0)
+
+	// unreachable
+	return nil
+}
+
+func (v versionValue) IsBoolFlag() bool {
+	return true
+}
+
+func init() {
+	var v versionValue
+	flag.Var(v, "version", "Print version information and exit")
+}
 
 var (
 	// Version is a SemVer 2.0 formatted version string

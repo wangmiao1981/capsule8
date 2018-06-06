@@ -36,6 +36,73 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+// TelemetryServiceGetEventsRequestFunc is a function called when a new
+// subscription is requested.
+type TelemetryServiceGetEventsRequestFunc func(
+	request *api.GetEventsRequest,
+)
+
+// TelemetryServiceGetEventsResponseFunc is a function called when a new
+// subscscription is processed. The response will be included or an error if
+// there was an error processing the subscription.
+type TelemetryServiceGetEventsResponseFunc func(
+	response *api.GetEventsResponse,
+	err error,
+)
+
+// TelemetryServiceStartFunc is a function called when the sensor service is
+// started.
+type TelemetryServiceStartFunc func()
+
+// TelemetryServiceStopFunc is a function called when the sensor service is
+// stopped.
+type TelemetryServiceStopFunc func()
+
+type telemetryServiceOptions struct {
+	start             TelemetryServiceStartFunc
+	stop              TelemetryServiceStopFunc
+	getEventsRequest  TelemetryServiceGetEventsRequestFunc
+	getEventsResponse TelemetryServiceGetEventsResponseFunc
+}
+
+// TelemetryServiceOption is used to implement optional arguments for
+// NewTelemetryService. It must be exported, but it is not typically used
+// directly.
+type TelemetryServiceOption func(*telemetryServiceOptions)
+
+// WithStartFunc specifies a function to be called when a telemetry service is
+// started.
+func WithStartFunc(f TelemetryServiceStartFunc) TelemetryServiceOption {
+	return func(o *telemetryServiceOptions) {
+		o.start = f
+	}
+}
+
+// WithStopFunc specifies a function to be called when a telemetry service is
+// stopped.
+func WithStopFunc(f TelemetryServiceStopFunc) TelemetryServiceOption {
+	return func(o *telemetryServiceOptions) {
+		o.stop = f
+	}
+}
+
+// WithGetEventsRequestFunc specifies a function to be called when a telemetry
+// service GetEvents request has been received. It is called with the request.
+func WithGetEventsRequestFunc(f TelemetryServiceGetEventsRequestFunc) TelemetryServiceOption {
+	return func(o *telemetryServiceOptions) {
+		o.getEventsRequest = f
+	}
+}
+
+// WithGetEventsResponseFunc sepecifies a function to be called when a telemtry
+// service GetEvents request has been processed. It is called with either the
+// response or an error.
+func WithGetEventsResponseFunc(f TelemetryServiceGetEventsResponseFunc) TelemetryServiceOption {
+	return func(o *telemetryServiceOptions) {
+		o.getEventsResponse = f
+	}
+}
+
 // TelemetryService is a service that can be used with the ServiceManager to
 // process telemetry subscription requests and stream the resulting telemetry
 // events.
@@ -44,15 +111,27 @@ type TelemetryService struct {
 	sensor *Sensor
 
 	address string
+
+	options telemetryServiceOptions
 }
 
 // NewTelemetryService creates a new TelemetryService instance that can be used
 // with a ServiceManager instance.
-func NewTelemetryService(sensor *Sensor, address string) *TelemetryService {
-	return &TelemetryService{
-		address: address,
+func NewTelemetryService(
+	sensor *Sensor,
+	address string,
+	options ...TelemetryServiceOption,
+) *TelemetryService {
+	ts := &TelemetryService{
 		sensor:  sensor,
+		address: address,
 	}
+
+	for _, o := range options {
+		o(&ts.options)
+	}
+
+	return ts
 }
 
 // Name returns the human-readable name of the TelemetryService.
@@ -142,9 +221,14 @@ func (ts *TelemetryService) Serve() error {
 	}
 
 	t := &telemetryServiceServer{
-		sensor: ts.sensor,
+		sensor:  ts.sensor,
+		service: ts,
 	}
 	api.RegisterTelemetryServiceServer(ts.server, t)
+
+	if ts.options.start != nil {
+		ts.options.start()
+	}
 
 	return ts.server.Serve(lis)
 }
@@ -152,21 +236,37 @@ func (ts *TelemetryService) Serve() error {
 // Stop will stop a running TelemetryService.
 func (ts *TelemetryService) Stop() {
 	ts.server.Stop()
+	if ts.options.stop != nil {
+		ts.options.stop()
+	}
 }
 
 type telemetryServiceServer struct {
-	sensor *Sensor
+	sensor  *Sensor
+	service *TelemetryService
+}
+
+func (t *telemetryServiceServer) getEventsError(err error) error {
+	if t.service.options.getEventsResponse != nil {
+		t.service.options.getEventsResponse(nil, err)
+	}
+	return err
 }
 
 func (t *telemetryServiceServer) GetEvents(
 	req *api.GetEventsRequest,
 	stream api.TelemetryService_GetEventsServer,
 ) error {
+	if t.service.options.getEventsRequest != nil {
+		t.service.options.getEventsRequest(req)
+	}
+
 	sub := req.Subscription
 	glog.V(1).Infof("GetEvents(%+v)", sub)
 
 	// Validate sub.Modifier
 	var (
+		err              error
 		maxEvents        int64
 		throttleDuration time.Duration
 	)
@@ -174,14 +274,16 @@ func (t *telemetryServiceServer) GetEvents(
 		if sub.Modifier.Limit != nil {
 			maxEvents = sub.Modifier.Limit.Limit
 			if maxEvents < 1 {
-				return fmt.Errorf("LimitModifier is invalid (%d)",
+				err = fmt.Errorf("LimitModifier is invalid (%d)",
 					maxEvents)
+				return t.getEventsError(err)
 			}
 		}
 		if sub.Modifier.Throttle != nil {
 			if sub.Modifier.Throttle.Interval <= 0 {
-				return fmt.Errorf("ThrottleModifier interval is invalid (%d)",
+				err = fmt.Errorf("ThrottleModifier interval is invalid (%d)",
 					sub.Modifier.Throttle.Interval)
+				return t.getEventsError(err)
 			}
 			throttleDuration =
 				time.Duration(sub.Modifier.Throttle.Interval)
@@ -195,8 +297,9 @@ func (t *telemetryServiceServer) GetEvents(
 			case api.ThrottleModifier_HOUR:
 				throttleDuration *= time.Hour
 			default:
-				return fmt.Errorf("ThrottleModifier interval type is invalid (%d)",
+				err = fmt.Errorf("ThrottleModifier interval type is invalid (%d)",
 					sub.Modifier.Throttle.IntervalType)
+				return t.getEventsError(err)
 			}
 		}
 	}
@@ -216,15 +319,17 @@ func (t *telemetryServiceServer) GetEvents(
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
-	var err error
 	r := &api.GetEventsResponse{}
 	if r.Statuses, err = t.sensor.NewSubscription(ctx, sub, f); err != nil {
-		glog.Errorf("Failed to get events for subscription %+v: %s",
-			sub, err.Error())
-		return err
+		glog.Errorf("Failed to get events for subscription %+v: %v",
+			sub, err)
+		return t.getEventsError(err)
 	}
 	if err = stream.Send(r); err != nil {
-		return err
+		return t.getEventsError(err)
+	}
+	if t.service.options.getEventsResponse != nil {
+		t.service.options.getEventsResponse(r, nil)
 	}
 
 	var nEvents int64

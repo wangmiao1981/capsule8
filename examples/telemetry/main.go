@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -25,14 +26,14 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/context"
-
-	"github.com/golang/protobuf/jsonpb"
-	"google.golang.org/grpc"
-
 	api "github.com/capsule8/capsule8/api/v0"
 	"github.com/capsule8/capsule8/pkg/expression"
+
+	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/ptypes/wrappers"
+
+	"google.golang.org/genproto/googleapis/rpc/code"
+	"google.golang.org/grpc"
 )
 
 var config struct {
@@ -91,13 +92,27 @@ func createSubscription() *api.Subscription {
 	}
 
 	syscallEvents := []*api.SyscallEventFilter{
-		// Get all open(2) syscalls that return an error
+		// Get all open(2) syscalls
 		&api.SyscallEventFilter{
-			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_EXIT,
+			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
 
 			Id: &wrappers.Int64Value{
 				Value: 2, // SYS_OPEN
 			},
+		},
+
+		// An example of negative filters:
+		// Get all setuid(2) calls that are not root
+		&api.SyscallEventFilter{
+			Type: api.SyscallEventType_SYSCALL_EVENT_TYPE_ENTER,
+
+			Id: &wrappers.Int64Value{
+				Value: 105, // SYS_SETUID
+			},
+
+			FilterExpression: expression.NotEqual(
+				expression.Identifier("arg0"),
+				expression.Value(int64(0))),
 		},
 	}
 
@@ -251,6 +266,25 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Recv: %s\n", err)
 			os.Exit(1)
+		}
+
+		if len(ev.Statuses) > 1 ||
+			(len(ev.Statuses) == 1 &&
+				ev.Statuses[0].Code != int32(code.Code_OK)) {
+			for _, s := range ev.Statuses {
+				if config.json {
+					msg, err := marshaler.MarshalToString(s)
+					if err != nil {
+						fmt.Fprintf(os.Stderr,
+							"Unable to decode event: %v", err)
+						continue
+					}
+					fmt.Println(msg)
+				} else {
+					fmt.Println(s)
+				}
+			}
+
 		}
 
 		for _, e := range ev.Events {
