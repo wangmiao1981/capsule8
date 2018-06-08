@@ -1327,7 +1327,7 @@ func registerProcessEvents(
 			case api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE:
 				eventID = sensor.ProcessCache.ProcessUpdateEventID
 			}
-			subscriptions[t] = subscr.addEventSink(eventID)
+			subscriptions[t], _ = subscr.addEventSink(eventID, nil)
 		}
 		if pef.FilterExpression == nil {
 			wildcards[t] = true

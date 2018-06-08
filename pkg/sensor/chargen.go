@@ -112,7 +112,7 @@ func registerChargenEvents(
 	if nchargens == 0 {
 		sensor.Monitor.UnregisterEvent(eventID)
 	} else {
-		es := subscr.addEventSink(eventID)
+		es, _ := subscr.addEventSink(eventID, nil)
 		es.unregister = func(es *eventSink) {
 			sensor.Monitor.UnregisterEvent(es.eventID)
 			close(done)

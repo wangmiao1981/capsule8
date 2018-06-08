@@ -21,7 +21,6 @@ import (
 
 	api "github.com/capsule8/capsule8/api/v0"
 
-	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
@@ -31,7 +30,7 @@ type kprobeFilter struct {
 	symbol    string
 	onReturn  bool
 	arguments map[string]string
-	filter    string
+	filter    *api.Expression
 	sensor    *Sensor
 }
 
@@ -44,21 +43,10 @@ func newKprobeFilter(kef *api.KernelFunctionCallFilter) (*kprobeFilter, error) {
 		return nil, fmt.Errorf("Kprobe symbol %q is invalid", kef.Symbol)
 	}
 
-	var filterString string
-
-	if kef.FilterExpression != nil {
-		expr, err := expression.NewExpression(kef.FilterExpression)
-		if err != nil {
-			return nil, fmt.Errorf("Bad kprobe filter expression: %v", err)
-		}
-
-		filterString = expr.KernelFilterString()
-	}
-
 	filter := &kprobeFilter{
 		symbol:    kef.Symbol,
 		arguments: kef.Arguments,
-		filter:    filterString,
+		filter:    kef.FilterExpression,
 	}
 
 	switch kef.Type {
@@ -154,8 +142,7 @@ func registerKernelEvents(
 		eventID, err := sensor.RegisterKprobe(
 			f.symbol, f.onReturn, f.fetchargs(),
 			f.decodeKprobe,
-			perf.WithEventGroup(subscr.eventGroupID),
-			perf.WithFilter(f.filter))
+			perf.WithEventGroup(subscr.eventGroupID))
 		if err != nil {
 			var loc string
 			if f.onReturn {
@@ -169,6 +156,12 @@ func registerKernelEvents(
 				fmt.Sprintf("Couldn't register kprobe on %s %s [%s]: %v", f.symbol, loc, f.fetchargs(), err))
 			continue
 		}
-		subscr.addEventSink(eventID)
+		_, err = subscr.addEventSink(eventID, f.filter)
+		if err != nil {
+			subscr.logStatus(
+				code.Code_UNKNOWN,
+				fmt.Sprintf("Invalid filter expression for kernel function call filter: %v", err))
+			sensor.Monitor.UnregisterEvent(eventID)
+		}
 	}
 }

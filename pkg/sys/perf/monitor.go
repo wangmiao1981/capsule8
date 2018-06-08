@@ -1262,6 +1262,17 @@ func (monitor *EventMonitor) RegisteredEventType(
 	return event.eventType, true
 }
 
+// RegisteredEventFields returns the fields that are defined for the specified
+// event identifier.
+func (monitor *EventMonitor) RegisteredEventFields(
+	eventID uint64,
+) map[string]int32 {
+	if event, ok := monitor.events.lookup(eventID); ok {
+		return event.fields
+	}
+	return nil
+}
+
 // Close gracefully cleans up an EventMonitor instance. If the EventMonitor
 // is still running when Close is called, it will first be stopped. After
 // Close completes, the EventMonitor instance cannot be reused.
