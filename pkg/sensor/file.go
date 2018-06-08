@@ -16,7 +16,6 @@ package sensor
 
 import (
 	"fmt"
-	"strings"
 
 	api "github.com/capsule8/capsule8/api/v0"
 
@@ -94,10 +93,11 @@ func registerFileEvents(
 	subscr *subscription,
 	events []*api.FileEventFilter,
 ) {
-	var filterString string
+	var (
+		filter   *api.Expression
+		wildcard bool
+	)
 
-	wildcard := false
-	filters := make(map[string]bool, len(events))
 	for _, fef := range events {
 		if fef.Type != api.FileEventType_FILE_EVENT_TYPE_OPEN {
 			subscr.logStatus(
@@ -111,37 +111,12 @@ func registerFileEvents(
 
 		if fef.FilterExpression == nil {
 			wildcard = true
-		} else {
-			expr, err := expression.NewExpression(fef.FilterExpression)
-			if err != nil {
-				subscr.logStatus(
-					code.Code_INVALID_ARGUMENT,
-					fmt.Sprintf("Invalid file event filter: %v", err))
-				continue
-			}
-			err = expr.ValidateKernelFilter()
-			if err != nil {
-				subscr.logStatus(
-					code.Code_INVALID_ARGUMENT,
-					fmt.Sprintf("Invalid file event filter as kernel filter: %v", err))
-				continue
-			}
-			s := expr.KernelFilterString()
-			filters[s] = true
+			filter = nil
+		} else if wildcard == false {
+			filter = expression.LogicalOr(filter, fef.FilterExpression)
 		}
 	}
-
-	if !wildcard {
-		if len(filters) == 0 {
-			return
-		}
-
-		parts := make([]string, 0, len(filters))
-		for k := range filters {
-			parts = append(parts, fmt.Sprintf("(%s)", k))
-		}
-		filterString = strings.Join(parts, " || ")
-	} else if len(events) == 0 {
+	if wildcard == false && filter == nil {
 		return
 	}
 
@@ -152,8 +127,7 @@ func registerFileEvents(
 	eventID, err := sensor.RegisterKprobe(
 		fsDoSysOpenKprobeAddress, false,
 		fsDoSysOpenKprobeFetchargs, f.decodeDoSysOpen,
-		perf.WithEventGroup(subscr.eventGroupID),
-		perf.WithFilter(filterString))
+		perf.WithEventGroup(subscr.eventGroupID))
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,
@@ -161,5 +135,11 @@ func registerFileEvents(
 		return
 	}
 
-	subscr.addEventSink(eventID)
+	_, err = subscr.addEventSink(eventID, filter)
+	if err != nil {
+		subscr.logStatus(
+			code.Code_UNKNOWN,
+			fmt.Sprintf("Invalid filter expression for file open filter: %v", err))
+		sensor.Monitor.UnregisterEvent(eventID)
+	}
 }

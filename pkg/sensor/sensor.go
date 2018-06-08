@@ -551,10 +551,7 @@ func (s *Sensor) NewSubscription(
 	if err != nil {
 		return nil, err
 	}
-	subscr := &subscription{
-		eventGroupID: groupID,
-		dispatchFn:   dispatchFn,
-	}
+	subscr := newSubscription(s, groupID, dispatchFn)
 	glog.V(1).Infof("Subscription %d: %+v", groupID, sub)
 
 	if sub.ContainerFilter != nil {

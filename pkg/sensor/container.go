@@ -444,7 +444,7 @@ func registerContainerEvents(
 			case api.ContainerEventType_CONTAINER_EVENT_TYPE_UPDATED:
 				eventID = sensor.ContainerCache.ContainerUpdatedEventID
 			}
-			subscriptions[t] = subscr.addEventSink(eventID)
+			subscriptions[t], _ = subscr.addEventSink(eventID, nil)
 			subscriptions[t].containerView = cef.View
 		}
 		if cef.FilterExpression == nil {

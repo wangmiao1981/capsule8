@@ -85,10 +85,10 @@ func (nt *networkTest) CreateSubscription(t *testing.T) *api.Subscription {
 		expression.Value(testNetworkPortN))
 	resultFilter := expression.Equal(
 		expression.Identifier("ret"),
-		expression.Value(int32(0)))
+		expression.Value(int64(0)))
 	backlogFilter := expression.Equal(
 		expression.Identifier("backlog"),
-		expression.Value(int32(testNetworkBacklog)))
+		expression.Value(uint64(testNetworkBacklog)))
 	/*
 		goodFDFilter := expression.GreaterThan(
 			expression.Identifier("ret"),
@@ -97,7 +97,7 @@ func (nt *networkTest) CreateSubscription(t *testing.T) *api.Subscription {
 
 	msgLenFilter := expression.Equal(
 		expression.Identifier("ret"),
-		expression.Value(int32(testNetworkMsgLen)))
+		expression.Value(int64(testNetworkMsgLen)))
 
 	networkEvents := []*api.NetworkEventFilter{
 		&api.NetworkEventFilter{

@@ -69,7 +69,7 @@ func (st *syscallTest) RunContainer(t *testing.T) {
 func (st *syscallTest) CreateSubscription(t *testing.T) *api.Subscription {
 	idExpr := expression.Equal(
 		expression.Identifier("id"),
-		expression.Value(uint64(syscall.SYS_ALARM)))
+		expression.Value(int64(syscall.SYS_ALARM)))
 
 	enterExpr := expression.LogicalAnd(idExpr,
 		expression.Equal(
@@ -79,7 +79,7 @@ func (st *syscallTest) CreateSubscription(t *testing.T) *api.Subscription {
 	exitExpr := expression.LogicalAnd(idExpr,
 		expression.Equal(
 			expression.Identifier("ret"),
-			expression.Value(uint64(alarmSeconds2))))
+			expression.Value(int64(alarmSeconds2))))
 
 	syscallEvents := []*api.SyscallEventFilter{
 		&api.SyscallEventFilter{
