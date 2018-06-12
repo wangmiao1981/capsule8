@@ -140,7 +140,7 @@ func registerPerformanceEvents(
 					eventName, err))
 		} else {
 			subscr.counterGroupIDs = append(subscr.counterGroupIDs, groupID)
-			subscr.addEventSink(eventID, nil)
+			subscr.addEventSink(eventID, nil, nil)
 		}
 	}
 }

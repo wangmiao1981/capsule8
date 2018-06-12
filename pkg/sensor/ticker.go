@@ -27,8 +27,8 @@ import (
 )
 
 var tickerEventTypes = expression.FieldTypeMap{
-	"seconds":     int32(api.ValueType_SINT64),
-	"nanoseconds": int32(api.ValueType_SINT64),
+	"seconds":     expression.ValueTypeSignedInt64,
+	"nanoseconds": expression.ValueTypeSignedInt64,
 }
 
 type tickerFilter struct {
@@ -57,7 +57,7 @@ func registerTimerEvents(
 
 	f := tickerFilter{sensor: sensor}
 	eventID, err := sensor.Monitor.RegisterExternalEvent("ticker",
-		f.decodeTickerEvent, tickerEventTypes)
+		f.decodeTickerEvent)
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,
@@ -102,7 +102,7 @@ func registerTimerEvents(
 	if ntickers == 0 {
 		sensor.Monitor.UnregisterEvent(eventID)
 	} else {
-		es, _ := subscr.addEventSink(eventID, nil)
+		es, _ := subscr.addEventSink(eventID, nil, tickerEventTypes)
 		es.unregister = func(es *eventSink) {
 			sensor.Monitor.UnregisterEvent(es.eventID)
 			close(done)

@@ -27,6 +27,21 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/code"
 )
 
+var syscallEnterEventTypes = expression.FieldTypeMap{
+	"id":   expression.ValueTypeSignedInt64,
+	"arg0": expression.ValueTypeUnsignedInt64,
+	"arg1": expression.ValueTypeUnsignedInt64,
+	"arg2": expression.ValueTypeUnsignedInt64,
+	"arg3": expression.ValueTypeUnsignedInt64,
+	"arg4": expression.ValueTypeUnsignedInt64,
+	"arg5": expression.ValueTypeUnsignedInt64,
+}
+
+var syscallExitEventTypes = expression.FieldTypeMap{
+	"id":  expression.ValueTypeSignedInt64,
+	"ret": expression.ValueTypeSignedInt64,
+}
+
 type syscallFilter struct {
 	sensor *Sensor
 }
@@ -303,7 +318,8 @@ func registerSyscallEvents(
 				code.Code_UNKNOWN,
 				fmt.Sprintf("Could not register syscall enter kprobe %s: %v", kprobeSymbol, err))
 		} else {
-			es, err := subscr.addEventSink(eventID, enterFilter)
+			es, err := subscr.addEventSink(eventID, enterFilter,
+				syscallEnterEventTypes)
 			if err != nil {
 				subscr.logStatus(
 					code.Code_UNKNOWN,
@@ -342,7 +358,8 @@ func registerSyscallEvents(
 				code.Code_UNKNOWN,
 				fmt.Sprintf("Could not register tracepoint %s: %v", eventName, err))
 		} else {
-			_, err = subscr.addEventSink(eventID, exitFilter)
+			_, err = subscr.addEventSink(eventID, exitFilter,
+				syscallExitEventTypes)
 			if err != nil {
 				subscr.logStatus(
 					code.Code_UNKNOWN,

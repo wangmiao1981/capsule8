@@ -56,16 +56,19 @@ type eventSink struct {
 	eventID       uint64
 	unregister    eventSinkUnregisterFn
 	filter        *expression.Expression
+	filterTypes   expression.FieldTypeMap
 	containerView api.ContainerEventView
 }
 
 func (s *subscription) addEventSink(
 	eventID uint64,
 	filterExpression *api.Expression,
+	filterTypes expression.FieldTypeMap,
 ) (*eventSink, error) {
 	es := &eventSink{
 		subscription: s,
 		eventID:      eventID,
+		filterTypes:  filterTypes,
 	}
 
 	if filterExpression != nil {
@@ -74,16 +77,17 @@ func (s *subscription) addEventSink(
 			return nil, err
 		}
 
-		filterTypes := s.sensor.Monitor.RegisteredEventFields(eventID)
-		if filterTypes != nil {
-			err = expr.Validate(filterTypes)
-			if err != nil {
-				return nil, err
-			}
+		if err = expr.Validate(filterTypes); err != nil {
+			return nil, err
 		}
 
-		err = expr.ValidateKernelFilter()
-		if err == nil {
+		// If this is a valid kernel filter, attempt to set it as a
+		// kernel filter. If it is either not a valid kernel filter or
+		// it fails to set as a kernel filter, set the filter in the
+		// sink to fallback to evaluation via the expression package.
+		// The err checking code here looks a little weird, but it is
+		// what is intended.
+		if err = expr.ValidateKernelFilter(); err == nil {
 			err = s.sensor.Monitor.SetFilter(eventID,
 				expr.KernelFilterString())
 		}

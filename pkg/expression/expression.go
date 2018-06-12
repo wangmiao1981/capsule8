@@ -15,12 +15,16 @@
 package expression
 
 import (
+	"reflect"
+	"time"
+
 	api "github.com/capsule8/capsule8/api/v0"
+
 	"github.com/golang/protobuf/ptypes/timestamp"
 )
 
 // FieldTypeMap is a mapping of types for field names/identifiers
-type FieldTypeMap map[string]int32
+type FieldTypeMap map[string]ValueType
 
 // FieldValueMap is a mapping of values for field names/identifiers.
 type FieldValueMap map[string]interface{}
@@ -28,19 +32,18 @@ type FieldValueMap map[string]interface{}
 // Expression is a wrapper around expressions around the API. It may contain
 // internal information that is used to better support the raw representation.
 type Expression struct {
-	tree *api.Expression
+	ast expr
 }
 
 // NewExpression instantiates a new Expression instance. The expression tree
 // that is passed is validated to ensure that it is well-formed.
 func NewExpression(tree *api.Expression) (*Expression, error) {
-	err := validateTree(tree)
+	ast, err := convertExpression(tree)
 	if err != nil {
 		return nil, err
 	}
-
 	return &Expression{
-		tree: tree,
+		ast: ast,
 	}, nil
 }
 
@@ -49,12 +52,12 @@ func NewExpression(tree *api.Expression) (*Expression, error) {
 // a normal string representation of the expression; however, a few adjustments
 // are needed for the kernel.
 func (expr *Expression) KernelFilterString() string {
-	return expressionAsKernelFilterString(expr.tree)
+	return expr.ast.KernelString()
 }
 
 // Return the string representation of an expression.
 func (expr *Expression) String() string {
-	return expressionAsString(expr.tree)
+	return expr.ast.String()
 }
 
 // Evaluate evaluates an expression using the specified type and value
@@ -63,15 +66,15 @@ func (expr *Expression) String() string {
 // field and any reference to it is an error. Any identifier present in the
 // types map, but not present in the values map is considered to be NULL; all
 // comparisons against NULL will always evaluate FALSE.
-func (expr *Expression) Evaluate(types FieldTypeMap, values FieldValueMap) (*api.Value, error) {
-	return evaluateExpression(expr.tree, types, values)
+func (expr *Expression) Evaluate(types FieldTypeMap, values FieldValueMap) (interface{}, error) {
+	return evaluateExpression(expr.ast, types, values)
 }
 
 // Validate ensures that an expression is properly constructed with the
 // specified type information. Any identifier not present in the types map is
 // considered to be an undefined field and any reference to it is an error.
 func (expr *Expression) Validate(types FieldTypeMap) error {
-	_, err := validateTypes(expr.tree, types)
+	_, err := validateTypes(expr.ast, types)
 	return err
 }
 
@@ -84,35 +87,49 @@ func (expr *Expression) Validate(types FieldTypeMap) error {
 // If an expression passes this validation, it is not guaranteed that a given
 // running kernel will absolutely accept it.
 func (expr *Expression) ValidateKernelFilter() error {
-	return validateKernelFilterTree(expr.tree)
+	return validateKernelFilterTree(expr.ast)
 }
 
 // IsValueTrue determines whether a value's truth value is true or false.
 // Strings are true if they contain one or more characters. Any numeric type
 // is true if it is non-zero.
-func IsValueTrue(value *api.Value) bool {
-	switch value.GetType() {
-	case api.ValueType_STRING:
-		return len(value.GetStringValue()) > 0
-	case api.ValueType_SINT8, api.ValueType_SINT16, api.ValueType_SINT32,
-		api.ValueType_SINT64:
-
-		return value.GetSignedValue() != 0
-
-	case api.ValueType_UINT8, api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64:
-
-		return value.GetUnsignedValue() != 0
-
-	case api.ValueType_BOOL:
-		return value.GetBoolValue()
-	case api.ValueType_DOUBLE:
-		return value.GetDoubleValue() != 0.0
-	case api.ValueType_TIMESTAMP:
-		return timestampValue(value.GetTimestampValue()) != 0
+func IsValueTrue(i interface{}) bool {
+	switch v := i.(type) {
+	case string:
+		return len(v) > 0
+	case int8, int16, int32, int64:
+		// can't use v here; would have to split out the cases
+		return reflect.ValueOf(i).Int() != 0
+	case uint8, uint16, uint32, uint64:
+		// can't use v here; would have to split out the cases
+		return reflect.ValueOf(i).Uint() != 0
+	case bool:
+		return v
+	case float64:
+		return v != 0.0
+	case time.Time:
+		return v.UnixNano() != 0
 	}
 	return false
 }
+
+// Support for internal error handling. For convert, evaluate, and validate
+// functions that are all recursive, use panic/recover for propagating errors.
+// This simplifies and neatens up the code by not having to manually propagate
+// errors everywhere. It also helps with coverage in unit testing.
+
+// Use a custom type for raising expression package errors so that any other
+// panic gets propagated normally.
+type exprError struct{ error }
+
+func exprRaise(err error) {
+	panic(exprError{err})
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
+//  Convenience APIs for building AST for protobuf API
+//
 
 // NewValue creates a new Value instance from a native Go type. If a Go type
 // is used that does not have a Value equivalent, the return will be nil.
@@ -180,6 +197,17 @@ func NewValue(i interface{}) *api.Value {
 				TimestampValue: v,
 			},
 		}
+	case time.Time:
+		ts := &timestamp.Timestamp{
+			Seconds: int64(v.UnixNano() / int64(time.Second)),
+			Nanos:   int32(v.UnixNano() % int64(time.Second)),
+		}
+		return &api.Value{
+			Type: api.ValueType_TIMESTAMP,
+			Value: &api.Value_TimestampValue{
+				TimestampValue: ts,
+			},
+		}
 	}
 
 	return nil
@@ -205,22 +233,12 @@ func Value(i interface{}) *api.Expression {
 
 // IsNull creates a new IS_NULL unary Expression node
 func IsNull(operand *api.Expression) *api.Expression {
-	return &api.Expression{
-		Type: api.Expression_IS_NULL,
-		Expr: &api.Expression_UnaryOp{
-			UnaryOp: operand,
-		},
-	}
+	return newUnaryExpr(api.Expression_IS_NULL, operand)
 }
 
 // IsNotNull creates a new IS_NOT_NULL unary Expression node
 func IsNotNull(operand *api.Expression) *api.Expression {
-	return &api.Expression{
-		Type: api.Expression_IS_NOT_NULL,
-		Expr: &api.Expression_UnaryOp{
-			UnaryOp: operand,
-		},
-	}
+	return newUnaryExpr(api.Expression_IS_NOT_NULL, operand)
 }
 
 // LogicalAnd creates a new LOGICAL_AND binary Expression node. If either lhs
@@ -295,6 +313,15 @@ func newBinaryExpr(op api.Expression_ExpressionType, lhs, rhs *api.Expression) *
 				Lhs: lhs,
 				Rhs: rhs,
 			},
+		},
+	}
+}
+
+func newUnaryExpr(op api.Expression_ExpressionType, operand *api.Expression) *api.Expression {
+	return &api.Expression{
+		Type: op,
+		Expr: &api.Expression_UnaryOp{
+			UnaryOp: operand,
 		},
 	}
 }

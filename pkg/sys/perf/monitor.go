@@ -904,11 +904,9 @@ func (monitor *EventMonitor) newRegisteredTraceEvent(
 func (monitor *EventMonitor) RegisterExternalEvent(
 	name string,
 	decoderFn TraceEventDecoderFn,
-	fields map[string]int32,
 ) (uint64, error) {
 	event := &registeredEvent{
 		name:      name,
-		fields:    fields,
 		eventType: EventTypeExternal,
 	}
 	event.decoder = externalEventSampleDecoder{decoderFn: decoderFn}
@@ -1456,11 +1454,6 @@ type EventMonitorSample struct {
 	// RawSample is the raw sample from the perf_event interface.
 	RawSample Sample
 
-	// Fields is name and type information about the fields defined for
-	// the event. Data in DecodedData will correspond to this field
-	// information.
-	Fields map[string]int32
-
 	// DecodedData is the sample data decoded from RawSample.Record.RawData
 	// if RawSample is of type *SampleRecord; otherwise, it will be nil.
 	DecodedData TraceEventSampleData
@@ -1511,7 +1504,6 @@ func (monitor *EventMonitor) EnqueueExternalSample(
 
 	esm := EventMonitorSample{
 		EventID:     eventID,
-		Fields:      event.fields,
 		DecodedData: decodedData,
 	}
 	esm.RawSample.Type = PERF_RECORD_SAMPLE
@@ -1705,7 +1697,6 @@ func (monitor *EventMonitor) dispatchSamples(samples [][]EventMonitorSample) {
 			// still processing samples. Drop it
 			continue
 		}
-		esm.Fields = event.fields
 
 		switch record := esm.RawSample.Record.(type) {
 		case *SampleRecord:
