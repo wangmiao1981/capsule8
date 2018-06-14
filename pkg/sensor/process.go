@@ -52,23 +52,23 @@ import (
 )
 
 var processExecEventTypes = expression.FieldTypeMap{
-	"filename": int32(api.ValueType_STRING),
+	"filename": expression.ValueTypeString,
 }
 
 var processForkEventTypes = expression.FieldTypeMap{
-	"fork_child_pid": int32(api.ValueType_SINT32),
-	"fork_child_id":  int32(api.ValueType_STRING),
+	"fork_child_pid": expression.ValueTypeSignedInt32,
+	"fork_child_id":  expression.ValueTypeString,
 }
 
 var processExitEventTypes = expression.FieldTypeMap{
-	"code":             int32(api.ValueType_SINT32),
-	"exit_status":      int32(api.ValueType_UINT32),
-	"exit_signal":      int32(api.ValueType_UINT32),
-	"exit_core_dumped": int32(api.ValueType_BOOL),
+	"code":             expression.ValueTypeSignedInt32,
+	"exit_status":      expression.ValueTypeUnsignedInt32,
+	"exit_signal":      expression.ValueTypeUnsignedInt32,
+	"exit_core_dumped": expression.ValueTypeBool,
 }
 
 var processUpdateEventTypes = expression.FieldTypeMap{
-	"cwd": int32(api.ValueType_STRING),
+	"cwd": expression.ValueTypeString,
 }
 
 const taskReuseThreshold = int64(10 * time.Millisecond)
@@ -492,37 +492,25 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 
 	var err error
 	cache.ProcessExecEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"PROCESS_EXEC",
-		cache.decodeProcessExecEvent,
-		processExecEventTypes,
-	)
+		"PROCESS_EXEC", cache.decodeProcessExecEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
 	cache.ProcessForkEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"PROCESS_FORK",
-		cache.decodeProcessForkEvent,
-		processForkEventTypes,
-	)
+		"PROCESS_FORK", cache.decodeProcessForkEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
 	cache.ProcessExitEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"PROCESS_EXIT",
-		cache.decodeProcessExitEvent,
-		processExitEventTypes,
-	)
+		"PROCESS_EXIT", cache.decodeProcessExitEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
 	cache.ProcessUpdateEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"PROCESS_UPDATE",
-		cache.decodeProcessUpdateEvent,
-		processUpdateEventTypes,
-	)
+		"PROCESS_UPDATE", cache.decodeProcessUpdateEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
@@ -1322,18 +1310,27 @@ func registerProcessEvents(
 		}
 
 		if subscriptions[t] == nil {
-			var eventID uint64
+			var (
+				eventID uint64
+				types   expression.FieldTypeMap
+			)
+
 			switch t {
 			case api.ProcessEventType_PROCESS_EVENT_TYPE_EXEC:
 				eventID = sensor.ProcessCache.ProcessExecEventID
+				types = processExecEventTypes
 			case api.ProcessEventType_PROCESS_EVENT_TYPE_FORK:
 				eventID = sensor.ProcessCache.ProcessForkEventID
+				types = processForkEventTypes
 			case api.ProcessEventType_PROCESS_EVENT_TYPE_EXIT:
 				eventID = sensor.ProcessCache.ProcessExitEventID
+				types = processExitEventTypes
 			case api.ProcessEventType_PROCESS_EVENT_TYPE_UPDATE:
 				eventID = sensor.ProcessCache.ProcessUpdateEventID
+				types = processUpdateEventTypes
 			}
-			subscriptions[t], _ = subscr.addEventSink(eventID, nil)
+			subscriptions[t], _ =
+				subscr.addEventSink(eventID, nil, types)
 		}
 		if pef.FilterExpression == nil {
 			wildcards[t] = true

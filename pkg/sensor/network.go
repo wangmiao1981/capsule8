@@ -25,18 +25,54 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/code"
 )
 
+var networkAttemptEventTypes = expression.FieldTypeMap{
+	"fd": expression.ValueTypeUnsignedInt64,
+}
+
+var networkAttemptWithAddressEventTypes = expression.FieldTypeMap{
+	"fd":             expression.ValueTypeUnsignedInt64,
+	"sa_family":      expression.ValueTypeUnsignedInt16,
+	"sin_port":       expression.ValueTypeUnsignedInt16,
+	"sin_addr":       expression.ValueTypeUnsignedInt32,
+	"sun_path":       expression.ValueTypeString,
+	"sin6_port":      expression.ValueTypeUnsignedInt16,
+	"sin6_addr_high": expression.ValueTypeUnsignedInt64,
+	"sin6_addr_low":  expression.ValueTypeUnsignedInt64,
+}
+
+var networkListenAttemptEventTypes = expression.FieldTypeMap{
+	"fd":      expression.ValueTypeUnsignedInt64,
+	"backlog": expression.ValueTypeUnsignedInt64,
+}
+
+var networkResultEventTypes = expression.FieldTypeMap{
+	"ret": expression.ValueTypeSignedInt64,
+}
+
 const (
 	networkKprobeBindSymbol    = "sys_bind"
-	networkKprobeBindFetchargs = "fd=%di sa_family=+0(%si):u16 sin_port=+2(%si):u16 sin_addr=+4(%si):u32 sun_path=+2(%si):string sin6_port=+2(%si):u16 sin6_addr_high=+8(%si):u64 sin6_addr_low=+16(%si):u64"
+	networkKprobeBindFetchargs = "fd=%di sa_family=+0(%si):u16 " +
+		"sin_port=+2(%si):u16 sin_addr=+4(%si):u32 " +
+		"sun_path=+2(%si):string " +
+		"sin6_port=+2(%si):u16 sin6_addr_high=+8(%si):u64 sin6_addr_low=+16(%si):u64"
 
 	networkKprobeConnectSymbol    = "sys_connect"
-	networkKprobeConnectFetchargs = "fd=%di sa_family=+0(%si):u16 sin_port=+2(%si):u16 sin_addr=+4(%si):u32 sun_path=+2(%si):string sin6_port=+2(%si):u16 sin6_addr_high=+8(%si):u64 sin6_addr_low=+16(%si):u64"
+	networkKprobeConnectFetchargs = "fd=%di sa_family=+0(%si):u16 " +
+		"sin_port=+2(%si):u16 sin_addr=+4(%si):u32 " +
+		"sun_path=+2(%si):string " +
+		"sin6_port=+2(%si):u16 sin6_addr_high=+8(%si):u64 sin6_addr_low=+16(%si):u64"
 
 	networkKprobeSendmsgSymbol    = "sys_sendmsg"
-	networkKprobeSendmsgFetchargs = "fd=%di sa_family=+0(+0(%si)):u16 sin_port=+2(+0(%si)):u16 sin_addr=+4(+0(%si)):u32 sun_path=+2(+0(%si)):string sin6_port=+2(+0(%si)):u16 sin6_addr_high=+8(+0(%si)):u64 sin6_addr_low=+16(+0(%si)):u64"
+	networkKprobeSendmsgFetchargs = "fd=%di sa_family=+0(+0(%si)):u16 " +
+		"sin_port=+2(+0(%si)):u16 sin_addr=+4(+0(%si)):u32 " +
+		"sun_path=+2(+0(%si)):string " +
+		"sin6_port=+2(+0(%si)):u16 sin6_addr_high=+8(+0(%si)):u64 sin6_addr_low=+16(+0(%si)):u64"
 
 	networkKprobeSendtoSymbol    = "sys_sendto"
-	networkKprobeSendtoFetchargs = "fd=%di sa_family=+0(%r8):u16 sin_port=+2(%r8):u16 sin_addr=+4(%r8):u32 sun_path=+2(%r8):string sin6_port=+2(%r8):u16 sin6_addr_high=+8(%r8):u64 sin6_addr_low=+16(%r8):u64"
+	networkKprobeSendtoFetchargs = "fd=%di sa_family=+0(%r8):u16 " +
+		"sin_port=+2(%r8):u16 sin_addr=+4(%r8):u32 " +
+		"sun_path=+2(%r8):string " +
+		"sin6_port=+2(%r8):u16 sin6_addr_high=+8(%r8):u64 sin6_addr_low=+16(%r8):u64"
 )
 
 type networkFilter struct {
@@ -48,7 +84,7 @@ func (f *networkFilter) newNetworkEvent(
 	sample *perf.SampleRecord,
 	data perf.TraceEventSampleData,
 ) *api.TelemetryEvent {
-	// If this even contains a network address, throw away any family that
+	// If this event contains a network address, throw away any family that
 	// we do not support without doing the extra work of creating an event
 	// just to throw it away
 	family, haveFamily := data["sa_family"].(uint16)
@@ -263,6 +299,7 @@ func registerEvent(
 	name string,
 	fn perf.TraceEventDecoderFn,
 	filter networkFilterItem,
+	filterTypes expression.FieldTypeMap,
 ) {
 	if !filter.wildcard && filter.filter == nil {
 		return
@@ -277,7 +314,7 @@ func registerEvent(
 		return
 	}
 
-	_, err = subscr.addEventSink(eventID, filter.filter)
+	_, err = subscr.addEventSink(eventID, filter.filter, filterTypes)
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,
@@ -293,6 +330,7 @@ func registerKprobe(
 	fetchargs string,
 	fn perf.TraceEventDecoderFn,
 	filter networkFilterItem,
+	filterTypes expression.FieldTypeMap,
 ) {
 	if !filter.wildcard && filter.filter == nil {
 		return
@@ -307,7 +345,7 @@ func registerKprobe(
 		return
 	}
 
-	_, err = subscr.addEventSink(eventID, filter.filter)
+	_, err = subscr.addEventSink(eventID, filter.filter, filterTypes)
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,
@@ -330,33 +368,33 @@ func registerNetworkEvents(
 		sensor: sensor,
 	}
 
-	registerEvent(sensor, subscr, "syscalls/sys_enter_accept", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_exit_accept", f.decodeSysExitAccept, nfs.acceptResultFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_enter_accept4", f.decodeSysEnterAccept, nfs.acceptAttemptFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_exit_accept4", f.decodeSysExitAccept, nfs.acceptResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_accept", f.decodeSysEnterAccept, nfs.acceptAttemptFilters, networkAttemptEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_accept", f.decodeSysExitAccept, nfs.acceptResultFilters, networkResultEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_accept4", f.decodeSysEnterAccept, nfs.acceptAttemptFilters, networkAttemptEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_accept4", f.decodeSysExitAccept, nfs.acceptResultFilters, networkResultEventTypes)
 
-	registerKprobe(sensor, subscr, networkKprobeBindSymbol, networkKprobeBindFetchargs, f.decodeSysBind, nfs.bindAttemptFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_exit_bind", f.decodeSysExitBind, nfs.bindResultFilters)
+	registerKprobe(sensor, subscr, networkKprobeBindSymbol, networkKprobeBindFetchargs, f.decodeSysBind, nfs.bindAttemptFilters, networkAttemptWithAddressEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_bind", f.decodeSysExitBind, nfs.bindResultFilters, networkResultEventTypes)
 
-	registerKprobe(sensor, subscr, networkKprobeConnectSymbol, networkKprobeConnectFetchargs, f.decodeSysConnect, nfs.connectAttemptFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_exit_connect", f.decodeSysExitConnect, nfs.connectResultFilters)
+	registerKprobe(sensor, subscr, networkKprobeConnectSymbol, networkKprobeConnectFetchargs, f.decodeSysConnect, nfs.connectAttemptFilters, networkAttemptWithAddressEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_connect", f.decodeSysExitConnect, nfs.connectResultFilters, networkResultEventTypes)
 
-	registerEvent(sensor, subscr, "syscalls/sys_enter_listen", f.decodeSysEnterListen, nfs.listenAttemptFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_exit_listen", f.decodeSysExitListen, nfs.listenResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_listen", f.decodeSysEnterListen, nfs.listenAttemptFilters, networkListenAttemptEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_listen", f.decodeSysExitListen, nfs.listenResultFilters, networkResultEventTypes)
 
 	// There are two additional system calls added in Linux 3.0 that are of
 	// interest, but there's no way to get all of the data without eBPF
 	// support, so don't bother with them for now.
 
-	registerEvent(sensor, subscr, "syscalls/sys_enter_recvfrom", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_enter_recvmsg", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_recvfrom", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters, networkAttemptEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_enter_recvmsg", f.decodeSysEnterRecvfrom, nfs.recvfromAttemptFilters, networkAttemptEventTypes)
 
-	registerEvent(sensor, subscr, "syscalls/sys_exit_recvfrom", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_exit_recvmsg", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_recvfrom", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters, networkResultEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_recvmsg", f.decodeSysExitRecvfrom, nfs.recvfromResultFilters, networkResultEventTypes)
 
-	registerKprobe(sensor, subscr, networkKprobeSendmsgSymbol, networkKprobeSendmsgFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
-	registerKprobe(sensor, subscr, networkKprobeSendtoSymbol, networkKprobeSendtoFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters)
+	registerKprobe(sensor, subscr, networkKprobeSendmsgSymbol, networkKprobeSendmsgFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters, networkAttemptWithAddressEventTypes)
+	registerKprobe(sensor, subscr, networkKprobeSendtoSymbol, networkKprobeSendtoFetchargs, f.decodeSysSendto, nfs.sendtoAttemptFilters, networkAttemptWithAddressEventTypes)
 
-	registerEvent(sensor, subscr, "syscalls/sys_exit_sendmsg", f.decodeSysExitSendto, nfs.sendtoResultFilters)
-	registerEvent(sensor, subscr, "syscalls/sys_exit_sendto", f.decodeSysExitSendto, nfs.sendtoResultFilters)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_sendmsg", f.decodeSysExitSendto, nfs.sendtoResultFilters, networkResultEventTypes)
+	registerEvent(sensor, subscr, "syscalls/sys_exit_sendto", f.decodeSysExitSendto, nfs.sendtoResultFilters, networkResultEventTypes)
 }

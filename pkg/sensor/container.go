@@ -35,14 +35,14 @@ import (
 )
 
 var containerEventTypes = expression.FieldTypeMap{
-	"name":             int32(api.ValueType_STRING),
-	"image_id":         int32(api.ValueType_STRING),
-	"image_name":       int32(api.ValueType_STRING),
-	"host_pid":         int32(api.ValueType_SINT32),
-	"exit_code":        int32(api.ValueType_SINT32),
-	"exit_status":      int32(api.ValueType_UINT32),
-	"exit_signal":      int32(api.ValueType_UINT32),
-	"exit_core_dumped": int32(api.ValueType_BOOL),
+	"name":             expression.ValueTypeString,
+	"image_id":         expression.ValueTypeString,
+	"image_name":       expression.ValueTypeString,
+	"host_pid":         expression.ValueTypeSignedInt32,
+	"exit_code":        expression.ValueTypeSignedInt32,
+	"exit_status":      expression.ValueTypeUnsignedInt32,
+	"exit_signal":      expression.ValueTypeUnsignedInt32,
+	"exit_core_dumped": expression.ValueTypeBool,
 }
 
 // ContainerCache is a cache of container information
@@ -142,46 +142,31 @@ func NewContainerCache(sensor *Sensor) *ContainerCache {
 
 	var err error
 	cache.ContainerCreatedEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"CONTAINER_CREATED",
-		cache.decodeContainerCreatedEvent,
-		containerEventTypes,
-	)
+		"CONTAINER_CREATED", cache.decodeContainerCreatedEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
 	cache.ContainerRunningEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"CONTAINER_RUNNING",
-		cache.decodeContainerRunningEvent,
-		containerEventTypes,
-	)
+		"CONTAINER_RUNNING", cache.decodeContainerRunningEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
 	cache.ContainerExitedEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"CONTAINER_EXITED",
-		cache.decodeContainerExitedEvent,
-		containerEventTypes,
-	)
+		"CONTAINER_EXITED", cache.decodeContainerExitedEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
 	cache.ContainerDestroyedEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"CONTAINER_DESTROYED",
-		cache.decodeContainerDestroyedEvent,
-		containerEventTypes,
-	)
+		"CONTAINER_DESTROYED", cache.decodeContainerDestroyedEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register external event: %s", err)
 	}
 
 	cache.ContainerUpdatedEventID, err = sensor.Monitor.RegisterExternalEvent(
-		"CONTAINER_UPDATED",
-		cache.decodeContainerUpdatedEvent,
-		containerEventTypes,
-	)
+		"CONTAINER_UPDATED", cache.decodeContainerUpdatedEvent)
 	if err != nil {
 		glog.Fatalf("Failed to register extern event: %s", err)
 	}
@@ -444,7 +429,8 @@ func registerContainerEvents(
 			case api.ContainerEventType_CONTAINER_EVENT_TYPE_UPDATED:
 				eventID = sensor.ContainerCache.ContainerUpdatedEventID
 			}
-			subscriptions[t], _ = subscr.addEventSink(eventID, nil)
+			subscriptions[t], _ =
+				subscr.addEventSink(eventID, nil, containerEventTypes)
 			subscriptions[t].containerView = cef.View
 		}
 		if cef.FilterExpression == nil {

@@ -15,463 +15,343 @@
 package expression
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
-
-	api "github.com/capsule8/capsule8/api/v0"
-	google_protobuf2 "github.com/golang/protobuf/ptypes/timestamp"
 )
 
-// nullValueType is only used internally
-const nullValueType = api.ValueType_VALUETYPE_UNSPECIFIED
+// For all comparisons, we know that the types of lhs and rhs are identical,
+// because they've been checked already in evaluateBinaryExpr.
 
-func timestampValue(stamp *google_protobuf2.Timestamp) uint64 {
-	return (uint64(stamp.Seconds) * uint64(time.Second)) +
-		uint64(stamp.Nanos)
-}
-
-func compareEqual(lhs, rhs api.Value) (bool, error) {
-	switch t := lhs.GetType(); t {
-	case api.ValueType_STRING:
-		return lhs.GetStringValue() == rhs.GetStringValue(), nil
-	case api.ValueType_SINT8, api.ValueType_SINT16, api.ValueType_SINT32,
-		api.ValueType_SINT64:
-
-		return lhs.GetSignedValue() == rhs.GetSignedValue(), nil
-	case api.ValueType_UINT8, api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64:
-
-		return lhs.GetUnsignedValue() == rhs.GetUnsignedValue(), nil
-	case api.ValueType_BOOL:
-		return lhs.GetBoolValue() == rhs.GetBoolValue(), nil
-	case api.ValueType_DOUBLE:
-		return lhs.GetDoubleValue() == rhs.GetDoubleValue(), nil
-	case api.ValueType_TIMESTAMP:
-		return timestampValue(lhs.GetTimestampValue()) ==
-			timestampValue(rhs.GetTimestampValue()), nil
+func compareEqual(lhs, rhs interface{}) (r bool) {
+	switch lhs.(type) {
+	case string:
+		r = reflect.ValueOf(lhs).String() == reflect.ValueOf(rhs).String()
+	case int8, int16, int32, int64:
+		r = reflect.ValueOf(lhs).Int() == reflect.ValueOf(rhs).Int()
+	case uint8, uint16, uint32, uint64:
+		r = reflect.ValueOf(lhs).Uint() == reflect.ValueOf(rhs).Uint()
+	case bool:
+		r = reflect.ValueOf(lhs).Bool() == reflect.ValueOf(rhs).Bool()
+	case float64:
+		r = reflect.ValueOf(lhs).Float() == reflect.ValueOf(rhs).Float()
+	case time.Time:
+		r = lhs.(time.Time).UnixNano() == rhs.(time.Time).UnixNano()
 	default:
-		return false, fmt.Errorf("Unknown value type %d", t)
+		exprRaise(fmt.Errorf("Unknown value type %s", reflect.TypeOf(lhs)))
 	}
+	return
 }
 
-func compareNotEqual(lhs, rhs api.Value) (bool, error) {
-	switch t := lhs.GetType(); t {
-	case api.ValueType_STRING:
-		return lhs.GetStringValue() != rhs.GetStringValue(), nil
-	case api.ValueType_SINT8, api.ValueType_SINT16, api.ValueType_SINT32,
-		api.ValueType_SINT64:
-
-		return lhs.GetSignedValue() != rhs.GetSignedValue(), nil
-	case api.ValueType_UINT8, api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64:
-
-		return lhs.GetUnsignedValue() != rhs.GetUnsignedValue(), nil
-	case api.ValueType_BOOL:
-		return lhs.GetBoolValue() != rhs.GetBoolValue(), nil
-	case api.ValueType_DOUBLE:
-		return lhs.GetDoubleValue() != rhs.GetDoubleValue(), nil
-	case api.ValueType_TIMESTAMP:
-		return timestampValue(lhs.GetTimestampValue()) !=
-			timestampValue(rhs.GetTimestampValue()), nil
+func compareNotEqual(lhs, rhs interface{}) (r bool) {
+	switch lhs.(type) {
+	case string:
+		r = reflect.ValueOf(lhs).String() != reflect.ValueOf(rhs).String()
+	case int8, int16, int32, int64:
+		r = reflect.ValueOf(lhs).Int() != reflect.ValueOf(rhs).Int()
+	case uint8, uint16, uint32, uint64:
+		r = reflect.ValueOf(lhs).Uint() != reflect.ValueOf(rhs).Uint()
+	case bool:
+		r = reflect.ValueOf(lhs).Bool() != reflect.ValueOf(rhs).Bool()
+	case float64:
+		r = reflect.ValueOf(lhs).Float() != reflect.ValueOf(rhs).Float()
+	case time.Time:
+		r = lhs.(time.Time).UnixNano() != rhs.(time.Time).UnixNano()
 	default:
-		return false, fmt.Errorf("Unknown value type %d", t)
+		exprRaise(fmt.Errorf("Unknown value type %s", reflect.TypeOf(lhs)))
 	}
+	return
 }
 
-func compareLessThan(lhs, rhs api.Value) (bool, error) {
-	switch t := lhs.GetType(); t {
-	case api.ValueType_STRING, api.ValueType_BOOL:
-		return false,
-			fmt.Errorf("Cannot compare %s types", api.ValueType_name[int32(t)])
-	case api.ValueType_SINT8, api.ValueType_SINT16, api.ValueType_SINT32,
-		api.ValueType_SINT64:
-
-		return lhs.GetSignedValue() < rhs.GetSignedValue(), nil
-	case api.ValueType_UINT8, api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64:
-
-		return lhs.GetUnsignedValue() < rhs.GetUnsignedValue(), nil
-	case api.ValueType_DOUBLE:
-		return lhs.GetDoubleValue() < rhs.GetDoubleValue(), nil
-	case api.ValueType_TIMESTAMP:
-		return timestampValue(lhs.GetTimestampValue()) <
-			timestampValue(rhs.GetTimestampValue()), nil
+func compareLessThan(lhs, rhs interface{}) (r bool) {
+	switch lhs.(type) {
+	case string, bool:
+		exprRaise(fmt.Errorf("Cannot compare %s types", reflect.TypeOf(lhs)))
+	case int8, int16, int32, int64:
+		r = reflect.ValueOf(lhs).Int() < reflect.ValueOf(rhs).Int()
+	case uint8, uint16, uint32, uint64:
+		r = reflect.ValueOf(lhs).Uint() < reflect.ValueOf(rhs).Uint()
+	case float64:
+		r = reflect.ValueOf(lhs).Float() < reflect.ValueOf(rhs).Float()
+	case time.Time:
+		r = lhs.(time.Time).UnixNano() < rhs.(time.Time).UnixNano()
 	default:
-		return false, fmt.Errorf("Unknown value type %d", t)
+		exprRaise(fmt.Errorf("Unknown value type %s", reflect.TypeOf(lhs)))
 	}
+	return
 }
 
-func compareLessThanEqualTo(lhs, rhs api.Value) (bool, error) {
-	switch t := lhs.GetType(); t {
-	case api.ValueType_STRING, api.ValueType_BOOL:
-		return false,
-			fmt.Errorf("Cannot compare %s types", api.ValueType_name[int32(t)])
-	case api.ValueType_SINT8, api.ValueType_SINT16, api.ValueType_SINT32,
-		api.ValueType_SINT64:
-
-		return lhs.GetSignedValue() <= rhs.GetSignedValue(), nil
-	case api.ValueType_UINT8, api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64:
-
-		return lhs.GetUnsignedValue() <= rhs.GetUnsignedValue(), nil
-	case api.ValueType_DOUBLE:
-		return lhs.GetDoubleValue() <= rhs.GetDoubleValue(), nil
-	case api.ValueType_TIMESTAMP:
-		return timestampValue(lhs.GetTimestampValue()) <=
-			timestampValue(rhs.GetTimestampValue()), nil
+func compareLessThanEqualTo(lhs, rhs interface{}) (r bool) {
+	switch lhs.(type) {
+	case string, bool:
+		exprRaise(fmt.Errorf("Cannot compare %s types", reflect.TypeOf(lhs)))
+	case int8, int16, int32, int64:
+		r = reflect.ValueOf(lhs).Int() <= reflect.ValueOf(rhs).Int()
+	case uint8, uint16, uint32, uint64:
+		r = reflect.ValueOf(lhs).Uint() <= reflect.ValueOf(rhs).Uint()
+	case float64:
+		r = reflect.ValueOf(lhs).Float() <= reflect.ValueOf(rhs).Float()
+	case time.Time:
+		r = lhs.(time.Time).UnixNano() <= rhs.(time.Time).UnixNano()
 	default:
-		return false, fmt.Errorf("Unknown value type %d", t)
+		exprRaise(fmt.Errorf("Unknown value type %s", reflect.TypeOf(lhs)))
 	}
+	return
 }
 
-func compareGreaterThan(lhs, rhs api.Value) (bool, error) {
-	switch t := lhs.GetType(); t {
-	case api.ValueType_STRING, api.ValueType_BOOL:
-		return false,
-			fmt.Errorf("Cannot compare %s types", api.ValueType_name[int32(t)])
-	case api.ValueType_SINT8, api.ValueType_SINT16, api.ValueType_SINT32,
-		api.ValueType_SINT64:
-
-		return lhs.GetSignedValue() > rhs.GetSignedValue(), nil
-	case api.ValueType_UINT8, api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64:
-
-		return lhs.GetUnsignedValue() > rhs.GetUnsignedValue(), nil
-	case api.ValueType_DOUBLE:
-		return lhs.GetDoubleValue() > rhs.GetDoubleValue(), nil
-	case api.ValueType_TIMESTAMP:
-		return timestampValue(lhs.GetTimestampValue()) >
-			timestampValue(rhs.GetTimestampValue()), nil
+func compareGreaterThan(lhs, rhs interface{}) (r bool) {
+	switch lhs.(type) {
+	case string, bool:
+		exprRaise(fmt.Errorf("Cannot compare %s types", reflect.TypeOf(lhs)))
+	case int8, int16, int32, int64:
+		r = reflect.ValueOf(lhs).Int() > reflect.ValueOf(rhs).Int()
+	case uint8, uint16, uint32, uint64:
+		r = reflect.ValueOf(lhs).Uint() > reflect.ValueOf(rhs).Uint()
+	case float64:
+		r = reflect.ValueOf(lhs).Float() > reflect.ValueOf(rhs).Float()
+	case time.Time:
+		r = lhs.(time.Time).UnixNano() > rhs.(time.Time).UnixNano()
 	default:
-		return false, fmt.Errorf("Unknown value type %d", t)
+		exprRaise(fmt.Errorf("Unknown value type %s", reflect.TypeOf(lhs)))
 	}
+	return
 }
 
-func compareGreaterThanEqualTo(lhs, rhs api.Value) (bool, error) {
-	switch t := lhs.GetType(); t {
-	case api.ValueType_STRING, api.ValueType_BOOL:
-		return false,
-			fmt.Errorf("Cannot compare %s types", api.ValueType_name[int32(t)])
-	case api.ValueType_SINT8, api.ValueType_SINT16, api.ValueType_SINT32,
-		api.ValueType_SINT64:
-
-		return lhs.GetSignedValue() >= rhs.GetSignedValue(), nil
-	case api.ValueType_UINT8, api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64:
-
-		return lhs.GetUnsignedValue() >= rhs.GetUnsignedValue(), nil
-	case api.ValueType_DOUBLE:
-		return lhs.GetDoubleValue() >= rhs.GetDoubleValue(), nil
-	case api.ValueType_TIMESTAMP:
-		return timestampValue(lhs.GetTimestampValue()) >=
-			timestampValue(rhs.GetTimestampValue()), nil
+func compareGreaterThanEqualTo(lhs, rhs interface{}) (r bool) {
+	switch lhs.(type) {
+	case string, bool:
+		exprRaise(fmt.Errorf("Cannot compare %s types", reflect.TypeOf(lhs)))
+	case int8, int16, int32, int64:
+		r = reflect.ValueOf(lhs).Int() >= reflect.ValueOf(rhs).Int()
+	case uint8, uint16, uint32, uint64:
+		r = reflect.ValueOf(lhs).Uint() >= reflect.ValueOf(rhs).Uint()
+	case float64:
+		r = reflect.ValueOf(lhs).Float() >= reflect.ValueOf(rhs).Float()
+	case time.Time:
+		r = lhs.(time.Time).UnixNano() >= rhs.(time.Time).UnixNano()
 	default:
-		return false, fmt.Errorf("Unknown value type %d", t)
+		exprRaise(fmt.Errorf("Unknown value type %s", reflect.TypeOf(lhs)))
 	}
+	return
 }
 
-func compareLike(lhs, rhs api.Value) (bool, error) {
-	switch t := lhs.GetType(); t {
-	case api.ValueType_SINT8, api.ValueType_SINT16,
-		api.ValueType_SINT32, api.ValueType_SINT64, api.ValueType_UINT8,
-		api.ValueType_UINT16, api.ValueType_UINT32,
-		api.ValueType_UINT64, api.ValueType_BOOL, api.ValueType_DOUBLE,
-		api.ValueType_TIMESTAMP:
-
-		return false,
-			fmt.Errorf("Cannot compare %s types", api.ValueType_name[int32(t)])
-	case api.ValueType_STRING:
-		var result bool
-
-		s := lhs.GetStringValue()
-		pattern := rhs.GetStringValue()
+func compareLike(lhs, rhs interface{}) (r bool) {
+	switch lhs.(type) {
+	case string:
+		s := lhs.(string)
+		pattern := rhs.(string)
 		if strings.HasPrefix(pattern, "*") {
 			if strings.HasSuffix(pattern, "*") {
-				result = strings.Contains(s, pattern[1:len(pattern)-1])
+				r = strings.Contains(s, pattern[1:len(pattern)-1])
 			} else {
-				result = strings.HasSuffix(s, pattern[1:])
+				r = strings.HasSuffix(s, pattern[1:])
 			}
 		} else if strings.HasSuffix(pattern, "*") {
-			result = strings.HasPrefix(s, pattern[:len(pattern)-1])
+			r = strings.HasPrefix(s, pattern[:len(pattern)-1])
 		} else {
-			result = s == pattern
+			r = s == pattern
 		}
-		return result, nil
-
+	case int8, int16, int32, int64, uint8, uint16, uint32, uint64, bool, float64, time.Time:
+		exprRaise(fmt.Errorf("Cannot compare %s types", reflect.TypeOf(lhs)))
 	default:
-		return false, fmt.Errorf("Unknown value type %d", t)
+		exprRaise(fmt.Errorf("Unknown value type %s", reflect.TypeOf(lhs)))
 	}
+	return
 }
 
 type evalContext struct {
 	types  FieldTypeMap
 	values FieldValueMap
-	stack  []api.Value
+	stack  []interface{}
 }
 
-var typeStrings = map[int32]string{
-	int32(api.ValueType_STRING):    "string",
-	int32(api.ValueType_SINT8):     "int8",
-	int32(api.ValueType_SINT16):    "int16",
-	int32(api.ValueType_SINT32):    "int32",
-	int32(api.ValueType_SINT64):    "int64",
-	int32(api.ValueType_UINT8):     "uint8",
-	int32(api.ValueType_UINT16):    "uint16",
-	int32(api.ValueType_UINT32):    "uint32",
-	int32(api.ValueType_UINT64):    "uint64",
-	int32(api.ValueType_BOOL):      "bool",
-	int32(api.ValueType_DOUBLE):    "float64",
-	int32(api.ValueType_TIMESTAMP): "uint64",
-}
-
-func (c *evalContext) pushIdentifier(ident string) error {
+func (c *evalContext) pushIdentifier(ident string) {
 	t, ok := c.types[ident]
 	if !ok {
-		return fmt.Errorf("Undefined identifier %q", ident)
+		exprRaise(fmt.Errorf("Undefined identifier %q", ident))
 	}
 	v, ok := c.values[ident]
 	if !ok {
-		t = int32(nullValueType)
-	} else if reflect.TypeOf(v).String() != typeStrings[t] {
-		return fmt.Errorf("Data type mismatch for %q (expected %s; got %s)",
-			ident, typeStrings[t], reflect.TypeOf(v))
+		c.stack = append(c.stack, nil)
+	} else if ValueTypeOf(v) != t {
+		exprRaise(fmt.Errorf("Data type mismatch for %q (expected %s; got %s)",
+			ident, ValueTypeStrings[t], reflect.TypeOf(v)))
+	} else {
+		c.stack = append(c.stack, v)
 	}
-
-	value := api.Value{
-		Type: api.ValueType(t),
-	}
-
-	switch value.Type {
-	case api.ValueType_STRING:
-		value.Value = &api.Value_StringValue{StringValue: v.(string)}
-	case api.ValueType_SINT8:
-		value.Value = &api.Value_SignedValue{SignedValue: int64(v.(int8))}
-	case api.ValueType_SINT16:
-		value.Value = &api.Value_SignedValue{SignedValue: int64(v.(int16))}
-	case api.ValueType_SINT32:
-		value.Value = &api.Value_SignedValue{SignedValue: int64(v.(int32))}
-	case api.ValueType_SINT64:
-		value.Value = &api.Value_SignedValue{SignedValue: v.(int64)}
-	case api.ValueType_UINT8:
-		value.Value = &api.Value_UnsignedValue{UnsignedValue: uint64(v.(uint8))}
-	case api.ValueType_UINT16:
-		value.Value = &api.Value_UnsignedValue{UnsignedValue: uint64(v.(uint16))}
-	case api.ValueType_UINT32:
-		value.Value = &api.Value_UnsignedValue{UnsignedValue: uint64(v.(uint32))}
-	case api.ValueType_UINT64:
-		value.Value = &api.Value_UnsignedValue{UnsignedValue: v.(uint64)}
-	case api.ValueType_BOOL:
-		value.Value = &api.Value_BoolValue{BoolValue: v.(bool)}
-	case api.ValueType_DOUBLE:
-		value.Value = &api.Value_DoubleValue{DoubleValue: v.(float64)}
-	case api.ValueType_TIMESTAMP:
-		ns := v.(uint64)
-		value.Value = &api.Value_TimestampValue{
-			TimestampValue: &google_protobuf2.Timestamp{
-				Seconds: int64(ns / uint64(time.Second)),
-				Nanos:   int32(ns % uint64(time.Second)),
-			},
-		}
-	}
-
-	c.stack = append(c.stack, value)
-	return nil
 }
 
-func (c *evalContext) evaluateNode(node *api.Expression) error {
-	switch op := node.GetType(); op {
-	case api.Expression_IDENTIFIER:
-		return c.pushIdentifier(node.GetIdentifier())
+func (c *evalContext) evaluateBinaryExpr(e binaryExpr) {
+	switch e.op {
+	case binaryOpLogicalAnd:
+		// if the lhs result is false, leave it on the stack and return
+		// without evaluating the rhs; otherwise, pop the lhs result
+		// and leave the rhs result
+		c.evaluateNode(e.x)
+		if v, ok := c.stack[len(c.stack)-1].(bool); !ok {
+			exprRaise(fmt.Errorf("Type mismatch in logical-and: bool vs. %s",
+				reflect.TypeOf(c.stack[len(c.stack)-1])))
+		} else if v {
+			c.stack = c.stack[0 : len(c.stack)-1]
+			c.evaluateNode(e.y)
+		}
 
-	case api.Expression_VALUE:
-		c.stack = append(c.stack, *node.GetValue())
-		return nil
+	case binaryOpLogicalOr:
+		// if the lhs result is true, leave it on the stack and return
+		// without evaluating the lhs; otherwise, pop the lhs result
+		// and leave the rhs result
+		c.evaluateNode(e.x)
+		if v, ok := c.stack[len(c.stack)-1].(bool); !ok {
+			exprRaise(fmt.Errorf("Type mismatch in logical-or: bool vs. %s",
+				reflect.TypeOf(c.stack[len(c.stack)-1])))
+		} else if !v {
+			c.stack = c.stack[0 : len(c.stack)-1]
+			c.evaluateNode(e.y)
+		}
 
-	case api.Expression_LOGICAL_AND:
-		operands := node.GetBinaryOp()
-		err := c.evaluateNode(operands.Lhs)
-		if err != nil {
-			return err
-		}
-		v := &c.stack[len(c.stack)-1]
-		if !IsValueTrue(v) {
-			// Leave the false value on the stack and return
-			// There's no need to evaluate the rhs; it won't change
-			// the result.
-			return nil
-		}
-		// Pop the lhs result, evaluate the rhs, and leave its result
-		// behind as the result of this op
-		c.stack = c.stack[0 : len(c.stack)-1]
-		return c.evaluateNode(operands.Rhs)
+	case binaryOpEQ, binaryOpNE, binaryOpLT, binaryOpLE, binaryOpGT, binaryOpGE, binaryOpLike:
+		c.evaluateNode(e.x)
+		c.evaluateNode(e.y)
 
-	case api.Expression_LOGICAL_OR:
-		operands := node.GetBinaryOp()
-		err := c.evaluateNode(operands.Lhs)
-		if err != nil {
-			return err
-		}
-		v := &c.stack[len(c.stack)-1]
-		if IsValueTrue(v) {
-			// Leave the true value on the stack and return
-			// There's no need to evaluate the lhs; it won't change
-			// the result.
-			return nil
-		}
-		// Pop the lhs result, evaluate the rhs, and leave its result
-		// behind as the result of this op
-		c.stack = c.stack[0 : len(c.stack)-1]
-		return c.evaluateNode(operands.Rhs)
-
-	case api.Expression_EQ, api.Expression_NE, api.Expression_LT,
-		api.Expression_LE, api.Expression_GT, api.Expression_GE,
-		api.Expression_LIKE:
-
-		operands := node.GetBinaryOp()
-		err := c.evaluateNode(operands.Lhs)
-		if err != nil {
-			return err
-		}
-		err = c.evaluateNode(operands.Rhs)
-		if err != nil {
-			return err
-		}
 		lhs := c.stack[len(c.stack)-2]
 		rhs := c.stack[len(c.stack)-1]
-		c.stack = c.stack[0 : len(c.stack)-2]
+		c.stack = c.stack[0 : len(c.stack)-1]
 
 		var result bool
 
 		// If either side of the comparison is NULL, the result is FALSE
-		if lhs.GetType() == nullValueType || rhs.GetType() == nullValueType {
+		if lhs == nil || rhs == nil {
 			result = false
 		} else {
-			if lhs.GetType() != rhs.GetType() {
-				return fmt.Errorf("Type mismatch in comparison: %s vs. %s",
-					api.ValueType_name[int32(lhs.GetType())],
-					api.ValueType_name[int32(rhs.GetType())])
+			if lt, rt := ValueTypeOf(lhs), ValueTypeOf(rhs); lt != rt {
+				exprRaise(fmt.Errorf("Type mismatch in comparison: %s vs. %s",
+					ValueTypeStrings[lt], ValueTypeStrings[rt]))
 			}
 
-			switch op {
-			case api.Expression_EQ:
-				result, err = compareEqual(lhs, rhs)
-			case api.Expression_NE:
-				result, err = compareNotEqual(lhs, rhs)
-			case api.Expression_LT:
-				result, err = compareLessThan(lhs, rhs)
-			case api.Expression_LE:
-				result, err = compareLessThanEqualTo(lhs, rhs)
-			case api.Expression_GT:
-				result, err = compareGreaterThan(lhs, rhs)
-			case api.Expression_GE:
-				result, err = compareGreaterThanEqualTo(lhs, rhs)
-			case api.Expression_LIKE:
-				result, err = compareLike(lhs, rhs)
-			}
-			if err != nil {
-				return err
+			switch e.op {
+			case binaryOpEQ:
+				result = compareEqual(lhs, rhs)
+			case binaryOpNE:
+				result = compareNotEqual(lhs, rhs)
+			case binaryOpLT:
+				result = compareLessThan(lhs, rhs)
+			case binaryOpLE:
+				result = compareLessThanEqualTo(lhs, rhs)
+			case binaryOpGT:
+				result = compareGreaterThan(lhs, rhs)
+			case binaryOpGE:
+				result = compareGreaterThanEqualTo(lhs, rhs)
+			case binaryOpLike:
+				result = compareLike(lhs, rhs)
+			default:
+				panic("internal error: unreachable condition in evaluateBinaryExpr")
 			}
 		}
 
-		v := api.Value{
-			Type:  api.ValueType_BOOL,
-			Value: &api.Value_BoolValue{BoolValue: result},
-		}
-		c.stack = append(c.stack, v)
-		return nil
+		c.stack[len(c.stack)-1] = result
 
-	case api.Expression_IS_NULL:
-		err := c.evaluateNode(node.GetUnaryOp())
-		if err != nil {
-			return err
-		}
-		v := &c.stack[len(c.stack)-1]
-		result := v.GetType() == nullValueType
-		v.Type = api.ValueType_BOOL
-		v.Value = &api.Value_BoolValue{BoolValue: result}
-		return nil
+	case binaryOpBitwiseAnd:
+		c.evaluateNode(e.x)
+		c.evaluateNode(e.y)
 
-	case api.Expression_IS_NOT_NULL:
-		err := c.evaluateNode(node.GetUnaryOp())
-		if err != nil {
-			return err
-		}
-		v := &c.stack[len(c.stack)-1]
-		result := v.GetType() != nullValueType
-		v.Type = api.ValueType_BOOL
-		v.Value = &api.Value_BoolValue{BoolValue: result}
-		return nil
-
-	case api.Expression_BITWISE_AND:
-		operands := node.GetBinaryOp()
-		err := c.evaluateNode(operands.Lhs)
-		if err != nil {
-			return err
-		}
-		err = c.evaluateNode(operands.Rhs)
-		if err != nil {
-			return err
-		}
 		lhs := c.stack[len(c.stack)-2]
 		rhs := c.stack[len(c.stack)-1]
-		c.stack = c.stack[0 : len(c.stack)-2]
+		c.stack = c.stack[0 : len(c.stack)-1]
 
-		t := lhs.GetType()
-		if t != rhs.GetType() {
-			return fmt.Errorf("Type mismatch for &: %s vs. %s",
-				api.ValueType_name[int32(lhs.GetType())],
-				api.ValueType_name[int32(rhs.GetType())])
+		if lt, rt := ValueTypeOf(lhs), ValueTypeOf(rhs); lt != rt {
+			exprRaise(fmt.Errorf("Type mismatch for &: %s vs. %s",
+				ValueTypeStrings[lt], ValueTypeStrings[rt]))
 		}
 
-		v := api.Value{Type: t}
-		switch t {
-		case api.ValueType_STRING, api.ValueType_BOOL,
-			api.ValueType_DOUBLE, api.ValueType_TIMESTAMP:
-
-			return fmt.Errorf("Type for & must be an integer; got %s",
-				api.ValueType_name[int32(t)])
-		case api.ValueType_SINT8, api.ValueType_SINT16,
-			api.ValueType_SINT32, api.ValueType_SINT64:
-
-			l := lhs.GetSignedValue()
-			r := rhs.GetSignedValue()
-			v.Value = &api.Value_SignedValue{SignedValue: (l & r)}
-		case api.ValueType_UINT8, api.ValueType_UINT16,
-			api.ValueType_UINT32, api.ValueType_UINT64:
-
-			l := lhs.GetUnsignedValue()
-			r := rhs.GetUnsignedValue()
-			v.Value = &api.Value_UnsignedValue{UnsignedValue: (l & r)}
+		switch lhs.(type) {
+		case int8:
+			c.stack[len(c.stack)-1] = lhs.(int8) & rhs.(int8)
+		case int16:
+			c.stack[len(c.stack)-1] = lhs.(int16) & rhs.(int16)
+		case int32:
+			c.stack[len(c.stack)-1] = lhs.(int32) & rhs.(int32)
+		case int64:
+			c.stack[len(c.stack)-1] = lhs.(int64) & rhs.(int64)
+		case uint8:
+			c.stack[len(c.stack)-1] = lhs.(uint8) & rhs.(uint8)
+		case uint16:
+			c.stack[len(c.stack)-1] = lhs.(uint16) & rhs.(uint16)
+		case uint32:
+			c.stack[len(c.stack)-1] = lhs.(uint32) & rhs.(uint32)
+		case uint64:
+			c.stack[len(c.stack)-1] = lhs.(uint64) & rhs.(uint64)
+		default:
+			exprRaise(fmt.Errorf("Type for & must be an integer; got %s",
+				reflect.TypeOf(lhs)))
 		}
 
-		c.stack = append(c.stack, v)
-		return nil
+	default:
+		panic("internal error: unreachable condition in evaluateBinaryExpr")
 	}
-
-	return errors.New("internal error: unreachable condition")
 }
 
-func evaluateExpression(expr *api.Expression, types FieldTypeMap, values FieldValueMap) (*api.Value, error) {
-	c := evalContext{
+func (c *evalContext) evaluateUnaryExpr(e unaryExpr) {
+	switch e.op {
+	case unaryOpIsNull:
+		c.evaluateNode(e.x)
+		c.stack[len(c.stack)-1] = c.stack[len(c.stack)-1] == nil
+
+	case unaryOpIsNotNull:
+		c.evaluateNode(e.x)
+		c.stack[len(c.stack)-1] = c.stack[len(c.stack)-1] != nil
+	default:
+		panic("internal error: unreachable condition in evaluateUnaryExpr")
+	}
+}
+
+func (c *evalContext) evaluateNode(e expr) {
+	switch v := e.(type) {
+	case identExpr:
+		c.pushIdentifier(v.name)
+	case valueExpr:
+		c.stack = append(c.stack, v.v)
+	case binaryExpr:
+		c.evaluateBinaryExpr(v)
+	case unaryExpr:
+		c.evaluateUnaryExpr(v)
+	default:
+		panic("internal error: unreachable condition in evaluateNode")
+	}
+}
+
+func (c *evalContext) evaluateExpression(e expr) (result interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(exprError); ok {
+				err = e.error
+			} else {
+				panic(r)
+			}
+		}
+	}()
+
+	c.evaluateNode(e)
+	if len(c.stack) != 1 {
+		panic("internal error: stack in unexpected state after expression evaluation")
+	}
+	result = c.stack[0]
+	return
+}
+
+func newEvalContext(types FieldTypeMap, values FieldValueMap) evalContext {
+	return evalContext{
 		types:  types,
 		values: values,
-		stack:  make([]api.Value, 0, 8),
+		stack:  make([]interface{}, 0, 8),
 	}
+}
 
-	err := c.evaluateNode(expr)
-	if err == nil {
-		if len(c.stack) == 0 {
-			err = errors.New("internal error: empty stack after expression evaluation")
-		} else if len(c.stack) > 1 {
-			err = errors.New("internal error: more than one value on the stack after expression evaluation")
-		}
-	}
-
-	if err != nil {
-		return nil, err
-	}
-	return &c.stack[0], nil
+func evaluateExpression(
+	e expr,
+	types FieldTypeMap,
+	values FieldValueMap,
+) (interface{}, error) {
+	c := newEvalContext(types, values)
+	return c.evaluateExpression(e)
 }

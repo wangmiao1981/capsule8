@@ -675,7 +675,7 @@ func (s *Sensor) dispatchQueuedSamples(samples []perf.EventMonitorSample) {
 		for _, es := range eventSinks {
 			if es.filter != nil {
 				v, err := es.filter.Evaluate(
-					expression.FieldTypeMap(esm.Fields),
+					es.filterTypes,
 					expression.FieldValueMap(esm.DecodedData))
 				if err != nil {
 					glog.V(1).Infof("Expression evaluation error: %s", err)

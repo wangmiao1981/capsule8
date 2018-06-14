@@ -25,6 +25,12 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/code"
 )
 
+var fileOpenEventTypes = expression.FieldTypeMap{
+	"filename": expression.ValueTypeString,
+	"flags":    expression.ValueTypeSignedInt32,
+	"mode":     expression.ValueTypeSignedInt32,
+}
+
 const (
 	fsDoSysOpenKprobeAddress   = "do_sys_open"
 	fsDoSysOpenKprobeFetchargs = "filename=+0(%si):string flags=%dx:s32 mode=%cx:s32"
@@ -135,7 +141,7 @@ func registerFileEvents(
 		return
 	}
 
-	_, err = subscr.addEventSink(eventID, filter)
+	_, err = subscr.addEventSink(eventID, filter, fileOpenEventTypes)
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,

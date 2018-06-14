@@ -16,9 +16,17 @@ package expression
 
 import (
 	"testing"
-
-	api "github.com/capsule8/capsule8/api/v0"
 )
+
+type invalidExpr struct{}
+
+func (e invalidExpr) exprNode() {}
+func (e invalidExpr) String() string {
+	return "<<invalidExpr String>>"
+}
+func (e invalidExpr) KernelString() string {
+	return "<<invalidExpr KernelString>>"
+}
 
 func testInvalidIdentifier(t *testing.T, s string) {
 	err := validateIdentifier(s)
@@ -46,144 +54,388 @@ func TestValidateIdentifier(t *testing.T) {
 	testValidIdentifier(t, "_83_")
 }
 
-func testValidateInvalidValue(t *testing.T, value *api.Value) {
-	err := validateValue(value)
-	if err == nil { // YES ==
-		t.Errorf("Expected error for invalid value")
+func TestValidateKernelFilter(t *testing.T) {
+	// identExpr tests
+	ie := identExpr{name: "foo"}
+	if err := validateKernelFilterTree(ie); err != nil {
+		t.Errorf("validateKernelFilterTree failure: %v", err)
 	}
-}
-
-func testValidateValidValue(t *testing.T, value *api.Value) {
-	err := validateValue(value)
-	if err != nil {
-		t.Error(err)
+	ie = identExpr{name: "foo$"}
+	if err := validateKernelFilterTree(ie); err == nil {
+		t.Errorf("validateKernelFilterTree failure")
 	}
-}
 
-func TestValidateValue(t *testing.T) {
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_VALUETYPE_UNSPECIFIED})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_STRING})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_SINT8})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_SINT16})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_SINT32})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_SINT64})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_UINT8})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_UINT16})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_UINT32})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_UINT64})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_BOOL})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_DOUBLE})
-	testValidateInvalidValue(t, &api.Value{Type: api.ValueType_TIMESTAMP})
+	// valueExpr tests
+	ve := valueExpr{v: "string"}
+	if err := validateKernelFilterTree(ve); err != nil {
+		t.Errorf("validateKernelFilterTree failure: %v", err)
+	}
+	ve.v = true
+	if validateKernelFilterTree(ve) == nil {
+		t.Errorf("validateKernelFilterTree failure")
+	}
 
-	testValidateValidValue(t, NewValue("capsule8"))
-	testValidateValidValue(t, NewValue(int8(83)))
-	testValidateValidValue(t, NewValue(int16(83)))
-	testValidateValidValue(t, NewValue(int32(83)))
-	testValidateValidValue(t, NewValue(int64(83)))
-	testValidateValidValue(t, NewValue(uint8(83)))
-	testValidateValidValue(t, NewValue(uint16(83)))
-	testValidateValidValue(t, NewValue(uint32(83)))
-	testValidateValidValue(t, NewValue(uint64(83)))
-	testValidateValidValue(t, NewValue(true))
-	testValidateValidValue(t, NewValue(false))
-	testValidateValidValue(t, NewValue(8.3))
-}
-
-func testValidateExpr(t *testing.T, expr *api.Expression, normalPass, kernelPass, typesPass bool, types FieldTypeMap) {
-	err := validateTree(expr)
-	if normalPass {
-		if err != nil {
-			t.Errorf("%s -> Expected normal pass; got %s",
-				expressionAsString(expr), err)
+	// binaryExpr tests
+	logicalOps := []binaryOp{
+		binaryOpLogicalAnd, binaryOpLogicalOr,
+	}
+	for _, op := range logicalOps {
+		be := binaryExpr{op: op}
+		if validateKernelFilterTree(be) == nil {
+			t.Errorf("validateKernelFilterTree failure for %s",
+				binaryOpStrings[op])
 		}
-	} else {
-		if err == nil {
-			t.Errorf("%s -> Expected normal validation failure; got pass",
-				expressionAsString(expr))
+		be.x = valueExpr{v: "string"}
+		be.y = valueExpr{v: "string"}
+		if err := validateKernelFilterTree(be); err != nil {
+			t.Errorf("validateKernelFilterTree failure for %s: %v",
+				binaryOpStrings[op], err)
 		}
 	}
 
-	err = validateKernelFilterTree(expr)
-	if kernelPass {
-		if err != nil {
-			t.Errorf("%s -> Expected kernel pass; got %s",
-				expressionAsString(expr), err)
-		}
-	} else {
-		if err == nil {
-			t.Errorf("%s -> Expected kernel validation failure; got pass",
-				expressionAsString(expr))
-		}
+	binaryOps := []binaryOp{
+		binaryOpEQ, binaryOpNE, binaryOpLT, binaryOpLE,
+		binaryOpGT, binaryOpGE,
 	}
-
-	_, err = validateTypes(expr, types)
-	if typesPass {
-		if err != nil {
-			t.Errorf("%s -> Expected types pass; got %s",
-				expressionAsString(expr), err)
-		}
-	} else {
-		if err == nil {
-			t.Errorf("%s -> Expected types validation failure; got pass",
-				expressionAsString(expr))
-		}
-	}
-}
-
-func TestExpressionValidation(t *testing.T) {
-	var expr *api.Expression
-
-	types := FieldTypeMap{
-		"port":     int32(api.ValueType_UINT16),
-		"filename": int32(api.ValueType_STRING),
-		"path":     int32(api.ValueType_STRING),
-		"service":  int32(api.ValueType_STRING),
-		"address":  int32(api.ValueType_STRING),
-		"flags":    int32(api.ValueType_UINT32),
-	}
-
-	var binaryOps = []api.Expression_ExpressionType{
-		api.Expression_EQ,
-		api.Expression_NE,
-		api.Expression_LT,
-		api.Expression_LE,
-		api.Expression_GT,
-		api.Expression_GE,
-	}
-
 	for _, op := range binaryOps {
-		expr = newBinaryExpr(op, Identifier("port"), Value(uint16(1024)))
-		testValidateExpr(t, expr, true, true, true, types)
+		be := binaryExpr{
+			op: op,
+			x:  identExpr{name: "foo"},
+			y:  valueExpr{v: int32(8)},
+		}
+		if err := validateKernelFilterTree(be); err != nil {
+			t.Errorf("validateKernelFilterTree failure for %s: %v",
+				binaryOpStrings[op], err)
+		}
+		be.x = valueExpr{v: int8(8)}
+		if validateKernelFilterTree(be) == nil {
+			t.Errorf("validateKernelFilterTree failure for %s",
+				binaryOpStrings[op])
+		}
+		be.x = identExpr{name: "foo"}
+		be.y = identExpr{name: "bar"}
+		if validateKernelFilterTree(be) == nil {
+			t.Errorf("validateKernelFilterTree failure for %s",
+				binaryOpStrings[op])
+		}
 	}
 
-	expr = Like(Identifier("filename"), Value("*passwd*"))
-	testValidateExpr(t, expr, true, true, true, types)
+	op := binaryOpLike
+	be := binaryExpr{
+		op: op,
+		x:  identExpr{name: "foo"},
+		y:  valueExpr{v: "string"},
+	}
+	if err := validateKernelFilterTree(be); err != nil {
+		t.Errorf("validateKernelFilterTree failure for %s: %v",
+			binaryOpStrings[op], err)
+	}
+	be.x = valueExpr{v: int8(8)}
+	if validateKernelFilterTree(be) == nil {
+		t.Errorf("validateKernelFilterTree failure for %s",
+			binaryOpStrings[op])
+	}
+	be.x = identExpr{name: "foo"}
+	be.y = identExpr{name: "bar"}
+	if validateKernelFilterTree(be) == nil {
+		t.Errorf("validateKernelFilterTree failure for %s",
+			binaryOpStrings[op])
+	}
 
-	expr = IsNull(Identifier("path"))
-	testValidateExpr(t, expr, true, false, true, types)
+	be = binaryExpr{
+		op: binaryOpNE,
+	}
+	be.x = binaryExpr{ // make an invalid bitwise-and
+		op: binaryOpBitwiseAnd,
+		x:  identExpr{name: "foo"},
+		y:  valueExpr{v: "string"},
+	}
+	be.y = identExpr{name: "invalid"}
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be.x = binaryExpr{ // make a valid bitwise-and
+		op: binaryOpBitwiseAnd,
+		x:  identExpr{name: "foo"},
+		y:  valueExpr{v: int32(8)},
+	}
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be.y = valueExpr{v: int8(8)} // invalid, signed
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be.y = valueExpr{v: uint32(8)} // invalid, unsigned
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be.y = valueExpr{v: "string"} // invalid, not integer
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be.y = valueExpr{v: int64(0)} // VALID!
+	if err := validateKernelFilterTree(be); err != nil {
+		t.Errorf("validateKernelFilterTree failure: %v", err)
+	}
 
-	expr = IsNotNull(Identifier("service"))
-	testValidateExpr(t, expr, true, false, true, types)
+	be = binaryExpr{
+		op: binaryOpBitwiseAnd,
+		x:  valueExpr{},
+	}
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be = binaryExpr{
+		op: binaryOpBitwiseAnd,
+		x:  identExpr{name: "foo"},
+		y:  identExpr{name: "bar"},
+	}
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be = binaryExpr{
+		op: binaryOpBitwiseAnd,
+		x:  identExpr{name: "foo"},
+		y:  valueExpr{v: "string"},
+	}
+	if validateKernelFilterTree(be) == nil {
+		t.Error("validateKernelFilterTree failure")
+	}
+	be = binaryExpr{
+		op: binaryOpBitwiseAnd,
+		x:  identExpr{name: "foo"},
+		y:  valueExpr{v: int8(8)},
+	}
+	if err := validateKernelFilterTree(be); err != nil {
+		t.Errorf("validateKernelFilterTree failure: %v", err)
+	}
 
-	expr = NotEqual(
-		BitwiseAnd(Identifier("flags"), Value(uint32(1234))),
-		Value(uint32(0)))
-	testValidateExpr(t, expr, true, true, true, types)
+	// unaryExpr tests
+	ue := unaryExpr{op: unaryOpIsNull}
+	if validateKernelFilterTree(ue) == nil {
+		t.Errorf("validateKernelFilterTree failure")
+	}
 
-	expr = LogicalOr(
-		Equal(Identifier("port"), Value(uint16(80))),
-		Equal(Identifier("port"), Value(uint16(443))))
-	testValidateExpr(t, expr, true, true, true, types)
+	// invalidExpr tests
+	if validateKernelFilterTree(invalidExpr{}) == nil {
+		t.Errorf("validateKernelFilterTree failure")
+	}
+}
 
-	expr = LogicalAnd(
-		NotEqual(Identifier("port"), Value(uint16(80))),
-		NotEqual(Identifier("port"), Value(uint16(443))))
-	testValidateExpr(t, expr, true, true, true, types)
+func TestValidateTypes(t *testing.T) {
+	types := FieldTypeMap{
+		"s":   ValueTypeString,
+		"i8":  ValueTypeSignedInt8,
+		"i16": ValueTypeSignedInt16,
+		"i32": ValueTypeSignedInt32,
+		"i64": ValueTypeSignedInt64,
+		"u8":  ValueTypeUnsignedInt8,
+		"u16": ValueTypeUnsignedInt16,
+		"u32": ValueTypeUnsignedInt32,
+		"u64": ValueTypeUnsignedInt64,
+		"b":   ValueTypeBool,
+		"d":   ValueTypeDouble,
+		"t":   ValueTypeTimestamp,
+	}
 
-	expr = LogicalAnd(
-		Equal(Identifier("port"), Value(uint16(80))),
-		LogicalOr(
-			Equal(Identifier("address"), Value("192.168.1.4")),
-			Equal(Identifier("address"), Value("127.0.0.1"))))
-	testValidateExpr(t, expr, true, true, true, types)
+	for n, vt := range types {
+		e := identExpr{name: n}
+		if vtr, err := validateTypes(e, types); err != nil {
+			t.Errorf("Unexpected error for %q: %v", n, err)
+		} else if vt != vtr {
+			t.Errorf("validateTypes returned wrong type for %q (want %s; got %s)",
+				n, ValueTypeStrings[vt], ValueTypeStrings[vtr])
+		}
+	}
+
+	if _, err := validateTypes(identExpr{name: "foo"}, types); err == nil {
+		t.Error("validateTypes failure")
+	}
+
+	// valueExpr tests
+	ve := valueExpr{v: "string"}
+	if vt, err := validateTypes(ve, types); err != nil {
+		t.Errorf("Unexpected validateTypes Error: %v", err)
+	} else if vt != ValueTypeString {
+		t.Errorf("Unexpected value type %s for string",
+			ValueTypeStrings[vt])
+	}
+
+	ve.v = make(chan interface{})
+	if _, err := validateTypes(ve, types); err == nil {
+		t.Error("validateTypes failure")
+	}
+
+	// binaryExpr tests
+	be := binaryExpr{}
+
+	logicalOps := []binaryOp{
+		binaryOpLogicalAnd, binaryOpLogicalOr,
+	}
+	for _, op := range logicalOps {
+		be = binaryExpr{op: op}
+
+		be.x = valueExpr{v: make(chan interface{})}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+
+		be.x = identExpr{name: "s"}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+
+		be.x = identExpr{name: "b"}
+		be.y = valueExpr{v: make(chan interface{})}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+
+		be.y = valueExpr{v: "string"}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+
+		be.y = valueExpr{true}
+		if _, err := validateTypes(be, types); err != nil {
+			t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+		}
+	}
+
+	binaryOps := []binaryOp{
+		binaryOpEQ, binaryOpNE, binaryOpLT, binaryOpLE,
+		binaryOpGT, binaryOpGE,
+	}
+	for _, op := range binaryOps {
+		be = binaryExpr{op: op}
+
+		be.x = valueExpr{v: make(chan interface{})}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+
+		be.x = identExpr{name: "u16"}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+
+		be.y = identExpr{name: "s"}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+
+		be.y = valueExpr{v: uint16(8)}
+		if _, err := validateTypes(be, types); err != nil {
+			t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+		}
+	}
+
+	binaryOps = []binaryOp{
+		binaryOpLT, binaryOpLE, binaryOpGT, binaryOpGE,
+	}
+	for _, op := range binaryOps {
+		be = binaryExpr{
+			op: op,
+			x:  identExpr{name: "s"},
+			y:  valueExpr{v: int16(8)},
+		}
+		if _, err := validateTypes(be, types); err == nil {
+			t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+		}
+	}
+
+	op := binaryOpLike
+	be = binaryExpr{op: op}
+
+	be.x = valueExpr{v: make(chan interface{})}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+	}
+
+	be.x = identExpr{name: "u16"}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+	}
+
+	be.x = identExpr{name: "s"}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+	}
+
+	be.y = identExpr{name: "u16"}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s", binaryOpStrings[op])
+	}
+
+	be.y = valueExpr{v: "string"}
+	if _, err := validateTypes(be, types); err != nil {
+		t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+	}
+
+	op = binaryOpBitwiseAnd
+	be = binaryExpr{op: op}
+	be.x = valueExpr{v: make(chan interface{})}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+	}
+	be.x = identExpr{name: "s"}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+	}
+	be.x = identExpr{name: "u32"}
+	be.y = valueExpr{v: make(chan interface{})}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+	}
+	be.y = valueExpr{v: "string"}
+	if _, err := validateTypes(be, types); err == nil {
+		t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+	}
+	be.y = valueExpr{v: uint32(8)}
+	if _, err := validateTypes(be, types); err != nil {
+		t.Errorf("validateTypes failure for %s: %v", binaryOpStrings[op], err)
+	}
+
+	be.op = 87364
+	if _, err := validateTypes(be, types); err == nil {
+		t.Error("validateTypes failure")
+	}
+
+	// unaryExpr tests
+	ue := unaryExpr{}
+
+	ue.op = unaryOpIsNull
+	ue.x = identExpr{name: "s"}
+	if vt, err := validateTypes(ue, types); err != nil {
+		t.Errorf("Unexpected validateTypes Error: %v", err)
+	} else if vt != ValueTypeBool {
+		t.Errorf("Unexpected validateTypes type %s", ValueTypeStrings[vt])
+	}
+	ue.x = identExpr{name: "foo"}
+	if _, err := validateTypes(ue, types); err == nil {
+		t.Error("validateTypes failure")
+	}
+
+	ue.op = unaryOpIsNotNull
+	ue.x = identExpr{name: "s"}
+	if vt, err := validateTypes(ue, types); err != nil {
+		t.Errorf("Unexpected validateTypes Error: %v", err)
+	} else if vt != ValueTypeBool {
+		t.Errorf("Unexpected validateTypes type %s", ValueTypeStrings[vt])
+	}
+	ue.x = identExpr{name: "foo"}
+	if _, err := validateTypes(ue, types); err == nil {
+		t.Error("validateTypes failure")
+	}
+
+	ue.op = 982375
+	if _, err := validateTypes(ue, types); err == nil {
+		t.Error("validateTypes failure")
+	}
+
+	// Test totally unsupported expr type
+	if _, err := validateTypes(invalidExpr{}, types); err == nil {
+		t.Error("validateTypes failure")
+	}
 }

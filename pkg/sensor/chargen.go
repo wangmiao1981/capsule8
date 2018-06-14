@@ -27,8 +27,8 @@ import (
 )
 
 var chargenEventTypes = expression.FieldTypeMap{
-	"index":      int32(api.ValueType_UINT64),
-	"characters": int32(api.ValueType_STRING),
+	"index":      expression.ValueTypeUnsignedInt64,
+	"characters": expression.ValueTypeString,
 }
 
 type chargenFilter struct {
@@ -65,7 +65,7 @@ func registerChargenEvents(
 ) {
 	f := chargenFilter{sensor: sensor}
 	eventID, err := sensor.Monitor.RegisterExternalEvent("chargen",
-		f.decodeChargenEvent, chargenEventTypes)
+		f.decodeChargenEvent)
 	if err != nil {
 		subscr.logStatus(
 			code.Code_UNKNOWN,
@@ -112,7 +112,7 @@ func registerChargenEvents(
 	if nchargens == 0 {
 		sensor.Monitor.UnregisterEvent(eventID)
 	} else {
-		es, _ := subscr.addEventSink(eventID, nil)
+		es, _ := subscr.addEventSink(eventID, nil, chargenEventTypes)
 		es.unregister = func(es *eventSink) {
 			sensor.Monitor.UnregisterEvent(es.eventID)
 			close(done)

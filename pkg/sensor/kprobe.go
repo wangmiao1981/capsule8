@@ -21,10 +21,25 @@ import (
 
 	api "github.com/capsule8/capsule8/api/v0"
 
+	"github.com/capsule8/capsule8/pkg/expression"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
 
 	"google.golang.org/genproto/googleapis/rpc/code"
 )
+
+var perfTypeMapping = map[int32]expression.ValueType{
+	perf.TraceEventFieldTypeString: expression.ValueTypeString,
+
+	perf.TraceEventFieldTypeSignedInt8:  expression.ValueTypeSignedInt8,
+	perf.TraceEventFieldTypeSignedInt16: expression.ValueTypeSignedInt16,
+	perf.TraceEventFieldTypeSignedInt32: expression.ValueTypeSignedInt32,
+	perf.TraceEventFieldTypeSignedInt64: expression.ValueTypeSignedInt64,
+
+	perf.TraceEventFieldTypeUnsignedInt8:  expression.ValueTypeUnsignedInt8,
+	perf.TraceEventFieldTypeUnsignedInt16: expression.ValueTypeUnsignedInt16,
+	perf.TraceEventFieldTypeUnsignedInt32: expression.ValueTypeUnsignedInt32,
+	perf.TraceEventFieldTypeUnsignedInt64: expression.ValueTypeUnsignedInt64,
+}
 
 type kprobeFilter struct {
 	symbol    string
@@ -156,7 +171,14 @@ func registerKernelEvents(
 				fmt.Sprintf("Couldn't register kprobe on %s %s [%s]: %v", f.symbol, loc, f.fetchargs(), err))
 			continue
 		}
-		_, err = subscr.addEventSink(eventID, f.filter)
+
+		kprobeFields := sensor.Monitor.RegisteredEventFields(eventID)
+		filterTypes := make(expression.FieldTypeMap, len(kprobeFields))
+		for k, v := range kprobeFields {
+			filterTypes[k] = perfTypeMapping[v]
+		}
+
+		_, err = subscr.addEventSink(eventID, f.filter, filterTypes)
 		if err != nil {
 			subscr.logStatus(
 				code.Code_UNKNOWN,
