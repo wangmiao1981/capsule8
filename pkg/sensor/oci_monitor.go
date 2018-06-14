@@ -67,14 +67,15 @@ const (
 type ociDeferredAction func()
 
 type ociMonitor struct {
-	sensor       *Sensor
-	containerDir string
+	sensor           *Sensor
+	containerDir     string
+	containerDirFile *os.File
 
 	configOpens map[int][]string
 
-	scanningLock  sync.Mutex
-	scanning      bool
-	scanningQueue []ociDeferredAction
+	startLock  sync.Mutex
+	startQueue []ociDeferredAction
+	started    bool
 }
 
 func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
@@ -84,13 +85,12 @@ func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
 			containerDir, err)
 		return nil
 	}
-	defer d.Close()
 
 	om := &ociMonitor{
-		sensor:       sensor,
-		containerDir: containerDir,
-		configOpens:  make(map[int][]string),
-		scanning:     true,
+		sensor:           sensor,
+		containerDir:     containerDir,
+		containerDirFile: d,
+		configOpens:      make(map[int][]string),
 	}
 
 	// Register probes in an enabled state so that we get the events
@@ -123,33 +123,46 @@ func newOciMonitor(sensor *Sensor, containerDir string) *ociMonitor {
 			ociUnlinkKprobeSymbol, err)
 	}
 
-	// Scan the filesystem looking for existing containers
-	names, err := d.Readdirnames(0)
-	if err != nil {
-		glog.Fatalf("Could not read directory %s: %s", containerDir, err)
+	return om
+}
+
+func (om *ociMonitor) start() {
+	if om.started {
+		glog.Fatal("Illegal second call to ociMonitor.start()")
 	}
-	for _, name := range names {
-		configFilename := filepath.Join(containerDir, name, "config.json")
-		err = om.processConfigJSON(perf.SampleID{}, configFilename)
-		if err == nil {
-			glog.V(2).Infof("{OCI} Found existing container %s", name)
+
+	if om.containerDirFile != nil {
+		defer func() {
+			om.containerDirFile.Close()
+			om.containerDirFile = nil
+		}()
+
+		// Scan the filesystem looking for existing containers
+		names, err := om.containerDirFile.Readdirnames(0)
+		if err != nil {
+			glog.Fatalf("Could not read directory %s: %s", om.containerDir, err)
+		}
+		for _, name := range names {
+			configFilename := filepath.Join(om.containerDir, name, "config.json")
+			err = om.processConfigJSON(perf.SampleID{}, configFilename)
+			if err == nil {
+				glog.V(2).Infof("{OCI} Found existing container %s", name)
+			}
 		}
 	}
 
-	om.scanningLock.Lock()
-	for len(om.scanningQueue) > 0 {
-		queue := om.scanningQueue
-		om.scanningQueue = nil
-		om.scanningLock.Unlock()
+	om.startLock.Lock()
+	for len(om.startQueue) > 0 {
+		queue := om.startQueue
+		om.startQueue = nil
+		om.startLock.Unlock()
 		for _, f := range queue {
 			f()
 		}
-		om.scanningLock.Lock()
+		om.startLock.Lock()
 	}
-	om.scanning = false
-	om.scanningLock.Unlock()
-
-	return om
+	om.started = true
+	om.startLock.Unlock()
 }
 
 func (om *ociMonitor) processConfigJSON(
@@ -196,14 +209,14 @@ func (om *ociMonitor) processConfigJSON(
 }
 
 func (om *ociMonitor) maybeDeferAction(f func()) {
-	if om.scanning {
-		om.scanningLock.Lock()
-		if om.scanning {
-			om.scanningQueue = append(om.scanningQueue, f)
-			om.scanningLock.Unlock()
+	if !om.started {
+		om.startLock.Lock()
+		if !om.started {
+			om.startQueue = append(om.startQueue, f)
+			om.startLock.Unlock()
 			return
 		}
-		om.scanningLock.Unlock()
+		om.startLock.Unlock()
 	}
 
 	f()

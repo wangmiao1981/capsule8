@@ -76,12 +76,13 @@ type dockerDeferredAction func()
 
 // dockerMonitor monitors the system for Docker container events
 type dockerMonitor struct {
-	sensor       *Sensor
-	containerDir string
+	sensor           *Sensor
+	containerDir     string
+	containerDirFile *os.File
 
-	scanningLock  sync.Mutex
-	scanning      bool
-	scanningQueue []dockerDeferredAction
+	startLock  sync.Mutex
+	startQueue []dockerDeferredAction
+	started    bool
 }
 
 // newDockerMonitor creates a new Docker monitor that monitors the specified
@@ -94,12 +95,11 @@ func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 			containerDir, err)
 		return nil
 	}
-	defer d.Close()
 
 	dm := &dockerMonitor{
-		sensor:       sensor,
-		containerDir: containerDir,
-		scanning:     true,
+		sensor:           sensor,
+		containerDir:     containerDir,
+		containerDirFile: d,
 	}
 
 	// Register these probes in an enabled state so that we get the events
@@ -124,33 +124,46 @@ func newDockerMonitor(sensor *Sensor, containerDir string) *dockerMonitor {
 			dockerUnlinkKprobeSymbol, err)
 	}
 
-	// Scan the filesystem looking for existing containers
-	names, err := d.Readdirnames(0)
-	if err != nil {
-		glog.Fatalf("Could not read directory %s: %s", containerDir, err)
+	return dm
+}
+
+func (dm *dockerMonitor) start() {
+	if dm.started {
+		glog.Fatal("Illegal second call to dockerMonitor.start()")
 	}
-	for _, name := range names {
-		configFilename := filepath.Join(containerDir, name, "config.v2.json")
-		err = dm.processDockerConfig(perf.SampleID{}, configFilename)
-		if err == nil {
-			glog.V(2).Infof("{DOCKER} Found existing container %s", name)
+
+	if dm.containerDirFile != nil {
+		defer func() {
+			dm.containerDirFile.Close()
+			dm.containerDirFile = nil
+		}()
+
+		// Scan the filesystem looking for existing containers
+		names, err := dm.containerDirFile.Readdirnames(0)
+		if err != nil {
+			glog.Fatalf("Could not read directory %s: %s", dm.containerDir, err)
+		}
+		for _, name := range names {
+			configFilename := filepath.Join(dm.containerDir, name, "config.v2.json")
+			err = dm.processDockerConfig(perf.SampleID{}, configFilename)
+			if err == nil {
+				glog.V(2).Infof("{DOCKER} Found existing container %s", name)
+			}
 		}
 	}
 
-	dm.scanningLock.Lock()
-	for len(dm.scanningQueue) > 0 {
-		queue := dm.scanningQueue
-		dm.scanningQueue = nil
-		dm.scanningLock.Unlock()
+	dm.startLock.Lock()
+	for len(dm.startQueue) > 0 {
+		queue := dm.startQueue
+		dm.startQueue = nil
+		dm.startLock.Unlock()
 		for _, f := range queue {
 			f()
 		}
-		dm.scanningLock.Lock()
+		dm.startLock.Lock()
 	}
-	dm.scanning = false
-	dm.scanningLock.Unlock()
-
-	return dm
+	dm.started = true
+	dm.startLock.Unlock()
 }
 
 func (dm *dockerMonitor) processDockerConfig(
@@ -216,14 +229,14 @@ func (dm *dockerMonitor) processDockerConfig(
 }
 
 func (dm *dockerMonitor) maybeDeferAction(f func()) {
-	if dm.scanning {
-		dm.scanningLock.Lock()
-		if dm.scanning {
-			dm.scanningQueue = append(dm.scanningQueue, f)
-			dm.scanningLock.Unlock()
+	if !dm.started {
+		dm.startLock.Lock()
+		if !dm.started {
+			dm.startQueue = append(dm.startQueue, f)
+			dm.startLock.Unlock()
 			return
 		}
-		dm.scanningLock.Unlock()
+		dm.startLock.Unlock()
 	}
 
 	f()
