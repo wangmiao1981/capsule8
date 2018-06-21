@@ -63,6 +63,7 @@ BINS=$(patsubst %,bin/%,$(CMDS)) \
 # All source directories that need to be checked, compiled, tested, etc.
 SRC=./cmd/... ./pkg/... ./examples/... 
 CHECK_SRC=$(SRC) ./test/...
+TEST_SRC=./pkg/...
 PKG_SOURCES=$(shell find pkg 2>&1 | grep -E '.*\.go$$')
 
 #
@@ -231,9 +232,9 @@ check:
 #
 # Run unit tests
 #
-test: GO_TEST_FLAGS+=-cover
+test: GO_TEST_FLAGS+=-cover -coverprofile coverage.out
 test:
-	$(GO_TEST) $(GO_TEST_FLAGS) $(SRC) $(TEST_FLAGS)
+	$(GO_TEST) $(GO_TEST_FLAGS) $(TEST_SRC) $(TEST_FLAGS)
 
 test_verbose: GO_TEST_FLAGS+=-v
 test_verbose: test

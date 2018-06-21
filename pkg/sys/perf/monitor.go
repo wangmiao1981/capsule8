@@ -2155,10 +2155,7 @@ func collectReferenceSamples(ncpu int) (int64, int64, []int64, error) {
 }
 
 func calculateTimeOffsets() error {
-	ncpu, err := sys.HostProcFS().NumCPU()
-	if err != nil {
-		return err
-	}
+	ncpu := sys.HostProcFS().NumCPU()
 	timeOffsets = make([]int64, ncpu)
 	if haveClockID {
 		return nil
@@ -2195,11 +2192,8 @@ func (monitor *EventMonitor) initializeGroupLeaders(
 		attr = &groupEventAttr
 	}
 
-	ncpu, err := sys.HostProcFS().NumCPU()
-	if err != nil {
-		return nil, err
-	}
-
+	var err error
+	ncpu := sys.HostProcFS().NumCPU()
 	pgls := make([]*perfGroupLeader, ncpu)
 	for cpu := 0; cpu < ncpu; cpu++ {
 		var fd int
@@ -2248,11 +2242,7 @@ func (monitor *EventMonitor) initializeGroupLeaders(
 func (monitor *EventMonitor) newEventGroup(
 	attr *EventAttr,
 ) (*eventMonitorGroup, error) {
-	ncpu, err := sys.HostProcFS().NumCPU()
-	if err != nil {
-		return nil, err
-	}
-
+	ncpu := sys.HostProcFS().NumCPU()
 	nleaders := (len(monitor.cgroups) + len(monitor.pids)) * ncpu
 	leaders := make([]*perfGroupLeader, 0, nleaders)
 

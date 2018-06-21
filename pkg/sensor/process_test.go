@@ -15,22 +15,8 @@
 package sensor
 
 import (
-	"os"
 	"testing"
 )
-
-/*
-
-Current benchmark results:
-
-BenchmarkArrayCache-8                   	500000000	         3.18 ns/op
-BenchmarkMapCache-8                     	10000000	       152 ns/op
-BenchmarkStatCacheMiss-8                	  200000	     11180 ns/op
-BenchmarkStatCacheMissParallel-8        	  500000	      3460 ns/op
-BenchmarkContainerCacheMiss-8           	  100000	     14729 ns/op
-BenchmarkContainerCacheMissParallel-8   	  300000	      5789 ns/op
-
-*/
 
 const arrayTaskCacheSize = 32768
 const mapTaskCacheSize = 32768
@@ -74,60 +60,4 @@ func TestCaches(t *testing.T) {
 				values[i%4].ContainerID, i, cid)
 		}
 	}
-}
-
-func BenchmarkArrayCache(b *testing.B) {
-	cache := newArrayTaskCache(arrayTaskCacheSize)
-	for i := 0; i < b.N; i++ {
-		_ = cache.LookupTask((i % arrayTaskCacheSize) + 1)
-	}
-}
-
-func BenchmarkMapCache(b *testing.B) {
-	cache := newMapTaskCache(mapTaskCacheSize)
-	for i := 0; i < b.N; i++ {
-		_ = cache.LookupTask((i % arrayTaskCacheSize) + 1)
-	}
-}
-
-func BenchmarkStatCacheMiss(b *testing.B) {
-	pid := os.Getpid()
-
-	for i := 0; i < b.N; i++ {
-		_ = procFS.Stat(pid, pid)
-	}
-}
-
-func BenchmarkStatCacheMissParallel(b *testing.B) {
-	pid := os.Getpid()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_ = procFS.Stat(pid, pid)
-		}
-	})
-}
-
-func BenchmarkContainerCacheMiss(b *testing.B) {
-	pid := os.Getpid()
-
-	for i := 0; i < b.N; i++ {
-		_, err := procFS.ContainerID(pid)
-		if err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkContainerCacheMissParallel(b *testing.B) {
-	pid := os.Getpid()
-
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			_, err := procFS.ContainerID(pid)
-			if err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
 }
