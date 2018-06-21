@@ -1,3 +1,25 @@
+## 0.15.0-alpha (June 21, 2018)
+
+BACKWARDS INCOMPATIBILITIES:
+
+  None
+
+FEATURES:
+
+  * Fall back to user land filters if kernel filters fail to set ([#205](https://github.com/capsule8/capsule8/pull/205))
+
+IMPROVEMENTS:
+
+  * Refactor to use internal AST rather than protobuf AST ([#218](https://github.com/capsule8/capsule8/pull/218))
+  * Update kernel check script with colors and config ([#202](https://github.com/capsule8/capsule8/pull/202))
+  * Replace dino with brandon as code owner ([#216](https://github.com/capsule8/capsule8/pull/216))
+  * Add an example of a negative filter ([#209](https://github.com/capsule8/capsule8/pull/209))
+
+BUG FIXES:
+
+  * Add missing nil check for systems without Docker installed ([#220](https://github.com/capsule8/capsule8/pull/220))
+  * Separate startup scans from cache/monitor instantiation ([#217](https://github.com/capsule8/capsule8/pull/217))
+
 ## 0.14.0-alpha (May 30, 2018)
 
 BACKWARDS INCOMPATIBILITIES:
