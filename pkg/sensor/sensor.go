@@ -15,7 +15,6 @@
 package sensor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -169,11 +168,16 @@ func (s *Sensor) Start() error {
 
 	// Create the sensor-global event monitor. This EventMonitor instance
 	// will be used for all perf_event events
-	if err := s.createEventMonitor(); err != nil {
+	err := s.createEventMonitor()
+	if err != nil {
 		s.Stop()
 		return err
 	}
-	s.loadKernelSymbols()
+
+	s.kallsyms, err = sys.HostProcFS().KernelTextSymbolNames()
+	if err != nil {
+		glog.Warning("Could not load kernel symbols: %v", err)
+	}
 
 	s.ContainerCache = NewContainerCache(s)
 	s.ProcessCache = NewProcessInfoCache(s)
@@ -403,34 +407,6 @@ func (s *Sensor) buildMonitorGroups() ([]string, []int, error) {
 	}
 
 	return cgroupList, pidList, nil
-}
-
-func (s *Sensor) loadKernelSymbols() {
-	filename := filepath.Join(sys.ProcFS().MountPoint, "kallsyms")
-	f, err := os.Open(filename)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	s.kallsyms = make(map[string]string)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		// Only record symbols in text segments
-		if fields[1] != "t" && fields[1] != "T" {
-			continue
-		}
-		parts := strings.Split(fields[2], ".")
-		if len(parts) < 1 {
-			continue
-		}
-		s.kallsyms[parts[0]] = fields[2]
-	}
 }
 
 func (s *Sensor) createEventMonitor() error {

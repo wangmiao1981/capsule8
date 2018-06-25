@@ -25,8 +25,8 @@ import (
 	api "github.com/capsule8/capsule8/api/v0"
 
 	"github.com/capsule8/capsule8/pkg/sensor"
+	"github.com/capsule8/capsule8/pkg/sys"
 	"github.com/capsule8/capsule8/pkg/sys/perf"
-	"github.com/capsule8/capsule8/pkg/sys/proc"
 
 	"github.com/golang/glog"
 
@@ -85,10 +85,7 @@ func main() {
 	flag.Parse()
 
 	glog.Infof("Starting Capsule8 cache side channel detector")
-	ncpu, err := proc.FS().NumCPU()
-	if err != nil {
-		glog.Fatalf("Unable to determine # of CPUs: %v", err)
-	}
+	ncpu := sys.HostProcFS().NumCPU()
 	tracker := counterTracker{
 		sensor:   newSensor(),
 		counters: make([]eventCounters, ncpu),

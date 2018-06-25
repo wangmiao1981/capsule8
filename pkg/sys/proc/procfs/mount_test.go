@@ -1,4 +1,4 @@
-// Copyright 2017 Capsule8, Inc.
+// Copyright 2018 Capsule8, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,21 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sys
+package procfs
 
 import (
 	"testing"
 
-	"github.com/golang/glog"
-	"github.com/stretchr/testify/assert"
+	"github.com/capsule8/capsule8/pkg/sys/proc"
 )
 
-var mockMounts = []struct {
-	mount     Mount
-	mountLine string
-}{
-	{
-		Mount{
+func TestMounts(t *testing.T) {
+	fs, err := NewFileSystem("testdata")
+	ok(t, err)
+
+	expectedMounts := []proc.Mount{
+		proc.Mount{
 			MountID:        uint(260),
 			ParentID:       uint(89),
 			Major:          uint(253),
@@ -45,10 +44,7 @@ var mockMounts = []struct {
 				"seclabel": "",
 			},
 		},
-		"260 89 253:6 /containers/ab63f6eab155cf698a20e7d5e03298dd8baf442ff6e4e20e2dff320f3e2fee3e/mounts /var/lib/docker/containers/ab63f6eab155cf698a20e7d5e03298dd8baf442ff6e4e20e2dff320f3e2fee3e/mounts rw,relatime unbindable - xfs /dev/mapper/rootvg-docker_lv rw,seclabel,attr2,inode64,noquota",
-	},
-	{
-		Mount{
+		proc.Mount{
 			MountID:        uint(287),
 			ParentID:       uint(26),
 			Major:          uint(0),
@@ -68,55 +64,8 @@ var mockMounts = []struct {
 				"uid":      "42",
 			},
 		},
-		"287 26 0:47 / /run/user/42 rw,nosuid,nodev,relatime shared:226 - tmpfs tmpfs rw,seclabel,size=1632548k,mode=700,uid=42,gid=42",
-	},
-}
-
-func TestMockMounts(t *testing.T) {
-	for _, m := range mockMounts {
-		obtainedMount, err := parseMount(m.mountLine)
-		if err != nil {
-			t.Error("Could not parse mount, got: ", err)
-		}
-		assert.Equal(t, m.mount, obtainedMount)
-	}
-}
-
-func TestLiveMounts(t *testing.T) {
-	mounts := Mounts()
-
-	if len(mounts) == 0 {
-		t.Error("Empty mountInfo returned by GetMountInfo()")
 	}
 
-	glog.V(1).Infof("Discovered %v mounts", len(mounts))
-}
-
-func TestGetCgroupPerfEventFSMountPoint(t *testing.T) {
-	perfEventDir := PerfEventDir()
-
-	if len(perfEventDir) == 0 {
-		t.Skip("Couldn't find a mounted perf_event cgroup filesystem")
-	}
-
-	glog.V(1).Infof("Found perf_event cgroup filesystem mounted at %s",
-		perfEventDir)
-}
-
-func TestGetProcFs(t *testing.T) {
-	procFS := ProcFS()
-
-	if procFS == nil {
-		t.Fatal("Couldn't find procfs")
-	}
-}
-
-func TestGetTraceFSMountPoint(t *testing.T) {
-	tracingDir := TracingDir()
-
-	if len(tracingDir) == 0 {
-		t.Skip("Could not find tracefs")
-	}
-
-	glog.V(1).Infof("Found tracefs at %s", tracingDir)
+	actualMounts := fs.Mounts()
+	equals(t, expectedMounts, actualMounts)
 }

@@ -126,8 +126,8 @@ const (
 )
 
 var (
-	procFS *proc.FileSystem
-	once   sync.Once
+	procFS     proc.FileSystem
+	procFSOnce sync.Once
 )
 
 // Cred contains task credential information
@@ -353,15 +353,15 @@ func (t *Task) Update(data map[string]interface{}, timestamp uint64) bool {
 
 	if changedPID || changedStartTime {
 		if !changedStartTime {
-			if ps := procFS.Stat(t.TGID, t.PID); ps != nil {
-				t.StartTime = int64(ps.StartTime())
-			} else {
+			var err error
+			t.StartTime, err = procFS.TaskStartTime(t.TGID, t.PID)
+			if err != nil {
 				t.StartTime = int64(timestamp)
 			}
 		}
 		if t.StartTime > 0 {
-			t.ProcessID = proc.DeriveUniqueID(t.PID,
-				uint64(t.StartTime))
+			t.ProcessID, _ = procFS.TaskUniqueID(
+				t.TGID, t.PID, t.StartTime)
 		} else {
 			t.ProcessID = ""
 		}
@@ -472,7 +472,7 @@ type scannerDeferredAction func()
 // existing sensor object is required in order for the process info cache to
 // able to install its probes to monitor the system to maintain the cache.
 func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
-	once.Do(func() {
+	procFSOnce.Do(func() {
 		procFS = sys.HostProcFS()
 		if procFS == nil {
 			glog.Fatal("Couldn't find a host procfs")
@@ -483,11 +483,11 @@ func NewProcessInfoCache(sensor *Sensor) *ProcessInfoCache {
 		sensor: sensor,
 	}
 
-	maxPid := proc.MaxPid()
-	if maxPid > config.Sensor.ProcessInfoCacheSize {
-		cache.cache = newMapTaskCache(maxPid)
+	maxPID := procFS.MaxPID()
+	if maxPID > config.Sensor.ProcessInfoCacheSize {
+		cache.cache = newMapTaskCache(maxPID)
 	} else {
-		cache.cache = newArrayTaskCache(maxPid)
+		cache.cache = newArrayTaskCache(maxPID)
 	}
 
 	var err error
@@ -641,24 +641,22 @@ func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
 		UID  []uint32 `Uid`
 		GID  []uint32 `Gid`
 	}
-	err := procFS.ReadProcessStatus(tgid, pid, &s)
+	err := procFS.ReadTaskStatus(tgid, pid, &s)
 	if err != nil {
 		return fmt.Errorf("Couldn't read pid %d status: %s",
 			pid, err)
 	}
-	ps := procFS.Stat(tgid, pid)
 
 	t := pc.cache.LookupTask(s.PID)
 	t.TGID = s.TGID
 	t.Command = s.Name
 	t.Creds = newCredentials(s.UID[0], s.UID[1], s.UID[2], s.UID[3],
 		s.GID[0], s.GID[1], s.GID[2], s.GID[3])
-	if ps != nil {
-		t.StartTime = int64(ps.StartTime())
-	} else {
+	t.StartTime, err = procFS.TaskStartTime(tgid, pid)
+	if err != nil {
 		t.StartTime = sys.CurrentMonotonicRaw()
 	}
-	t.ProcessID = proc.DeriveUniqueID(t.PID, uint64(t.StartTime))
+	t.ProcessID, _ = procFS.TaskUniqueID(t.TGID, t.PID, t.StartTime)
 	if t.PID != t.TGID {
 		t.parent = pc.cache.LookupTask(t.TGID)
 	} else {
@@ -667,72 +665,21 @@ func (pc *ProcessInfoCache) cacheTaskFromProc(tgid, pid int) error {
 		} else {
 			t.parent = pc.cache.LookupTask(s.PPID)
 		}
-		t.CommandLine = procFS.CommandLine(t.TGID)
-		t.CWD, err = procFS.CWD(t.TGID, t.PID)
-		t.ContainerID, err = procFS.ContainerID(tgid)
-		if err != nil {
-			return fmt.Errorf("Couldn't get containerID for tgid %d: %s",
-				pid, err)
-		}
+		// Failures here can be ignored; the task has completed while
+		// we've been processing it.
+		t.CommandLine, _ = procFS.ProcessCommandLine(t.TGID)
+		t.CWD, _ = procFS.TaskCWD(t.TGID, t.PID)
+		t.ContainerID, _ = procFS.ProcessContainerID(tgid)
 	}
 
 	return nil
 }
 
 func (pc *ProcessInfoCache) scanProcFilesystem() error {
-	d, err := os.Open(procFS.MountPoint)
-	if err != nil {
-		return fmt.Errorf("Cannot open %s: %s", procFS.MountPoint, err)
-	}
-	procNames, err := d.Readdirnames(0)
-	if err != nil {
-		return fmt.Errorf("Cannot read directory names from %s: %s",
-			procFS.MountPoint, err)
-	}
-	d.Close()
-
-	for _, procName := range procNames {
-		i, err := strconv.ParseInt(procName, 10, 32)
-		if err != nil {
-			continue
-		}
-		tgid := int(i)
-
-		err = pc.cacheTaskFromProc(tgid, tgid)
-		if err != nil {
-			// This is not fatal; the process may have gone away
-			continue
-		}
-
-		taskPath := fmt.Sprintf("%s/%d/task", procFS.MountPoint, tgid)
-		d, err = os.Open(taskPath)
-		if err != nil {
-			// This is not fatal; the process may have gone away
-			continue
-		}
-		taskNames, err := d.Readdirnames(0)
-		if err != nil {
-			// This is not fatal; the process may have gone away
-			continue
-		}
-		d.Close()
-
-		for _, taskName := range taskNames {
-			i, err = strconv.ParseInt(taskName, 10, 32)
-			if err != nil {
-				continue
-			}
-			pid := int(i)
-			if tgid == pid {
-				continue
-			}
-
-			// Ignore errors here; the process may have gone away
-			_ = pc.cacheTaskFromProc(tgid, pid)
-		}
-	}
-
-	return nil
+	return procFS.WalkTasks(func(tgid, pid int) bool {
+		pc.cacheTaskFromProc(tgid, pid)
+		return true
+	})
 }
 
 func (pc *ProcessInfoCache) installCgroupMonitor() error {
@@ -1058,7 +1005,7 @@ func (pc *ProcessInfoCache) decodeDoSetFsPwd(
 
 	pc.maybeDeferAction(func() {
 		t := pc.LookupTask(pid)
-		cwd, err := procFS.CWD(t.TGID, t.PID)
+		cwd, err := procFS.TaskCWD(t.TGID, t.PID)
 		if err == nil && cwd != t.CWD {
 			glog.V(10).Infof("CWD(%d) = %s", t.PID, cwd)
 			changes := map[string]interface{}{

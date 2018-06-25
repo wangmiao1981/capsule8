@@ -1,0 +1,23 @@
+0000000000000000 t __intel_shared_reg_put_constraints.isra.6.part.7
+0000000000000000 t create_dev.constprop.6
+0000000000000000 A irq_stack_union
+0000000000000000 A __per_cpu_start
+0000000000000000 A exception_stacks
+0000000000000000 A gdt_page
+0000000000000000 A espfix_waddr
+0000000000000000 A espfix_stack
+0000000000000000 A cpu_closid
+0000000000000000 A cpu_llc_id
+0000000000000000 A cpu_llc_shared_map
+0000000000000000 A cpu_core_map
+0000000000000000 A cpu_sibling_map
+0000000000000000 A cpu_info
+0000000000000000 A cpu_number
+0000000000000000 A this_cpu_off
+0000000000000000 A x86_cpu_to_acpiid
+0000000000000000 A x86_cpu_to_apicid
+0000000000000000 A x86_bios_cpu_apicid
+0000000000000000 A sched_core_priority
+0000000000000000 T cgroup_attach_task_all
+0000000000000000 t __cgroup_procs_write
+this_line_is_junk_and_should_be_ignored
